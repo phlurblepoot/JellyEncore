@@ -55,6 +55,11 @@ internal static partial class OperationsLog
         Message = "Queued {Kind} on session {SessionId}: [{Items}], http {HttpStatus}")]
     public static partial void QueueAdded(this ILogger logger, string kind, string sessionId, string items, int httpStatus);
 
+    /// <summary>PlayLast got no answer (timeout or a connection broken after sending). Not retried; the delivery check decides.</summary>
+    [LoggerMessage(EventId = 6015, EventName = "queue.add_no_reply", Level = LogLevel.Warning,
+        Message = "No answer to the queue request on session {SessionId}: {Error}; not retrying, the queue check decides. Items [{Items}]")]
+    public static partial void QueueAddNoReply(this ILogger logger, string sessionId, string error, string items);
+
     [LoggerMessage(EventId = 6020, EventName = "queue.add_failed", Level = LogLevel.Error,
         Message = "Could not queue on session {SessionId}: {Error} (status {HttpStatus}), items [{Items}]")]
     public static partial void QueueAddFailed(this ILogger logger, string sessionId, string error, int? httpStatus, string items);
@@ -64,8 +69,8 @@ internal static partial class OperationsLog
     public static partial void QueueConfirmed(this ILogger logger, string runId, string itemIds);
 
     [LoggerMessage(EventId = 6040, EventName = "queue.unconfirmed", Level = LogLevel.Warning,
-        Message = "Queued songs not seen in run {RunId}: [{ItemIds}], next item {NextItemId}")]
-    public static partial void QueueUnconfirmed(this ILogger logger, string runId, string itemIds, Guid nextItemId);
+        Message = "Queued songs not seen in run {RunId}: [{ItemIds}], judged at {JudgedAt}, next item {NextItemId}")]
+    public static partial void QueueUnconfirmed(this ILogger logger, string runId, string itemIds, string judgedAt, Guid? nextItemId);
 
     [LoggerMessage(EventId = 8010, EventName = "worker.crashed", Level = LogLevel.Critical,
         Message = "Component {Component} failed on a step and went on: {Error}")]

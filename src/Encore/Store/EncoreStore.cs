@@ -42,9 +42,16 @@ public sealed class EncoreStore : IDisposable
     /// <summary>The schema this build writes. A database with a higher user_version refuses to open.</summary>
     public const int SchemaVersion = 1;
 
-    /// <summary>How long a durable dedupe key blocks a repeat fire (mirrors <see cref="TriggerLimits.DedupeTtl"/>).</summary>
+    /// <summary>Trigger outcomes that block a repeat fire with the same dedupe key.</summary>
     public const string SentOutcome = "sent";
     public const string DryRunOutcome = "dry_run";
+
+    /// <summary>
+    /// PlayLast was sent but no answer came back (a timeout, or a connection that broke after sending), so Jellyfin may
+    /// have queued the songs. Treated like <see cref="SentOutcome"/>: it writes added songs and blocks a repeat, and the
+    /// delivery check decides whether the songs arrived.
+    /// </summary>
+    public const string SentNoReplyOutcome = "sent_unconfirmed";
 
     /// <summary>Retention (design section 5): plays 14 days, triggers and added songs 90 days.</summary>
     public static readonly TimeSpan PlaysRetention = TimeSpan.FromDays(14);
@@ -159,13 +166,13 @@ public sealed class EncoreStore : IDisposable
         }
     }
 
-    /// <summary>True when a sent or dry-run trigger with this key exists within <paramref name="ttl"/> (design section 3, durable dedupe).</summary>
+    /// <summary>True when a sent (answered or not) or dry-run trigger with this key exists within <paramref name="ttl"/> (design section 3, durable dedupe).</summary>
     public bool IsDuplicate(string dedupeKey, DateTimeOffset now, TimeSpan ttl)
     {
         using var cmd = _db.CreateCommand();
         cmd.CommandText = """
             SELECT 1 FROM triggers
-            WHERE dedupe_key = $key AND at_utc >= $since AND outcome IN ('sent', 'dry_run')
+            WHERE dedupe_key = $key AND at_utc >= $since AND outcome IN ('sent', 'sent_unconfirmed', 'dry_run')
             LIMIT 1
             """;
         cmd.Parameters.AddWithValue("$key", dedupeKey);
@@ -174,7 +181,7 @@ public sealed class EncoreStore : IDisposable
     }
 
     /// <summary>
-    /// Writes one fire outcome. A <c>sent</c> outcome also writes the added songs (in send order) and their
+    /// Writes one fire outcome. A <c>sent</c> or <c>sent_unconfirmed</c> outcome also writes the added songs (in send order) and their
     /// <c>plays</c> rows, all in one transaction. Returns the trigger id.
     /// </summary>
     public long RecordFire(TriggerRecord record, IReadOnlyList<PickedItem> items)
@@ -184,7 +191,7 @@ public sealed class EncoreStore : IDisposable
 
         using var tx = _db.BeginTransaction();
         var triggerId = InsertTrigger(record, items, tx);
-        if (record.Outcome == SentOutcome)
+        if (record.Outcome is SentOutcome or SentNoReplyOutcome)
         {
             var at = FormatUtc(record.AtUtc);
             for (var pos = 0; pos < items.Count; pos++)

@@ -129,6 +129,15 @@ public sealed class Orchestrator : BackgroundService
             await SafelyAsync("session", () => ProcessSessionAsync(dto, ct), ct).ConfigureAwait(false);
         }
 
+        // A snapshot lists every session. One that waited for a delivery verdict and is gone has ended: whatever was
+        // queued will not play there, so judge it now instead of keeping it until the tracker is forgotten.
+        var present = new HashSet<string>(snapshot.Sessions.Select(s => s.Id ?? string.Empty), StringComparer.Ordinal);
+        foreach (var track in _sessions.Where(kv => kv.Value.Pending is not null && !present.Contains(kv.Key)).Select(kv => kv.Value).ToList())
+        {
+            ResolveDelivery(track, confirmed: false, "session_ended", null, _time.GetUtcNow());
+        }
+
+        JudgeLongStops(_time.GetUtcNow());
         RefreshCounts();
     }
 
@@ -231,6 +240,8 @@ public sealed class Orchestrator : BackgroundService
             }
         }
 
+        JudgeLongStops(now);
+
         // A session unseen for this long is gone, whatever its state. (A FireFailed tracker used to be kept, but its
         // retry happens within seconds; one whose retry is then skipped would stay FireFailed and be re-evaluated
         // every tick forever.)
@@ -266,6 +277,15 @@ public sealed class Orchestrator : BackgroundService
         track.Allowed = allowed;
         track.LastDto = dto;
         track.LastSession = session;
+        if (dto.NowPlayingItem is null)
+        {
+            JudgeStopped(track, dto, now);
+        }
+        else
+        {
+            track.StoppedSince = null;
+        }
+
         await EvaluateAsync(dto.Id, track, session, dto, allowed, now, ct).ConfigureAwait(false);
     }
 
@@ -349,20 +369,9 @@ public sealed class Orchestrator : BackgroundService
         // Delivery check: the session's next play instance shows whether the songs were really queued.
         if (track.Pending is { } pending)
         {
-            track.Pending = null;
             var batch = pending.ItemIds;
             var confirmed = batch.Contains(item.Id) || instance.EntryQueue.Any(e => batch.Contains(e.Id));
-            var ids = string.Join(',', batch.Select(id => id.ToString("N")));
-            TryStoreAction("delivery", () => _store.MarkDelivery(pending.TriggerId, confirmed, now));
-            if (confirmed)
-            {
-                OperationsLog.QueueConfirmed(_log, pending.RunId, ids);
-            }
-            else
-            {
-                OperationsLog.QueueUnconfirmed(_log, pending.RunId, ids, item.Id);
-                Update(s => s with { Unconfirmed = s.Unconfirmed + 1 });
-            }
+            ResolveDelivery(track, confirmed, "next_song", item.Id, now);
         }
 
         if (allowed && session.UserId is { } userId && string.Equals(item.Type, AudioType, StringComparison.Ordinal))
@@ -370,6 +379,70 @@ public sealed class Orchestrator : BackgroundService
             var artist = Picker.ArtistOf(dto.NowPlayingItem!)?.Id;
             TryStoreAction("record play", () => _store.RecordPlayed(session.Id, userId, item.Id, artist, now));
             TryStoreAction("upsert session", () => _store.UpsertSession(session.Id, userId, session.Client, dto.DeviceName, now));
+        }
+    }
+
+    /// <summary>
+    /// The session shows no playing item while a batch waits for its verdict. In Jellyfin 12.4 that happens only after
+    /// the client's PlaybackStopped, and the server stores the stop's queue just before it clears the item, so the
+    /// queue in this snapshot is the client's fresh report. A non-empty report is judged at once (jellyfin-web lists
+    /// the whole queue; Finamp lists what comes next). An empty or missing report is ambiguous: a real stop, or Finamp
+    /// moving onto the last queued song. That waits <see cref="OrchestratorTiming.StoppedVerdictGrace"/>; a new song
+    /// within it is judged by the next-song check instead.
+    /// </summary>
+    private void JudgeStopped(SessionTrack track, SessionInfoDto dto, DateTimeOffset now)
+    {
+        if (track.Pending is not { } pending)
+        {
+            return;
+        }
+
+        if (dto.NowPlayingQueue is { Count: > 0 } queue)
+        {
+            var confirmed = queue.Any(q => pending.ItemIds.Contains(q.Id));
+            ResolveDelivery(track, confirmed, "stopped", null, now);
+        }
+        else
+        {
+            track.StoppedSince ??= now;
+        }
+    }
+
+    /// <summary>
+    /// A session stopped with an empty or missing queue report, and no song started within the grace: it was a real
+    /// stop, not a track change, so the batch did not arrive. Runs on every tick and snapshot.
+    /// </summary>
+    private void JudgeLongStops(DateTimeOffset now)
+    {
+        foreach (var track in _sessions.Values.ToList())
+        {
+            if (track.Pending is not null && track.StoppedSince is { } stopped && now - stopped >= _timing.StoppedVerdictGrace)
+            {
+                ResolveDelivery(track, confirmed: false, "stopped", null, now);
+            }
+        }
+    }
+
+    /// <summary>Records the delivery verdict of the pending batch and logs <c>queue.confirmed</c> or <c>queue.unconfirmed</c>.</summary>
+    private void ResolveDelivery(SessionTrack track, bool confirmed, string judgedAt, Guid? nextItemId, DateTimeOffset now)
+    {
+        if (track.Pending is not { } pending)
+        {
+            return;
+        }
+
+        track.Pending = null;
+        track.StoppedSince = null;
+        var ids = string.Join(',', pending.ItemIds.Select(id => id.ToString("N")));
+        TryStoreAction("delivery", () => _store.MarkDelivery(pending.TriggerId, confirmed, now));
+        if (confirmed)
+        {
+            OperationsLog.QueueConfirmed(_log, pending.RunId, ids);
+        }
+        else
+        {
+            OperationsLog.QueueUnconfirmed(_log, pending.RunId, ids, judgedAt, nextItemId);
+            Update(s => s with { Unconfirmed = s.Unconfirmed + 1 });
         }
     }
 
@@ -430,16 +503,35 @@ public sealed class Orchestrator : BackgroundService
             if (_options.DryRun)
             {
                 OperationsLog.QueueWouldAdd(_log, fire.Kind.ToWire(), session.Id, string.Join("; ", handout.Batch));
-                RecordOutcome(track, session, run, fire, "dry_run", now, clock, handout.Batch, null, null);
+                RecordOutcome(track, session, run, fire, EncoreStore.DryRunOutcome, now, clock, handout.Batch, null, null);
                 return;
             }
 
             var ids = handout.Batch.Select(i => i.Id).ToList();
-            await _jellyfin.PlayLastAsync(session.Id, ids, ct).ConfigureAwait(false);
-            Update(s => s with { JellyfinLastOkUtc = now, JellyfinLastError = null });
-            OperationsLog.QueueAdded(_log, fire.Kind.ToWire(), session.Id, string.Join("; ", handout.Batch), 204);
+            string outcome;
+            string? error = null;
+            int? status = 204;
+            try
+            {
+                await _jellyfin.PlayLastAsync(session.Id, ids, ct).ConfigureAwait(false);
+                outcome = EncoreStore.SentOutcome;
+                Update(s => s with { JellyfinLastOkUtc = now, JellyfinLastError = null });
+                OperationsLog.QueueAdded(_log, fire.Kind.ToWire(), session.Id, string.Join("; ", handout.Batch), 204);
+            }
+            catch (JellyfinException ex) when (ex.OutcomeUnknown && !ct.IsCancellationRequested)
+            {
+                // No answer, but the request may have reached Jellyfin and the songs may be queued already. A retry
+                // could queue them twice, so this counts as sent (dedupe, cooldown, run) and the delivery check,
+                // from the queue the client reports at its next track change or stop, decides whether they arrived.
+                outcome = EncoreStore.SentNoReplyOutcome;
+                status = null;
+                error = Truncate(ex.Message);
+                var reason = error;
+                Update(s => s with { JellyfinLastError = reason });
+                OperationsLog.QueueAddNoReply(_log, session.Id, error, string.Join("; ", handout.Batch));
+            }
 
-            var triggerId = RecordOutcome(track, session, run, fire, "sent", now, clock, handout.Batch, 204, null);
+            var triggerId = RecordOutcome(track, session, run, fire, outcome, now, clock, handout.Batch, status, error);
             if (triggerId is { } id)
             {
                 track.Pending = new PendingDelivery(id, run.RunId, ids);
@@ -474,13 +566,15 @@ public sealed class Orchestrator : BackgroundService
             ElapsedMs(clock), httpStatus, error);
         var triggerId = TryStore("record trigger", () => (long?)_store.RecordFire(record, items), (long?)null);
 
-        if (items.Count > 0 && outcome is "sent" or "dry_run")
+        // A send without an answer counts as sent: the songs may be in the queue.
+        var sent = outcome is EncoreStore.SentOutcome or EncoreStore.SentNoReplyOutcome;
+        if (items.Count > 0 && (sent || outcome == EncoreStore.DryRunOutcome))
         {
             run.LastAddedItemId = items[^1].Id;
             run.AddedCount += items.Count;
         }
 
-        if (outcome is "sent" or "dry_run")
+        if (sent || outcome == EncoreStore.DryRunOutcome)
         {
             track.LastFireAt = now;
         }
@@ -489,11 +583,11 @@ public sealed class Orchestrator : BackgroundService
         Update(s => s with
         {
             Fired = s.Fired + 1,
-            Sent = s.Sent + (outcome == "sent" ? 1 : 0),
-            DryRun = s.DryRun + (outcome == "dry_run" ? 1 : 0),
+            Sent = s.Sent + (sent ? 1 : 0),
+            DryRun = s.DryRun + (outcome == EncoreStore.DryRunOutcome ? 1 : 0),
             NoPicks = s.NoPicks + (outcome == "no_picks" ? 1 : 0),
-            ItemsSent = s.ItemsSent + (outcome == "sent" ? items.Count : 0),
-            LastSentUtc = outcome == "sent" ? now : s.LastSentUtc,
+            ItemsSent = s.ItemsSent + (sent ? items.Count : 0),
+            LastSentUtc = sent ? now : s.LastSentUtc,
             LastFireUtc = now,
             LastOutcome = outcome,
         });

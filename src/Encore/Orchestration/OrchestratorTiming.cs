@@ -36,6 +36,12 @@ public sealed record OrchestratorTiming
     /// </summary>
     public TimeSpan PickTimeout { get; init; } = TimeSpan.FromSeconds(25);
 
+    /// <summary>
+    /// How long a session may show no playing song, with an empty or missing queue report, before a batch still
+    /// waiting for its verdict is judged unconfirmed. Long enough to cover a track change (stop, then start).
+    /// </summary>
+    public TimeSpan StoppedVerdictGrace { get; init; } = TimeSpan.FromSeconds(10);
+
     /// <summary>How many earlier songs of the session are offered to the picker as secondary seeds.</summary>
     public int HistoryLimit { get; init; } = 20;
 }

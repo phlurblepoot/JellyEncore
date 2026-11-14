@@ -423,6 +423,34 @@ public sealed class JellyfinClientTests
     }
 
     [Fact]
+    public async Task A_timeout_or_a_broken_connection_after_sending_has_an_unknown_outcome()
+    {
+        var (timeoutClient, timeoutScript) = Build(timeout: TimeSpan.FromMilliseconds(50));
+        timeoutScript.Hang();
+        var timeout = await Assert.ThrowsAsync<JellyfinRequestException>(() => timeoutClient.PlayLastAsync("abc", [SongA]));
+        Assert.True(timeout.OutcomeUnknown);
+
+        var (endedClient, endedScript) = Build();
+        endedScript.Fail(new HttpRequestException(HttpRequestError.ResponseEnded, "ended"));
+        var ended = await Assert.ThrowsAsync<JellyfinRequestException>(() => endedClient.PlayLastAsync("abc", [SongA]));
+        Assert.True(ended.OutcomeUnknown);
+    }
+
+    [Fact]
+    public async Task A_refused_connection_or_an_error_status_has_a_known_outcome()
+    {
+        var (refusedClient, refusedScript) = Build();
+        refusedScript.Fail(new HttpRequestException(HttpRequestError.ConnectionError, "refused"));
+        var refused = await Assert.ThrowsAsync<JellyfinRequestException>(() => refusedClient.PlayLastAsync("abc", [SongA]));
+        Assert.False(refused.OutcomeUnknown);
+
+        var (statusClient, statusScript) = Build();
+        statusScript.Reply(HttpStatusCode.InternalServerError);
+        var status = await Assert.ThrowsAsync<JellyfinRequestException>(() => statusClient.PlayLastAsync("abc", [SongA]));
+        Assert.False(status.OutcomeUnknown);
+    }
+
+    [Fact]
     public async Task PlayLast_auth_failure_is_not_retried()
     {
         var (client, script) = Build();

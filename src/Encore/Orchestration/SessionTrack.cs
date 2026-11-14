@@ -16,7 +16,7 @@ internal sealed class SessionRun(string runId, RadioPlan plan)
     public int AddedCount { get; set; }
 }
 
-/// <summary>Songs sent in the last fire, waiting for the session's next play instance to confirm them.</summary>
+/// <summary>Songs sent in the last fire, waiting for the delivery verdict (next song, a stop, or the session ending).</summary>
 internal sealed record PendingDelivery(long TriggerId, string RunId, IReadOnlyList<Guid> ItemIds);
 
 /// <summary>Everything the orchestrator keeps for one Jellyfin session. Owned by the loop, never shared.</summary>
@@ -43,4 +43,7 @@ internal sealed class SessionTrack
     public TriggerSession? LastSession { get; set; }
 
     public PendingDelivery? Pending { get; set; }
+
+    /// <summary>When the session was first seen stopped with an empty or missing queue report while a verdict was pending.</summary>
+    public DateTimeOffset? StoppedSince { get; set; }
 }

@@ -17,6 +17,9 @@ internal sealed class FakeJellyfin : IJellyfinClient
 
     public ConcurrentQueue<(string SessionId, Guid[] ItemIds)> PlayLasts { get; } = new();
 
+    /// <summary>Every PlayLast call, including the ones that failed.</summary>
+    public ConcurrentQueue<(string SessionId, Guid[] ItemIds)> PlayLastAttempts { get; } = new();
+
     public FakePickClient Picks { get; } = new();
 
     public Task<IReadOnlyList<SessionInfoDto>> GetSessionsAsync(CancellationToken ct = default) => throw new NotSupportedException();
@@ -26,6 +29,7 @@ internal sealed class FakeJellyfin : IJellyfinClient
 
     public Task PlayLastAsync(string sessionId, IReadOnlyCollection<Guid> itemIds, CancellationToken ct = default)
     {
+        PlayLastAttempts.Enqueue((sessionId, itemIds.ToArray()));
         if (PlayLastFailure is { } failure)
         {
             throw failure;

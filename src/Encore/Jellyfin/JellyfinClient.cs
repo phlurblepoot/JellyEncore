@@ -23,7 +23,8 @@ public sealed record JellyfinClientOptions
 /// <list type="bullet">
 /// <item>GET: retried on any 5xx, up to <see cref="JellyfinClientOptions.RetryDelays"/> times.</item>
 /// <item>PlayLast: retried once, only on 502, 503 or 504, because a retry after a dropped reply could queue songs twice.</item>
-/// <item>Timeouts and transport errors: never retried. 401 and 403 are never retried either.</item>
+/// <item>Timeouts and transport errors: never retried. 401 and 403 are never retried either.
+/// A timeout, or a transport error after the connection was open, sets <see cref="JellyfinException.OutcomeUnknown"/>.</item>
 /// </list>
 /// </summary>
 public sealed class JellyfinClient : IJellyfinClient
@@ -146,13 +147,13 @@ public sealed class JellyfinClient : IJellyfinClient
             }
             catch (OperationCanceledException)
             {
-                // HttpClient.Timeout fired, not the caller. Timeouts are never retried.
-                throw new JellyfinRequestException(operation, "timed out");
+                // HttpClient.Timeout fired, not the caller. Timeouts are never retried, and the request may have arrived.
+                throw new JellyfinRequestException(operation, "timed out", outcomeUnknown: true);
             }
             catch (HttpRequestException e)
             {
                 // Transport failure. Keep only the error kind, never the message or the request.
-                throw new JellyfinRequestException(operation, $"connection failed ({e.HttpRequestError})");
+                throw new JellyfinRequestException(operation, $"connection failed ({e.HttpRequestError})", outcomeUnknown: !FailedBeforeSending(e.HttpRequestError));
             }
 
             if (response.IsSuccessStatusCode)
@@ -194,6 +195,16 @@ public sealed class JellyfinClient : IJellyfinClient
     private static bool IsServerError(int status) => status is >= 500 and <= 599;
 
     private static bool IsGatewayError(int status) => status is 502 or 503 or 504;
+
+    /// <summary>
+    /// Errors raised while opening the connection, before any of the request was written. Every other kind (a reset or
+    /// an ended response, a protocol error, an unknown error) may come after Jellyfin got the request.
+    /// </summary>
+    private static bool FailedBeforeSending(HttpRequestError error) => error is
+        HttpRequestError.NameResolutionError
+        or HttpRequestError.ConnectionError
+        or HttpRequestError.SecureConnectionError
+        or HttpRequestError.ProxyTunnelError;
 
     private static void RequirePositive(int limit)
     {
