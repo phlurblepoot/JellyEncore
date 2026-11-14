@@ -2,8 +2,11 @@ using System.Globalization;
 
 namespace Encore.Config;
 
-public sealed record ConfigResult(EncoreOptions? Options, IReadOnlyList<ConfigError> Errors)
+public sealed record ConfigResult(EncoreOptions? Options, IReadOnlyList<ConfigError> Errors, IReadOnlyList<ConfigError>? WarningList = null)
 {
+    /// <summary>Problems that do not stop startup (logged as startup.config_warning).</summary>
+    public IReadOnlyList<ConfigError> Warnings => WarningList ?? [];
+
     public bool IsValid => Options is not null;
 }
 
@@ -19,7 +22,12 @@ public static class EncoreOptionsLoader
     [
         "JELLYFIN_URL", "JELLYFIN_API_KEY", "ENCORE_ALLOWED_USERS", "ENCORE_LOOKAHEAD", "ENCORE_BATCH",
         "ENCORE_POLL_SECONDS", "ENCORE_RECENT_WINDOW", "ENCORE_DRY_RUN", "ENCORE_DATA_DIR", "LOG_LEVEL",
+        "ENCORE_FETCH_MODE", "ENCORE_SLSKD_URL", "ENCORE_SLSKD_API_KEY", "ENCORE_SLSKD_DOWNLOADS_DIR", "ENCORE_RADIO_DIR",
+        "ENCORE_RADIO_JELLYFIN_DIR", "ENCORE_SLSK_SEARCH_LIMIT", "ENCORE_FETCH_CONCURRENCY",
     ];
+
+    /// <summary>The variable names Encore reads (used by tests).</summary>
+    public static IReadOnlyList<string> Variables => KnownVariables;
 
     /// <summary>Reads the Encore variables from the process environment.</summary>
     public static ConfigResult LoadFromEnvironment()
@@ -111,9 +119,38 @@ public static class EncoreOptionsLoader
             errors.Add(new("ENCORE_DATA_DIR", dataError));
         }
 
+        var warnings = new List<ConfigError>();
+        var fetchModeText = Get(env, "ENCORE_FETCH_MODE");
+        var fetchMode = ParseFetchMode(fetchModeText, errors, out var modeKnown);
+        Uri? slskdUrl = null;
+        string? slskdKey = null;
+        // An unknown mode still gets its URL and key checked, so every problem shows in one run.
+        if (fetchMode != FetchMode.Off || !modeKnown)
+        {
+            slskdUrl = ParseSlskdUrl(Get(env, "ENCORE_SLSKD_URL"), errors);
+            slskdKey = ParseSlskdKey(Get(env, "ENCORE_SLSKD_API_KEY"), errors);
+        }
+
+        var downloadsDir = Get(env, "ENCORE_SLSKD_DOWNLOADS_DIR") ?? "/slskd-downloads";
+        var radioDir = Get(env, "ENCORE_RADIO_DIR") ?? "/music-radio";
+        var radioJellyfinDir = ParseJellyfinDir(Get(env, "ENCORE_RADIO_JELLYFIN_DIR") ?? "/music-radio", errors);
+        var searchLimit = ParseSearchLimit(Get(env, "ENCORE_SLSK_SEARCH_LIMIT"), errors);
+        var concurrency = ParseInt(env, "ENCORE_FETCH_CONCURRENCY", 2, 1, 5, errors, out _);
+
+        if (fetchMode == FetchMode.Live)
+        {
+            if (dryText is not null && dryRun)
+            {
+                errors.Add(new("ENCORE_FETCH_MODE",
+                    "ENCORE_FETCH_MODE=live downloads songs but ENCORE_DRY_RUN=true sends none; use dry_run, or set ENCORE_DRY_RUN=false"));
+            }
+
+            CheckLiveDirs(downloadsDir, radioDir, errors, warnings);
+        }
+
         if (errors.Count > 0)
         {
-            return new ConfigResult(null, errors);
+            return new ConfigResult(null, errors, warnings);
         }
 
         var options = new EncoreOptions
@@ -129,8 +166,16 @@ public static class EncoreOptionsLoader
             DataDir = dataDir,
             LogLevel = logLevel,
             DeviceId = DeviceIdentity.LoadOrCreate(dataDir),
+            FetchMode = fetchMode,
+            SlskdUrl = slskdUrl,
+            SlskdApiKey = slskdKey,
+            SlskdDownloadsDir = downloadsDir,
+            RadioDir = radioDir,
+            RadioJellyfinDir = radioJellyfinDir!,
+            SearchLimit = searchLimit,
+            FetchConcurrency = concurrency,
         };
-        return new ConfigResult(options, errors);
+        return new ConfigResult(options, errors, warnings);
     }
 
     /// <summary>Returns the trimmed value, or null when the variable is unset or blank.</summary>
@@ -239,6 +284,168 @@ public static class EncoreOptionsLoader
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
             return $"ENCORE_DATA_DIR \"{Truncate(dir)}\" must exist (or be creatable) and be writable ({ex.GetType().Name})";
+        }
+    }
+
+    private static FetchMode ParseFetchMode(string? text, List<ConfigError> errors, out bool known)
+    {
+        known = true;
+        if (text is null)
+        {
+            return FetchMode.Off;
+        }
+
+        switch (text.ToLowerInvariant())
+        {
+            case "off":
+                return FetchMode.Off;
+            case "dry_run" or "dry-run" or "dryrun":
+                return FetchMode.DryRun;
+            case "live":
+                return FetchMode.Live;
+            default:
+                known = false;
+                errors.Add(new("ENCORE_FETCH_MODE", $"ENCORE_FETCH_MODE must be off, dry_run or live, got \"{Truncate(text)}\""));
+                return FetchMode.Off;
+        }
+    }
+
+    private static Uri? ParseSlskdUrl(string? text, List<ConfigError> errors)
+    {
+        const string name = "ENCORE_SLSKD_URL";
+        if (text is null)
+        {
+            errors.Add(new(name, "ENCORE_SLSKD_URL is required when ENCORE_FETCH_MODE is not off (for example http://gluetun-slskd:5030)"));
+            return null;
+        }
+
+        if (!Uri.TryCreate(text, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https") || string.IsNullOrEmpty(uri.Host))
+        {
+            errors.Add(new(name, "ENCORE_SLSKD_URL must be an absolute http or https URL (for example http://gluetun-slskd:5030)"));
+            return null;
+        }
+
+        if (!string.IsNullOrEmpty(uri.UserInfo))
+        {
+            errors.Add(new(name, "ENCORE_SLSKD_URL must not contain a user name or password"));
+            return null;
+        }
+
+        if (!string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment) || text.Contains('?') || text.Contains('#'))
+        {
+            errors.Add(new(name, "ENCORE_SLSKD_URL must not contain a query string or fragment"));
+            return null;
+        }
+
+        return new Uri(uri.GetLeftPart(UriPartial.Path).TrimEnd('/'), UriKind.Absolute);
+    }
+
+    private static string? ParseSlskdKey(string? text, List<ConfigError> errors)
+    {
+        const string name = "ENCORE_SLSKD_API_KEY";
+        if (text is null)
+        {
+            errors.Add(new(name, "ENCORE_SLSKD_API_KEY is required when ENCORE_FETCH_MODE is not off"));
+            return null;
+        }
+
+        if (text.Any(char.IsWhiteSpace))
+        {
+            errors.Add(new(name, "ENCORE_SLSKD_API_KEY contains whitespace"));
+            return null;
+        }
+
+        if (text.Length is < 16 or > 255)
+        {
+            errors.Add(new(name, "ENCORE_SLSKD_API_KEY must be 16 to 255 characters"));
+            return null;
+        }
+
+        return text;
+    }
+
+    private static string? ParseJellyfinDir(string text, List<ConfigError> errors)
+    {
+        const string name = "ENCORE_RADIO_JELLYFIN_DIR";
+        if (!text.StartsWith('/') || text.Contains('\\') || text.Split('/').Contains(".."))
+        {
+            errors.Add(new(name, "ENCORE_RADIO_JELLYFIN_DIR must be an absolute path starting with / (no .. segment, no backslash)"));
+            return null;
+        }
+
+        var trimmed = text.TrimEnd('/');
+        if (trimmed.Length == 0)
+        {
+            errors.Add(new(name, "ENCORE_RADIO_JELLYFIN_DIR must not be the root folder"));
+            return null;
+        }
+
+        return trimmed;
+    }
+
+    private static SearchLimit ParseSearchLimit(string? text, List<ConfigError> errors)
+    {
+        var fallback = new SearchLimit(34, 220);
+        if (text is null)
+        {
+            return fallback;
+        }
+
+        var parts = text.Split('/');
+        if (parts.Length == 2
+            && int.TryParse(parts[0], NumberStyles.None, CultureInfo.InvariantCulture, out var searches) && searches is >= 1 and <= 100
+            && int.TryParse(parts[1], NumberStyles.None, CultureInfo.InvariantCulture, out var seconds) && seconds is >= 10 and <= 3600)
+        {
+            return new SearchLimit(searches, seconds);
+        }
+
+        errors.Add(new("ENCORE_SLSK_SEARCH_LIMIT",
+            $"ENCORE_SLSK_SEARCH_LIMIT must be <searches>/<seconds> with searches 1..100 and seconds 10..3600, got \"{Truncate(text)}\""));
+        return fallback;
+    }
+
+    private static void CheckLiveDirs(string downloadsDir, string radioDir, List<ConfigError> errors, List<ConfigError> warnings)
+    {
+        try
+        {
+            if (!Directory.Exists(downloadsDir))
+            {
+                errors.Add(new("ENCORE_SLSKD_DOWNLOADS_DIR", $"ENCORE_SLSKD_DOWNLOADS_DIR \"{Truncate(downloadsDir)}\" must exist in live mode"));
+            }
+            else
+            {
+                using var entries = Directory.EnumerateFileSystemEntries(downloadsDir).GetEnumerator();
+                entries.MoveNext();
+                if (!CanWrite(downloadsDir))
+                {
+                    warnings.Add(new("ENCORE_SLSKD_DOWNLOADS_DIR",
+                        $"ENCORE_SLSKD_DOWNLOADS_DIR \"{Truncate(downloadsDir)}\" is not writable; copies in slskd's downloads folder will stay behind"));
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            errors.Add(new("ENCORE_SLSKD_DOWNLOADS_DIR", $"ENCORE_SLSKD_DOWNLOADS_DIR \"{Truncate(downloadsDir)}\" must be readable in live mode ({ex.GetType().Name})"));
+        }
+
+        if (!Directory.Exists(radioDir) || !CanWrite(radioDir))
+        {
+            errors.Add(new("ENCORE_RADIO_DIR", $"ENCORE_RADIO_DIR \"{Truncate(radioDir)}\" must exist and be writable in live mode"));
+        }
+    }
+
+    private static bool CanWrite(string dir)
+    {
+        try
+        {
+            var probe = Path.Combine(dir, $".encore-write-test-{Guid.NewGuid():N}");
+            File.WriteAllText(probe, "ok");
+            File.Delete(probe);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            return false;
         }
     }
 

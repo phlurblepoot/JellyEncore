@@ -62,7 +62,13 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<Orchestrator>());
 
 var app = builder.Build();
 var version = typeof(Program).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "0.0.0";
-app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Encore.Startup").StartupConfig(options, version);
+var startupLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Encore.Startup");
+startupLogger.StartupConfig(options, version);
+foreach (var warning in config.Warnings)
+{
+    startupLogger.StartupConfigWarning(warning.Variable, warning.Message);
+}
+
 app.Lifetime.ApplicationStopped.Register(() => store.Dispose());
 HealthEndpoint.Map(app, version);
 app.Run();

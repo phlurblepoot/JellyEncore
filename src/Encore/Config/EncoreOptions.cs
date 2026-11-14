@@ -26,6 +26,24 @@ public sealed record EncoreOptions
 
     public LogLevel LogLevel { get; init; } = LogLevel.Information;
 
+    public FetchMode FetchMode { get; init; } = FetchMode.Off;
+
+    /// <summary>slskd base URL without a trailing slash; null when fetching is off.</summary>
+    public Uri? SlskdUrl { get; init; }
+
+    /// <summary>slskd API key; null when fetching is off. Never printed.</summary>
+    public string? SlskdApiKey { get; init; }
+
+    public string SlskdDownloadsDir { get; init; } = "/slskd-downloads";
+
+    public string RadioDir { get; init; } = "/music-radio";
+
+    public string RadioJellyfinDir { get; init; } = "/music-radio";
+
+    public SearchLimit SearchLimit { get; init; } = new(34, 220);
+
+    public int FetchConcurrency { get; init; } = 2;
+
     /// <summary>Stable per-install device id (<c>encore-</c> plus 12 hex digits), set once the data dir is validated.</summary>
     public string DeviceId { get; init; } = "";
 
@@ -48,7 +66,9 @@ public sealed record EncoreOptions
     {
         builder.Append($"JellyfinUrl = {JellyfinUrl}, JellyfinApiKey = <redacted>, AllowedUsers = [{string.Join(", ", AllowedUsers)}], ")
             .Append($"Lookahead = {Lookahead}, Batch = {Batch}, PollSeconds = {PollSeconds}, RecentWindow = {RecentWindow}, ")
-            .Append($"DryRun = {DryRun}, DataDir = {DataDir}, LogLevel = {LogLevel}, DeviceId = {DeviceId}");
+            .Append($"DryRun = {DryRun}, DataDir = {DataDir}, LogLevel = {LogLevel}, DeviceId = {DeviceId}, ")
+            .Append($"FetchMode = {FetchMode}, SlskdUrl = {SlskdUrl}, SlskdApiKey = <redacted>, SlskdDownloadsDir = {SlskdDownloadsDir}, ")
+            .Append($"RadioDir = {RadioDir}, RadioJellyfinDir = {RadioJellyfinDir}, SearchLimit = {SearchLimit}, FetchConcurrency = {FetchConcurrency}");
         return true;
     }
 }
