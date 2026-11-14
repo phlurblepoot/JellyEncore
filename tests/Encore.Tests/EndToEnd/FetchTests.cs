@@ -1,4 +1,5 @@
 using Encore.Config;
+using Encore.Discovery;
 using Encore.Fetch;
 using Encore.Jellyfin;
 using Encore.Orchestration;
@@ -21,12 +22,12 @@ public class FetchTests
     private static readonly HashSet<Guid> CatalogSongs = [.. Catalog.Build().Picks.SongsByArtist.Values.SelectMany(s => s).Select(s => s.Id)];
 
     private static async Task<(OrchestratorHarness H, FetchWorld W, Orchestrator O, Listener L)> CreateAsync(
-        FetchMode mode, Action<FetchWorld>? setup = null, double scale = 100)
+        FetchMode mode, Action<FetchWorld>? setup = null, double scale = 100, bool waitAvailable = true)
     {
         var h = new OrchestratorHarness();
         var w = new FetchWorld(h, mode, scale);
         setup?.Invoke(w);
-        await w.StartAsync();
+        await w.StartAsync(waitAvailable);
         var o = h.CreateOrchestrator();
         await o.RefreshAllowListAsync();
         return (h, w, o, new Listener(h, o));
@@ -130,6 +131,8 @@ public class FetchTests
         {
             var start = await l.StartAsync();
             var pick = w.Fetch.For("Slow Song").PickId;
+            // Past searching, as the comment above says (a skip during the search would cancel the job, not leave it pending).
+            await Wait.Until(() => w.Slskd.Enqueued.Count == 1, "the download started");
 
             var first = await l.TopUpAsync();
             Assert.Equal(1, o.Status.PassedOver);
@@ -366,7 +369,8 @@ public class FetchTests
         {
             await l.StartAsync();
             Assert.Equal(2, w.Fetch.Requests.Count);
-            await Wait.Until(() => w.Coordinator.Status.InFlight + w.Coordinator.Status.Ingesting == 2, "both fetches running");
+            // Both past searching (a search still running when the second top-up skips the pick would be cancelled, not run on).
+            await Wait.Until(() => w.Slskd.Enqueued.Count == 2 && w.Coordinator.Status.InFlight + w.Coordinator.Status.Ingesting == 2, "both fetches downloading or later");
 
             await l.TopUpAsync();
             await l.TopUpAsync();
@@ -500,6 +504,235 @@ public class FetchTests
         finally
         {
             await DisposeAsync(h, w);
+        }
+    }
+
+    /// <summary>A peer whose download makes steady progress until <paramref name="release"/> completes, then succeeds.</summary>
+    private static TransferScript Held(Task release) => new(e => release.IsCompleted
+        ? new TransferStep("Completed, Succeeded", 8_000_000, 1_000_000)
+        : new TransferStep("InProgress", Math.Min(7_999_999, 1 + (long)(e.TotalSeconds * 1000)), 1_000_000));
+
+    /// <summary>Plays entries 0 and 1 of a new three-song album (the second-to-last song: a start fire). Returns the start batch.</summary>
+    private static async Task<Guid[]> StartAlbumAsync(OrchestratorHarness h, Orchestrator o, Guid[] album)
+    {
+        h.Time.Advance(TimeSpan.FromSeconds(200));
+        await h.Send(o, Sessions.WebAt(album, 0));
+        h.Time.Advance(TimeSpan.FromSeconds(200));
+        var before = h.Jellyfin.PlayLasts.Count;
+        await h.Send(o, Sessions.WebAt(album, 1));
+        Assert.Equal(before + 1, h.Jellyfin.PlayLasts.Count);
+        return h.Jellyfin.PlayLasts.Last().ItemIds;
+    }
+
+    [Fact]
+    public async Task FE10_Another_album_mid_fetch_cancels_the_old_runs_queued_jobs_and_its_running_downloads_finish_and_are_owned()
+    {
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        DeezerTrack[] songs = [];
+        var (h, w, o, l) = await CreateAsync(FetchMode.Live, w =>
+        {
+            songs = [w.Track("Radio C", "Held One"), w.Track("Radio D", "Held Two"), w.Track("Radio E", "Queued One"), w.Track("Radio F", "Queued Two")];
+            w.Radio(songs);
+            w.Offer("Radio C", "Held One", ("carol", 2_000_000, FetchWorld.Mp3("Radio C", "Held One")));
+            w.Offer("Radio D", "Held Two", ("dave", 2_000_000, FetchWorld.Mp3("Radio D", "Held Two")));
+            w.Slskd.Peers["carol"] = Held(release.Task);
+            w.Slskd.Peers["dave"] = Held(release.Task);
+            w.OfferGood("Radio E", "Queued One", "erin");
+            w.OfferGood("Radio F", "Queued Two", "frank");
+        }, scale: 50);
+        try
+        {
+            // Run 1 asks for all four; two slots: the two held songs download, the other two wait in the queue.
+            await l.StartAsync();
+            var oldRun = w.Fetch.For("Held One").RunId;
+            Assert.Equal(4, w.Fetch.Requests.Count);
+            await Wait.Until(() => w.Slskd.Enqueued.Count == 2 && w.Coordinator.Status is { InFlight: 2, Queued: 2 }, "two downloading, two queued");
+
+            // The user starts another album (Deezer has nothing new for it): run 1 is replaced.
+            w.Radio();
+            var second = await StartAlbumAsync(h, o, [Catalog.G(600), Catalog.G(601), Catalog.G(602)]);
+
+            Assert.All(second, id => Assert.Contains(id, CatalogSongs));
+            Assert.Equal((oldRun, "replaced"), Assert.Single(w.Fetch.EndedRuns));
+            Assert.Equal(2, Assert.Single(w.CoordinatorLog.Named("run.ended")).Fields["CancelledJobs"]);
+            foreach (var title in new[] { "Queued One", "Queued Two" })
+            {
+                Assert.Equal(FetchFailure.Cancelled, Assert.IsType<FetchReadiness.Failed>(w.Readiness(title)).Reason);
+            }
+
+            foreach (var title in new[] { "Held One", "Held Two" })
+            {
+                Assert.Equal(FetchStage.Downloading, Assert.IsType<FetchReadiness.Pending>(w.Readiness(title)).Stage);
+            }
+
+            Assert.Equal(2, w.Coordinator.Status.Cancelled);
+            Assert.Equal(0, w.Coordinator.Status.Queued);
+
+            // The running downloads finish, are imported and ingested, and the songs are owned.
+            release.SetResult();
+            await w.UntilReadyAsync("Held One");
+            await w.UntilReadyAsync("Held Two");
+            var heldOne = ((FetchReadiness.Ready)w.Readiness("Held One")).ItemId;
+            var heldTwo = ((FetchReadiness.Ready)w.Readiness("Held Two")).ItemId;
+            Assert.Equal(heldOne, w.Owned.Resolve(w.Fetch.For("Held One").Candidate.Key, 200)?.ItemId);
+            Assert.Equal(heldTwo, w.Owned.Resolve(w.Fetch.For("Held Two").Candidate.Key, 200)?.ItemId);
+            Assert.Equal(["ready", "ready"], w.Query("SELECT state FROM fetched_files ORDER BY id"));
+
+            // The cancelled songs were never searched for, let alone downloaded.
+            var cancelledQueries = SoulseekQueries.For("Radio E", "Queued One").Concat(SoulseekQueries.For("Radio F", "Queued Two")).ToHashSet();
+            Assert.DoesNotContain(w.Slskd.Started, q => cancelledQueries.Contains(q));
+            Assert.Equal(["carol", "dave"], w.Slskd.Enqueued.Select(e => e.Username).Order());
+
+            // A later run whose suggestions hold the two songs queues the server copies: no new fetch.
+            w.Radio(songs[0], songs[1]);
+            var third = await StartAlbumAsync(h, o, [Catalog.G(650), Catalog.G(651), Catalog.G(652)]);
+
+            Assert.Equal(new[] { heldOne, heldTwo }.Order(), third.Order());
+            Assert.Equal(4, w.Fetch.Requests.Count);
+            Assert.Equal(["deezer_radio+server"], w.Query($"SELECT source FROM added_items WHERE item_id = '{heldOne:N}'"));
+            Assert.Equal(2, w.Slskd.Enqueued.Count);
+            Assert.Equal(0, o.Status.Failed);
+        }
+        finally
+        {
+            await DisposeAsync(h, w);
+        }
+    }
+
+    [Fact]
+    public async Task FE11_A_restart_mid_fetch_settles_the_interrupted_rows_and_fetches_nothing_twice()
+    {
+        var hold = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var (h, w, o, l) = await CreateAsync(FetchMode.Live, w =>
+        {
+            // Jellyfin does not list the imported song before the restart, so its job waits in ingest.
+            w.H.Jellyfin.IngestDelay = null;
+            w.Radio(w.Track("Radio C", "Held Song"), w.Track("Radio D", "Imported Song"));
+            w.Offer("Radio C", "Held Song", ("carol", 2_000_000, FetchWorld.Mp3("Radio C", "Held Song")));
+            w.Slskd.Peers["carol"] = Held(hold.Task);
+            w.OfferGood("Radio D", "Imported Song", "dave");
+            var radioDir = w.RadioDir;
+            w.Importer.Before = r =>
+            {
+                // The scripted importer puts no file in music-radio; the real one does, and reconciliation looks for it.
+                var path = Path.Combine(radioDir, "soulseek", r.Artist, r.Title + ".mp3");
+                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                File.WriteAllBytes(path, [1, 2, 3]);
+                return Task.CompletedTask;
+            };
+        }, scale: 50);
+        try
+        {
+            await l.StartAsync();
+            var heldPick = w.Fetch.For("Held Song");
+            var importedKey = w.Fetch.For("Imported Song").Candidate.Key;
+            await Wait.Until(() =>
+                w.Query("SELECT state FROM fetched_files WHERE title = 'Held Song'") is ["downloading"]
+                && w.Query("SELECT state FROM fetched_files WHERE title = 'Imported Song'") is ["imported"]
+                && w.Coordinator.Status.Ingesting == 1, "one song downloading, one imported and waiting for Jellyfin");
+            var heldJob = w.Query("SELECT job_id FROM fetched_files WHERE title = 'Held Song'").Single();
+            var heldTransfer = Guid.Parse(w.Query("SELECT transfer_id FROM fetched_files WHERE title = 'Held Song'").Single());
+            var partial = Path.Combine(w.DownloadsDir, "encore", heldJob);
+            Directory.CreateDirectory(partial);
+            File.WriteAllBytes(Path.Combine(partial, "01 Held Song.mp3"), [1]);
+
+            // Restart: the host stops; a new process starts on the same database and folders. Jellyfin now lists what it is told about.
+            h.Jellyfin.IngestDelay = TimeSpan.FromSeconds(60);
+            o.Dispose();
+            w = await w.RestartAsync();
+            h.RestartStore();
+            o = h.CreateOrchestrator();
+            await o.RefreshAllowListAsync();
+            l.Restarted(o);
+
+            // Reconciliation: the interrupted download fails as restart, its slskd transfer and folder are removed; the imported song is reported again.
+            var cleanup = Assert.Single(w.WorkerLog.Named("import.cleanup"));
+            Assert.Equal(1, cleanup.Fields["RowsFailed"]);
+            Assert.Equal(1, cleanup.Fields["RowsReingested"]);
+            Assert.Equal(["failed|restart"], w.Query("SELECT state || '|' || fail_reason FROM fetched_files WHERE title = 'Held Song'"));
+            Assert.Contains(w.Slskd.CancelledTransfers, t => t.User == "carol" && t.Id == heldTransfer && t.Remove);
+            Assert.False(Directory.Exists(partial));
+            Assert.Equal(FetchReasons.Unknown, Assert.IsType<FetchReadiness.Failed>(w.Coordinator.GetReadiness(heldPick.PickId)).Reason);
+
+            await Wait.Until(() => w.Query("SELECT state FROM fetched_files WHERE title = 'Imported Song'") is ["ready"], "the imported song ready", 15_000);
+            var importedId = w.FetchedId("Radio D", "Imported Song")!.Value;
+            Assert.Equal([importedId.ToString("N")], w.Query("SELECT jellyfin_item_id FROM fetched_files WHERE title = 'Imported Song'"));
+            Assert.Equal(importedId, w.Owned.Resolve(importedKey, 200)?.ItemId);
+
+            // The radio carries on: the imported song goes out as the server copy; it is never downloaded again.
+            var topUp = await l.TopUpAsync();
+
+            Assert.Contains(importedId, topUp);
+            Assert.Equal(2, topUp.Length);
+            Assert.Equal(["deezer_radio+server"], w.Query($"SELECT source FROM added_items WHERE item_id = '{importedId:N}'"));
+            Assert.DoesNotContain(w.Fetch.Requests, r => r.Candidate.Title == "Imported Song");
+            Assert.Single(w.Slskd.Enqueued, e => e.Username == "dave");
+            Assert.Single(w.Query("SELECT id FROM fetched_files WHERE title = 'Imported Song'"));
+            Assert.Equal(0, o.Status.Failed);
+        }
+        finally
+        {
+            hold.TrySetResult();
+            o.Dispose();
+            await DisposeAsync(h, w);
+        }
+    }
+
+    [Fact]
+    public async Task FE12_With_slskd_down_the_radio_goes_on_with_owned_songs_and_health_is_ok_with_a_warning()
+    {
+        Guid owned = default;
+        var (h, w, o, l) = await CreateAsync(FetchMode.Live, w =>
+        {
+            w.Slskd.Down = new HttpRequestException("Connection refused (gluetun-slskd:5030)");
+            owned = w.OwnSong(80_001, "Radio A", "Owned Hit");
+            w.Radio(w.Track("Radio B", "New Song"), w.Track("Radio A", "Owned Hit"));
+            w.OfferGood("Radio B", "New Song");
+        }, waitAvailable: false);
+        try
+        {
+            await Wait.Until(() => w.Coordinator.Status.SlskdReachable == false, "the slskd check failed");
+
+            var start = await l.StartAsync();
+            var first = await l.TopUpAsync();
+            var second = await l.TopUpAsync();
+
+            Assert.Equal(owned, start[0]);
+            Assert.All(new[] { start, first, second }, batch => Assert.Equal(2, batch.Length));
+            Assert.All(start.Concat(first).Concat(second), id => Assert.True(id == owned || CatalogSongs.Contains(id), $"{id} is not an owned song"));
+            Assert.Empty(w.Fetch.Requests);
+            Assert.Empty(w.Slskd.Started);
+            Assert.Empty(w.Slskd.Enqueued);
+            Assert.Contains(h.Log.Named("pool.planned"), e => (string?)e.Fields["DropReason"] == AvailabilityReasons.SlskdUnreachable);
+            Assert.True(l.HeartbeatFresh);
+            Assert.Equal(0, o.Status.Failed);
+
+            var health = Health(h, w, o);
+            Assert.Equal(200, health.Code);
+            Assert.Equal("ok", health.Report.Status);
+            Assert.Equal(["slskd: unreachable"], health.Report.Warnings);
+            Assert.False(health.Report.Slskd.Reachable);
+            Assert.Equal("live", health.Report.Fetch.Mode);
+            Assert.False(health.Report.Fetch.Available);
+            Assert.Equal(AvailabilityReasons.SlskdUnreachable, health.Report.Fetch.UnavailableReason);
+
+            // slskd comes back: the next state check clears the warning.
+            w.Slskd.Down = null;
+            await Wait.Until(() => w.Coordinator.Availability.Available, "fetching available again", 15_000);
+            Assert.Empty(Health(h, w, o).Report.Warnings);
+        }
+        finally
+        {
+            await DisposeAsync(h, w);
+        }
+
+        static (int Code, Encore.Health.HealthReport Report) Health(OrchestratorHarness h, FetchWorld w, Orchestrator o)
+        {
+            var now = h.Time.GetUtcNow();
+            var options = h.Options with { SlskdUrl = new Uri("http://gluetun-slskd:5030"), SlskdApiKey = "slskd-key-for-fe12-only" };
+            var watcher = new Encore.Watch.WatcherStatus { State = Encore.Watch.SocketState.Subscribed, Since = now - TimeSpan.FromMinutes(10), LastSessionsAt = now };
+            return Encore.Health.HealthEvaluator.Evaluate(new Encore.Health.HealthInput(options, "0.2.0", now, watcher, o.Status, h.DbPath, 2,
+                new Encore.Health.FetchHealthInput(w.Coordinator.Status, 0, w.Owned.IsLoaded, w.Owned.Count, w.Owned.RefreshedUtc, null)));
         }
     }
 }

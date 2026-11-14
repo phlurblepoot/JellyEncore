@@ -97,27 +97,52 @@ internal sealed class FetchWorld : IAsyncDisposable
     private const long SeedDeezerId = 4242;
     private int _nextTrack = 70_000;
     private bool _started;
+    private bool _stopped;
+    private bool _ownsRoot = true;
 
     public FetchWorld(OrchestratorHarness h, FetchMode mode, double scale = 100)
+        : this(h, mode, null, scale)
+    {
+    }
+
+    /// <summary>With <paramref name="before"/>: the process after a restart, on the same folders, clock and outside services (slskd, Deezer, ListenBrainz).</summary>
+    private FetchWorld(OrchestratorHarness h, FetchMode mode, FetchWorld? before, double scale)
     {
         H = h;
         Mode = mode;
-        Root = Path.Combine(Path.GetTempPath(), "encore-t51-" + Guid.NewGuid().ToString("N"));
-        RadioDir = Path.Combine(Root, "radio");
-        DownloadsDir = Path.Combine(Root, "downloads");
-        Directory.CreateDirectory(RadioDir);
-        Directory.CreateDirectory(DownloadsDir);
+        if (before is null)
+        {
+            Root = Path.Combine(Path.GetTempPath(), "encore-t51-" + Guid.NewGuid().ToString("N"));
+            RadioDir = Path.Combine(Root, "radio");
+            DownloadsDir = Path.Combine(Root, "downloads");
+            Directory.CreateDirectory(RadioDir);
+            Directory.CreateDirectory(DownloadsDir);
 
-        Clock = new ScaledClock(h.Time.GetUtcNow(), scale);
-        h.Jellyfin.Clock = Clock;
-        h.Jellyfin.IngestDelay = TimeSpan.FromSeconds(60);
-        h.Jellyfin.VirtualFolders = [new VirtualFolderInfo { Name = "Music", Locations = [RadioJellyfinDir], CollectionType = "music", ItemId = MusicLibrary }];
+            Clock = new ScaledClock(h.Time.GetUtcNow(), scale);
+            h.Jellyfin.Clock = Clock;
+            h.Jellyfin.IngestDelay = TimeSpan.FromSeconds(60);
+            h.Jellyfin.VirtualFolders = [new VirtualFolderInfo { Name = "Music", Locations = [RadioJellyfinDir], CollectionType = "music", ItemId = MusicLibrary }];
+            Slskd = new FakeSlskd(Clock, DownloadsDir);
+            Deezer = new FakeDeezer();
+            ListenBrainz = new FakeListenBrainz();
+            Deezer.AddArtist(SeedDeezerId, SeedArtistName);
+        }
+        else
+        {
+            Root = before.Root;
+            RadioDir = before.RadioDir;
+            DownloadsDir = before.DownloadsDir;
+            Clock = before.Clock;
+            Slskd = before.Slskd;
+            Deezer = before.Deezer;
+            ListenBrainz = before.ListenBrainz;
+            _nextTrack = before._nextTrack;
+        }
 
         Store = FetchStore.Open(h.DbPath);
         Owned = new OwnedIndex(h.Jellyfin, RadioJellyfinDir, NullLogger<OwnedIndex>.Instance, Clock, refreshEvery: TimeSpan.FromDays(1000));
         Coordinator = new FetchCoordinator(mode == FetchMode.Off ? FetchMode.Live : mode, Owned, CoordinatorLog, Clock);
         Fetch = new RecordingFetch(Coordinator);
-        Slskd = new FakeSlskd(Clock, DownloadsDir);
         Fetcher = new SoulseekFetcher(Slskd, new SearchBudget(new SearchLimit(34, 220), Clock), new Scorer(), Store, DownloadsDir, FetcherLog, Clock);
         Importer = new FakeImporter(RadioDir);
         Ingest = new JellyfinIngest(h.Jellyfin, RadioJellyfinDir, NullLogger<JellyfinIngest>.Instance, Clock);
@@ -125,7 +150,6 @@ internal sealed class FetchWorld : IAsyncDisposable
             new FetchWorkerSettings(RadioDir, RadioJellyfinDir, DownloadsDir, 2), WorkerLog, Clock);
         Candidates = new CandidateSource(Deezer, ListenBrainz, h.Jellyfin, Owned, new FetchStoreNegativeCache(Store),
             new DiscoveryRuntime(null, Clock), NullLogger<CandidateSource>.Instance);
-        Deezer.AddArtist(SeedDeezerId, SeedArtistName);
 
         h.Options = h.Options with { FetchMode = mode };
         h.Fetch = Fetch;
@@ -165,9 +189,9 @@ internal sealed class FetchWorld : IAsyncDisposable
 
     public CandidateSource Candidates { get; }
 
-    public FakeDeezer Deezer { get; } = new();
+    public FakeDeezer Deezer { get; }
 
-    public FakeListenBrainz ListenBrainz { get; } = new();
+    public FakeListenBrainz ListenBrainz { get; }
 
     public ListLogger<FetchCoordinator> CoordinatorLog { get; } = new();
 
@@ -221,8 +245,8 @@ internal sealed class FetchWorld : IAsyncDisposable
 
     // ------------------------------------------------------------ running
 
-    /// <summary>Starts the worker (not in mode off: Program registers no worker then) and waits until the owned index is loaded and fetching is available.</summary>
-    public async Task StartAsync()
+    /// <summary>Starts the worker (not in mode off: Program registers no worker then) and waits until the owned index is loaded and (unless told not to) fetching is available.</summary>
+    public async Task StartAsync(bool waitAvailable = true)
     {
         if (Mode == FetchMode.Off)
         {
@@ -233,7 +257,44 @@ internal sealed class FetchWorld : IAsyncDisposable
         await Worker.StartAsync(CancellationToken.None);
         await Worker.Reconciled.WaitAsync(TimeSpan.FromSeconds(10));
         await Wait.Until(() => Owned.IsLoaded, "the owned index loaded");
-        await Wait.Until(() => Coordinator.Availability.Available, "fetching available");
+        if (waitAvailable)
+        {
+            await Wait.Until(() => Coordinator.Availability.Available, "fetching available");
+        }
+    }
+
+    /// <summary>
+    /// A process restart: stops this worker as the host does (rows stay as they are), closes its store, and builds a new
+    /// fetch side on the same database, folders, clock and outside services, then starts it (restart reconciliation runs
+    /// first). The harness's fetch, candidates and owned index point at the new side; this one no longer owns the folders.
+    /// </summary>
+    public async Task<FetchWorld> RestartAsync()
+    {
+        await StopAsync();
+        _ownsRoot = false;
+        var next = new FetchWorld(H, Mode, this, Clock.Scale);
+        await next.StartAsync();
+        return next;
+    }
+
+    private async Task StopAsync()
+    {
+        if (_stopped)
+        {
+            return;
+        }
+
+        _stopped = true;
+        if (_started)
+        {
+            _started = false;
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await Worker.StopAsync(cts.Token);
+        }
+
+        Worker.Dispose();
+        Store.Dispose();
+        SqliteConnection.ClearAllPools();
     }
 
     public FetchReadiness Readiness(string title) => Coordinator.GetReadiness(Fetch.For(title).PickId);
@@ -265,16 +326,12 @@ internal sealed class FetchWorld : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        if (_started)
+        await StopAsync();
+        if (!_ownsRoot)
         {
-            _started = false;
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-            await Worker.StopAsync(cts.Token);
+            return;
         }
 
-        Worker.Dispose();
-        Store.Dispose();
-        SqliteConnection.ClearAllPools();
         try
         {
             Directory.Delete(Root, recursive: true);
@@ -291,6 +348,11 @@ internal sealed class FetchWorld : IAsyncDisposable
 /// <summary>Plays a web album the way the buffer tests do, recording each send and how long each snapshot took.</summary>
 internal sealed class Listener(OrchestratorHarness h, Encore.Orchestration.Orchestrator o)
 {
+    private Encore.Orchestration.Orchestrator _o = o;
+
+    /// <summary>After a restart: the same listener (queue and position) goes on with the new orchestrator.</summary>
+    public void Restarted(Encore.Orchestration.Orchestrator orchestrator) => _o = orchestrator;
+
     public static readonly Guid[] Album = [Catalog.G(500), Catalog.G(501), Catalog.G(502)];
 
     /// <summary>The queue as the client reports it: the album, then every song Encore sent.</summary>
@@ -316,9 +378,9 @@ internal sealed class Listener(OrchestratorHarness h, Encore.Orchestration.Orche
         var before = h.Jellyfin.PlayLasts.Count;
         var list = (reported ?? Queue).ToArray();
         var watch = Stopwatch.StartNew();
-        await h.Send(o, Sessions.WebAt(list, index));
+        await h.Send(_o, Sessions.WebAt(list, index));
         Durations.Add(watch.Elapsed);
-        HeartbeatFresh &= o.Status.LastHeartbeatUtc == h.Time.GetUtcNow();
+        HeartbeatFresh &= _o.Status.LastHeartbeatUtc == h.Time.GetUtcNow();
         if (h.Jellyfin.PlayLasts.Count == before)
         {
             return null;

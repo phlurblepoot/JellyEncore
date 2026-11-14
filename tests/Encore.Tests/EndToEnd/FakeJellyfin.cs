@@ -57,8 +57,23 @@ internal sealed class FakeJellyfin : IJellyfinClient
     public Task<QueryResult<BaseItemDto>> GetAudioPageAsync(int startIndex, int limit, CancellationToken ct = default) =>
         Task.FromResult(new QueryResult<BaseItemDto> { Items = Audio.Skip(startIndex).Take(limit).ToList(), TotalRecordCount = Audio.Count });
 
-    public Task<IReadOnlyList<BaseItemDto>> GetItemsByIdsAsync(IReadOnlyCollection<Guid> ids, string fields, CancellationToken ct = default) =>
-        Task.FromResult<IReadOnlyList<BaseItemDto>>(ids.Where(ItemsById.ContainsKey).Select(id => ItemsById[id]).ToList());
+    /// <summary>Items by id: <see cref="ItemsById"/>, then any reported file (as Jellyfin lists a song it ingested).</summary>
+    public Task<IReadOnlyList<BaseItemDto>> GetItemsByIdsAsync(IReadOnlyCollection<Guid> ids, string fields, CancellationToken ct = default)
+    {
+        var found = new List<BaseItemDto>();
+        lock (_reported)
+        {
+            foreach (var id in ids)
+            {
+                if (ItemsById.TryGetValue(id, out var item) || (item = _reported.FirstOrDefault(r => r.Item.Id == id).Item) is not null)
+                {
+                    found.Add(item);
+                }
+            }
+        }
+
+        return Task.FromResult<IReadOnlyList<BaseItemDto>>(found);
+    }
 
     // ---- Jellyfin ingest (T48) -------------------------------------------------------------------
 
@@ -100,7 +115,19 @@ internal sealed class FakeJellyfin : IJellyfinClient
             MediaUpdatedPaths.Enqueue(path);
             if (IngestDelay is { } delay)
             {
-                var item = new BaseItemDto { Id = Guid.NewGuid(), Type = "Audio", Name = System.IO.Path.GetFileNameWithoutExtension(path), Path = path };
+                // Filed as {dir}/{source}/{artist}/{title}.ext (the importer's layout): the item carries that artist and title.
+                var segments = path.Split('/');
+                var artist = segments.Length >= 2 ? segments[^2] : null;
+                var item = new BaseItemDto
+                {
+                    Id = Guid.NewGuid(),
+                    Type = "Audio",
+                    MediaType = "Audio",
+                    Name = System.IO.Path.GetFileNameWithoutExtension(path),
+                    Path = path,
+                    RunTimeTicks = TimeSpan.FromSeconds(200).Ticks,
+                    ArtistItems = artist is null ? null : [new NameGuidPair { Name = artist }],
+                };
                 lock (_reported)
                 {
                     _reported.Add((item, Clock.GetUtcNow() + delay));

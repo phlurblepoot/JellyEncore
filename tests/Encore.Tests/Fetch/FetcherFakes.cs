@@ -94,11 +94,20 @@ internal sealed class FakeSlskd(TimeProvider clock, string downloadsDir) : ISlsk
 
     private int _busyLeft = -1;
 
-    public Task<SlskdServerState> GetServerStateAsync(CancellationToken ct) => Task.FromResult(new SlskdServerState(true, true, "Connected, LoggedIn"));
+    /// <summary>Set to make slskd unreachable: the state check and new searches throw this.</summary>
+    public Exception? Down { get; set; }
+
+    public Task<SlskdServerState> GetServerStateAsync(CancellationToken ct) =>
+        Down is { } down ? Task.FromException<SlskdServerState>(down) : Task.FromResult(new SlskdServerState(true, true, "Connected, LoggedIn"));
 
     public Task<SlskdSearch> StartSearchAsync(SlskdSearchRequest request, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
+        if (Down is { } down)
+        {
+            throw down;
+        }
+
         OnCall?.Invoke("start_search");
         var script = Searches.GetValueOrDefault(request.SearchText) ?? new SearchScript([], TimeSpan.FromSeconds(1));
         lock (_gate)
