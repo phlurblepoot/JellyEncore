@@ -1,0 +1,11 @@
+**/bin/
+**/obj/
+.git/
+.github/
+.vs/
+.knowledge/
+**/TestResults/
+*.user
+Dockerfile
+.dockerignore
+README.md
