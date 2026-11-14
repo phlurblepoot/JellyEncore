@@ -1,0 +1,56 @@
+using System.Collections.Immutable;
+
+namespace Encore.Trigger;
+
+/// <summary>
+/// Immutable per-session trigger memory. The orchestrator keeps the instance returned by
+/// <see cref="TriggerEngine"/> and passes it back with the next snapshot.
+/// </summary>
+public sealed record SessionMemory
+{
+    public required string SessionId { get; init; }
+
+    /// <summary>The current play instance, or the last one when <see cref="Idle"/> is true. Null before the first item.</summary>
+    public PlayInstance? Instance { get; init; }
+
+    /// <summary>True when the latest snapshot had no NowPlayingItem: the next item starts a new instance.</summary>
+    public bool Idle { get; init; }
+
+    /// <summary>
+    /// EntryQueue of the previous instance on this session. Null means unknown: the first instance
+    /// seen since Encore started, so a Finamp last-song decision cannot be made (<c>no_history</c>).
+    /// </summary>
+    public IReadOnlyList<QueueEntry>? PrevEntryQueue { get; init; }
+
+    /// <summary>Whether <c>not_allowed</c> was already reported for this session.</summary>
+    public bool NotAllowedReported { get; init; }
+
+    /// <summary>Number of play instances seen on this session.</summary>
+    public long InstanceCount { get; init; }
+
+    public static SessionMemory Create(string sessionId) => new() { SessionId = sessionId };
+}
+
+/// <summary>A run of snapshots with the same playing item and the same session PlaylistItemId.</summary>
+public sealed record PlayInstance
+{
+    public required Guid ItemId { get; init; }
+
+    public string? PlaylistItemId { get; init; }
+
+    /// <summary>The queue from the instance's first snapshot (fresh, unlike later ones in the stop-gap race).</summary>
+    public required IReadOnlyList<QueueEntry> EntryQueue { get; init; }
+
+    /// <summary>1-based instance number within the session.</summary>
+    public required long Sequence { get; init; }
+
+    public InstanceState State { get; init; } = InstanceState.Evaluating;
+
+    /// <summary>Fire attempts made in this instance.</summary>
+    public int Attempts { get; init; }
+
+    public DateTimeOffset? FailedAt { get; init; }
+
+    /// <summary>Skip reasons already reported in this instance.</summary>
+    public ImmutableHashSet<SkipReason> ReportedReasons { get; init; } = [];
+}
