@@ -355,6 +355,13 @@ public static class EncoreOptionsLoader
             return null;
         }
 
+        // The X-API-Key header refuses control characters; catching them here gives a config error (exit 2), not a crash at the first slskd call.
+        if (text.Any(char.IsControl))
+        {
+            errors.Add(new(name, "ENCORE_SLSKD_API_KEY contains a control character"));
+            return null;
+        }
+
         if (text.Length is < 16 or > 255)
         {
             errors.Add(new(name, "ENCORE_SLSKD_API_KEY must be 16 to 255 characters"));

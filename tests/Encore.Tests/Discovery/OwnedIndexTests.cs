@@ -151,6 +151,27 @@ public sealed class OwnedIndexTests
     }
 
     [Fact]
+    public async Task OI07_a_failed_first_load_is_tried_again_after_a_minute_not_30()
+    {
+        var clock = new ManualClock();
+        var lib = new FakeLibrary { Audio = [Audio(1, "A", "One")], Failure = new JellyfinRequestException("GetAudioPage", 503) };
+        var (index, log) = Build(lib, clock);
+
+        using var cts = new CancellationTokenSource();
+        var run = index.RunAsync(cts.Token);
+        await Wait.Until(() => log.Named("owned_index.failed").Any() && clock.PendingTimers > 0, "the failed first load");
+        Assert.False(index.IsLoaded);
+
+        lib.Failure = null;
+        clock.Advance(OwnedIndex.RetryUntilLoaded);
+        await Wait.Until(() => index.IsLoaded, "the retry");
+        Assert.NotNull(index.Resolve(K("A", "One"), null));
+
+        cts.Cancel();
+        await run;
+    }
+
+    [Fact]
     public async Task OI07_a_first_load_that_fails_leaves_the_index_not_loaded()
     {
         var lib = new FakeLibrary { Failure = new JellyfinRequestException("GetAudioPage", 503) };

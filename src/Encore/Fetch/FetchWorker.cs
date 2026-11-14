@@ -411,26 +411,36 @@ public sealed class FetchWorker : BackgroundService
         {
             while (!stopping.IsCancellationRequested)
             {
-                var now = _time.GetUtcNow();
-                if (now >= nextSlskd)
+                // One bad check must not end this loop: it also runs the deadline sweep for the life of the process.
+                try
                 {
-                    nextSlskd = now + FetchLimits.SlskdStateEvery;
-                    await CheckSlskdAsync(stopping).ConfigureAwait(false);
+                    var now = _time.GetUtcNow();
+                    if (now >= nextSlskd)
+                    {
+                        nextSlskd = now + FetchLimits.SlskdStateEvery;
+                        await CheckSlskdAsync(stopping).ConfigureAwait(false);
+                    }
+
+                    if (Live && now >= nextLibrary)
+                    {
+                        nextLibrary = now + FetchLimits.LibraryCheckEvery;
+                        await CheckLibraryAsync(stopping).ConfigureAwait(false);
+                    }
+
+                    if (Live && now >= nextFree)
+                    {
+                        nextFree = now + FetchLimits.FreeSpaceEvery;
+                        _coordinator.SetFreeBytes(_freeSpace.FreeBytes(_settings.RadioDir));
+                    }
+
+                    _coordinator.Sweep();
+                }
+                catch (Exception e) when (e is not OperationCanceledException || !stopping.IsCancellationRequested)
+                {
+                    _log.WorkerCrashed("fetch", $"periodic checks: {e.GetType().Name}");
+                    _coordinator.NoteError($"periodic checks: {e.GetType().Name}");
                 }
 
-                if (Live && now >= nextLibrary)
-                {
-                    nextLibrary = now + FetchLimits.LibraryCheckEvery;
-                    await CheckLibraryAsync(stopping).ConfigureAwait(false);
-                }
-
-                if (Live && now >= nextFree)
-                {
-                    nextFree = now + FetchLimits.FreeSpaceEvery;
-                    _coordinator.SetFreeBytes(_freeSpace.FreeBytes(_settings.RadioDir));
-                }
-
-                _coordinator.Sweep();
                 await Task.Delay(_settings.Tick, _time, stopping).ConfigureAwait(false);
             }
         }
@@ -451,8 +461,9 @@ public sealed class FetchWorker : BackgroundService
             loggedIn = s.IsLoggedIn;
             state = s.State;
         }
-        catch (Exception e) when (e is SlskdException or HttpRequestException || (e is OperationCanceledException && !stopping.IsCancellationRequested))
+        catch (Exception e) when (e is not OperationCanceledException || !stopping.IsCancellationRequested)
         {
+            // Any failure means slskd cannot be used now; only slskd's own messages (which never hold the key or URL) are kept.
             reachable = false;
             loggedIn = false;
             state = "unreachable";
@@ -479,6 +490,10 @@ public sealed class FetchWorker : BackgroundService
         {
             // Keep the last answer; the next check (or the next ingest) tries again.
             _coordinator.NoteError($"library check: {e.Message}");
+        }
+        catch (Exception e) when (e is not OperationCanceledException || !stopping.IsCancellationRequested)
+        {
+            _coordinator.NoteError($"library check: {e.GetType().Name}");
         }
     }
 

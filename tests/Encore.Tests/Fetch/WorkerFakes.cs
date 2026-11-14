@@ -204,7 +204,11 @@ internal sealed class FakeIngest : IJellyfinIngest
     public Func<string, string, CancellationToken, Task<IngestResult>> Behavior { get; set; } =
         (_, _, _) => Task.FromResult(new IngestResult(IngestOutcome.Ready, Guid.NewGuid(), TimeSpan.FromSeconds(5)));
 
-    public Task<LibraryCheck> CheckLibraryAsync(CancellationToken ct = default) => Task.FromResult(Library);
+    /// <summary>Set to make the library check throw this.</summary>
+    public Exception? LibraryFailure { get; set; }
+
+    public Task<LibraryCheck> CheckLibraryAsync(CancellationToken ct = default) =>
+        LibraryFailure is { } e ? Task.FromException<LibraryCheck>(e) : Task.FromResult(Library);
 
     public Task<IngestResult> IngestAsync(string jobId, string jellyfinPath, CancellationToken ct = default)
     {

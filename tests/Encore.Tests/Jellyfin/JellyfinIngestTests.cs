@@ -309,6 +309,21 @@ public sealed class JellyfinIngestTests
     }
 
     [Fact]
+    public async Task JI08_An_unexpected_poll_error_does_not_end_the_shared_loop()
+    {
+        _jellyfin.IngestDelay = TimeSpan.Zero;
+        _jellyfin.RecentFailures.Enqueue(new HttpRequestException("boom"));
+        var task = _ingest.IngestAsync("job-1", PathA);
+
+        await Tick(1);
+
+        var result = await task.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.True(result.IsReady);
+        Assert.Equal(2, _jellyfin.RecentCalls.Count);
+        Assert.Single(_log.Named("ingest.poll_failed"));
+    }
+
+    [Fact]
     public async Task JI09_Radio_dir_in_no_library_is_refused_without_reporting_or_polling()
     {
         _jellyfin.VirtualFolders = [Music("/music")];

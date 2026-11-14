@@ -31,13 +31,16 @@ public interface IOwnedIndex
 /// <summary>
 /// The owned index. <see cref="RefreshAsync"/> reads every Audio item in pages of 500 and swaps the whole index; a
 /// failed refresh keeps the old one and logs <c>owned_index.failed</c>. <see cref="RunAsync"/> refreshes now and every
-/// 30 minutes (the fetch coordinator owns that loop; fetch mode off never loads the index).
+/// 30 minutes, or every minute while the first load keeps failing (the fetch worker owns that loop; fetch mode off never loads the index).
 /// </summary>
 public sealed class OwnedIndex : IOwnedIndex
 {
     public const int PageSize = 500;
 
     public static readonly TimeSpan RefreshEvery = TimeSpan.FromMinutes(30);
+
+    /// <summary>Until the first load succeeds, a failed load is tried again this soon (fetching waits for the index).</summary>
+    public static readonly TimeSpan RetryUntilLoaded = TimeSpan.FromMinutes(1);
 
     private readonly IJellyfinClient _jellyfin;
     private readonly string _radioPrefix;
@@ -278,15 +281,15 @@ public sealed class OwnedIndex : IOwnedIndex
         }
     }
 
-    /// <summary>Refreshes now, then every 30 minutes, until <paramref name="ct"/> is cancelled. Never throws.</summary>
+    /// <summary>Refreshes now, then every 30 minutes (every minute until the first load works), until <paramref name="ct"/> is cancelled. Never throws.</summary>
     public async Task RunAsync(CancellationToken ct)
     {
         try
         {
             while (!ct.IsCancellationRequested)
             {
-                await RefreshAsync(ct).ConfigureAwait(false);
-                await Task.Delay(_refreshEvery, _time, ct).ConfigureAwait(false);
+                var ok = await RefreshAsync(ct).ConfigureAwait(false);
+                await Task.Delay(ok || IsLoaded ? _refreshEvery : RetryUntilLoaded, _time, ct).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)

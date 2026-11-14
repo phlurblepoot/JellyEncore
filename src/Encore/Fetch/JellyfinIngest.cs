@@ -215,6 +215,12 @@ public sealed class JellyfinIngest : IJellyfinIngest, IDisposable
         {
             _log.IngestPollFailed(e.Message);
         }
+        catch (Exception e) when (e is not OperationCanceledException || !_stop.IsCancellationRequested)
+        {
+            // Any other failure must not end the shared loop: it is also what times waiters out, so a dead loop would
+            // leave every later ingest waiting until shutdown. Kind only; the message could hold a URL.
+            _log.IngestPollFailed(e.GetType().Name);
+        }
 
         var now = _time.GetUtcNow();
         foreach (var waiter in group)

@@ -557,5 +557,20 @@ public class FetchWorkerTests
         await Wait.Until(() => h.Coordinator.Status.RadioDirInLibrary == false, "library checked");
     }
 
+    [Fact]
+    public async Task Unexpected_check_errors_do_not_stop_the_periodic_checks()
+    {
+        await using var h = new WorkerHarness();
+        h.Slskd.Failure = new InvalidOperationException("odd");
+        h.Ingest.LibraryFailure = new InvalidOperationException("odd");
+        await h.StartAsync(waitAvailable: false);
+
+        // The free-space check and the sweep come after both failing checks in the same round.
+        await Wait.Until(() => h.Coordinator.Status.FreeBytes is not null, "free space checked");
+        Assert.False(h.Coordinator.Status.SlskdReachable);
+        Assert.Equal("slskd_unreachable", h.Coordinator.Availability.Reason);
+        Assert.StartsWith("library check:", h.Coordinator.Status.LastError, StringComparison.Ordinal);
+    }
+
     private static Encore.Discovery.TrackKey TrackKeyOf(string artist, string title) => Encore.Discovery.TrackKey.Create(artist, title)!.Value;
 }

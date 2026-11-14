@@ -124,12 +124,14 @@ public sealed class ConfigFetchTests : IDisposable
     [InlineData("SHORTSECRET12345")]
     [InlineData("SLSKDLONG")]
     [InlineData("SLSKDSPACE0123456789 tail")]
+    [InlineData("SLSKDCONTROL")]
     public void CF05_bad_keys_are_errors_and_never_echoed(string kind)
     {
         var key = kind switch
         {
             "SHORTSECRET12345" => "SHORTSECRET1234", // 15 characters
             "SLSKDLONG" => "SLSKDLONG" + new string('x', 247), // 256 characters
+            "SLSKDCONTROL" => "SLSKDCONTROL0123\u0001tail", // a control character that is not whitespace
             _ => kind,
         };
         var env = Fetch("dry_run");
@@ -140,6 +142,7 @@ public sealed class ConfigFetchTests : IDisposable
         Assert.DoesNotContain("SHORTSECRET", error.Message);
         Assert.DoesNotContain("SLSKDLONG", error.Message);
         Assert.DoesNotContain("SLSKDSPACE", error.Message);
+        Assert.DoesNotContain("SLSKDCONTROL", error.Message);
     }
 
     [Fact]
