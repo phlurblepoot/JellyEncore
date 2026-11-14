@@ -48,6 +48,18 @@ internal sealed class FakeJellyfin : IJellyfinClient
     public Task<QueryResult<BaseItemDto>> GetSimilarSongsAsync(Guid songId, Guid userId, int limit = 30, IReadOnlyCollection<Guid>? excludeArtistIds = null, CancellationToken ct = default) =>
         Picks.GetSimilarSongsAsync(songId, userId, limit, excludeArtistIds, ct);
 
+    /// <summary>Every Audio item on the fake server, for the owned index.</summary>
+    public List<BaseItemDto> Audio { get; set; } = [];
+
+    /// <summary>Items <see cref="GetItemsByIdsAsync"/> can return (artists with ProviderIds, say), by id.</summary>
+    public Dictionary<Guid, BaseItemDto> ItemsById { get; } = [];
+
+    public Task<QueryResult<BaseItemDto>> GetAudioPageAsync(int startIndex, int limit, CancellationToken ct = default) =>
+        Task.FromResult(new QueryResult<BaseItemDto> { Items = Audio.Skip(startIndex).Take(limit).ToList(), TotalRecordCount = Audio.Count });
+
+    public Task<IReadOnlyList<BaseItemDto>> GetItemsByIdsAsync(IReadOnlyCollection<Guid> ids, string fields, CancellationToken ct = default) =>
+        Task.FromResult<IReadOnlyList<BaseItemDto>>(ids.Where(ItemsById.ContainsKey).Select(id => ItemsById[id]).ToList());
+
     public Task<QueryResult<BaseItemDto>> GetInstantMixAsync(Guid songId, Guid userId, int limit = 50, CancellationToken ct = default) =>
         Picks.GetInstantMixAsync(songId, userId, limit, ct);
 }

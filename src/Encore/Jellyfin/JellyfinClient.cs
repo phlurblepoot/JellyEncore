@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
@@ -89,6 +90,34 @@ public sealed class JellyfinClient : IJellyfinClient
         RequirePositive(limit);
         var query = Query(("userId", Id(userId)), ("limit", limit.ToString()));
         return GetAsync<QueryResult<BaseItemDto>>($"Items/{Id(songId)}/InstantMix?{query}", "GetInstantMix", ct);
+    }
+
+    public Task<QueryResult<BaseItemDto>> GetAudioPageAsync(int startIndex, int limit, CancellationToken ct = default)
+    {
+        RequirePositive(limit);
+        ArgumentOutOfRangeException.ThrowIfNegative(startIndex);
+        var query = Query(
+            ("recursive", "true"),
+            ("includeItemTypes", "Audio"),
+            ("fields", "Path,DateCreated"),
+            ("startIndex", startIndex.ToString(CultureInfo.InvariantCulture)),
+            ("limit", limit.ToString(CultureInfo.InvariantCulture)),
+            ("enableTotalRecordCount", "true"));
+        return GetAsync<QueryResult<BaseItemDto>>($"Items?{query}", "GetAudioPage", ct);
+    }
+
+    public async Task<IReadOnlyList<BaseItemDto>> GetItemsByIdsAsync(IReadOnlyCollection<Guid> ids, string fields, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(ids);
+        ArgumentException.ThrowIfNullOrWhiteSpace(fields);
+        if (ids.Count == 0)
+        {
+            return [];
+        }
+
+        var query = Query(("ids", string.Join(",", ids.Select(Id))), ("fields", Uri.EscapeDataString(fields).Replace("%2C", ",", StringComparison.Ordinal)));
+        var result = await GetAsync<QueryResult<BaseItemDto>>($"Items?{query}", "GetItemsByIds", ct).ConfigureAwait(false);
+        return result.Items;
     }
 
     public async Task PlayLastAsync(string sessionId, IReadOnlyCollection<Guid> itemIds, CancellationToken ct = default)

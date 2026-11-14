@@ -95,6 +95,15 @@ public sealed record BaseItemDto
     public IReadOnlyList<NameGuidPair>? AlbumArtists { get; init; }
 
     public IReadOnlyList<string>? Genres { get; init; }
+
+    /// <summary>The file path as Jellyfin sees it (only when fields=Path was asked for).</summary>
+    public string? Path { get; init; }
+
+    /// <summary>When the item was added (only when fields=DateCreated was asked for).</summary>
+    public DateTimeOffset? DateCreated { get; init; }
+
+    /// <summary>External ids, e.g. "MusicBrainzArtist" on an artist (only when fields=ProviderIds was asked for).</summary>
+    public IReadOnlyDictionary<string, string>? ProviderIds { get; init; }
 }
 
 public sealed record NameGuidPair

@@ -52,6 +52,10 @@ internal sealed class FakePickClient : IJellyfinClient
         return Answer("similar_songs", items, limit);
     }
 
+    public Task<QueryResult<BaseItemDto>> GetAudioPageAsync(int startIndex, int limit, CancellationToken ct = default) => throw new NotSupportedException();
+
+    public Task<IReadOnlyList<BaseItemDto>> GetItemsByIdsAsync(IReadOnlyCollection<Guid> ids, string fields, CancellationToken ct = default) => throw new NotSupportedException();
+
     public Task<QueryResult<BaseItemDto>> GetInstantMixAsync(Guid songId, Guid userId, int limit = 50, CancellationToken ct = default) =>
         Answer("instant_mix", InstantMix.GetValueOrDefault(songId), limit);
 

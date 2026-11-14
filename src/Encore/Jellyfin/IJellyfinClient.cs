@@ -21,6 +21,15 @@ public interface IJellyfinClient
     /// <summary>GET /Items/{songId}/InstantMix. Fallback 2. Genre-based.</summary>
     Task<QueryResult<BaseItemDto>> GetInstantMixAsync(Guid songId, Guid userId, int limit = 50, CancellationToken ct = default);
 
+    /// <summary>
+    /// GET /Items?recursive=true&amp;includeItemTypes=Audio&amp;fields=Path,DateCreated&amp;startIndex=&amp;limit=&amp;enableTotalRecordCount=true.
+    /// One page of every song on the server (the owned index). No userId: the API key sees every library.
+    /// </summary>
+    Task<QueryResult<BaseItemDto>> GetAudioPageAsync(int startIndex, int limit, CancellationToken ct = default);
+
+    /// <summary>GET /Items?ids=a,b&amp;fields=. Used for an artist's MusicBrainz id (fields=ProviderIds). No userId.</summary>
+    Task<IReadOnlyList<BaseItemDto>> GetItemsByIdsAsync(IReadOnlyCollection<Guid> ids, string fields, CancellationToken ct = default);
+
     /// <summary>POST /Sessions/{sessionId}/Playing with playCommand=PlayLast and itemIds. Expects 204.</summary>
     Task PlayLastAsync(string sessionId, IReadOnlyCollection<Guid> itemIds, CancellationToken ct = default);
 }

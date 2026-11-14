@@ -1,6 +1,3 @@
-using System.Globalization;
-using System.Text;
-
 namespace Encore.Discovery;
 
 /// <summary>Why a Discovery call failed. Quota covers Deezer's error code 4 and a ListenBrainz 429.</summary>
@@ -261,27 +258,10 @@ public sealed class DiscoveryRuntime
         Interlocked.Exchange(ref _lbSkipUntilTicks, (Time.GetUtcNow() + duration).UtcTicks);
 }
 
-/// <summary>Name folding for matching an artist query to Deezer's names: case, accents and spacing ignored.</summary>
+/// <summary>Name folding for matching an artist query to Deezer's names: the TrackKey artist folding (design section 5.1).</summary>
 internal static class NameFold
 {
-    public static string Fold(string? name)
-    {
-        if (string.IsNullOrWhiteSpace(name))
-        {
-            return string.Empty;
-        }
-
-        var sb = new StringBuilder(name.Length);
-        foreach (var c in name.Normalize(NormalizationForm.FormD))
-        {
-            if (CharUnicodeInfo.GetUnicodeCategory(c) != UnicodeCategory.NonSpacingMark)
-            {
-                sb.Append(char.ToLowerInvariant(c));
-            }
-        }
-
-        return string.Join(' ', sb.ToString().Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
-    }
+    public static string Fold(string? name) => KeyText.ArtistKey(name);
 }
 
 /// <summary>Discovery log events (v0.2 design section 13: 7020-7040, numbered like the design ids).</summary>
