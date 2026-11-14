@@ -44,6 +44,21 @@ public sealed class RadioPlan
     public IReadOnlyCollection<Guid> HandedOut => _handedOut;
 
     /// <summary>
+    /// Takes a batch back after a send that clearly failed (the songs were not queued): the songs go to the front of
+    /// the plan, in order, and are no longer counted as handed out, so the retry sends the same ones.
+    /// </summary>
+    public void PutBack(IReadOnlyList<PickedItem> batch)
+    {
+        ArgumentNullException.ThrowIfNull(batch);
+        foreach (var item in batch)
+        {
+            _handedOut.Remove(item.Id);
+        }
+
+        _items.InsertRange(0, batch.Where(b => _items.All(i => i.Id != b.Id)));
+    }
+
+    /// <summary>
     /// Re-checks, refills and hands out one batch.
     /// </summary>
     /// <param name="exclusions">From <see cref="RecentExclusions.Build"/>: queue, seed and recent window. The plan adds its own items.</param>

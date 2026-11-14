@@ -368,6 +368,19 @@ public sealed class TriggerEngineTests
     }
 
     [Fact]
+    public void Hourly_counts_are_read_only_when_the_engine_reaches_the_rate_limit_guard()
+    {
+        var calls = 0;
+        var h = new TriggerHarness { SessionItemsSource = () => ++calls, GlobalItemsSource = () => ++calls };
+
+        AssertSkip(h.Feed(Web([A, B, C], 0)), SkipReason.NotLast);
+        Assert.Equal(0, calls);
+
+        AssertFire(h.Feed(Web([A, B, C], 2)), FireKind.Start, QueueModel.Full);
+        Assert.Equal(2, calls);
+    }
+
+    [Fact]
     public void TR27_Run_cap_is_skipped()
     {
         var h = new TriggerHarness { Run = new RunInfo(C, TriggerLimits.RunCap) };

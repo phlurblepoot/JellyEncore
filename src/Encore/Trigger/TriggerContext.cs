@@ -29,6 +29,21 @@ public sealed record TriggerContext
     /// <summary>Songs Encore added across all sessions in the last hour.</summary>
     public int GlobalItemsLastHour { get; init; }
 
+    /// <summary>
+    /// When set, the engine calls this instead of reading <see cref="SessionItemsLastHour"/>, and only once it reaches
+    /// the rate-limit guard, so a store query is not run for every snapshot.
+    /// </summary>
+    public Func<int>? SessionItemsLastHourSource { get; init; }
+
+    /// <summary>Lazy source for <see cref="GlobalItemsLastHour"/>; see <see cref="SessionItemsLastHourSource"/>.</summary>
+    public Func<int>? GlobalItemsLastHourSource { get; init; }
+
+    /// <summary>The session's hourly count: the lazy source when there is one.</summary>
+    public int SessionItemsInLastHour() => SessionItemsLastHourSource?.Invoke() ?? SessionItemsLastHour;
+
+    /// <summary>The global hourly count: the lazy source when there is one.</summary>
+    public int GlobalItemsInLastHour() => GlobalItemsLastHourSource?.Invoke() ?? GlobalItemsLastHour;
+
     /// <summary>The session's current radio run, or null when there is none.</summary>
     public RunInfo? Run { get; init; }
 

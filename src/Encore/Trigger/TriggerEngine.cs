@@ -423,8 +423,8 @@ public static class TriggerEngine
     private static SkipReason? Limited(TriggerContext context, int count)
     {
         if ((context.LastSessionFireAt is { } last && context.Now - last < TriggerLimits.SessionCooldown)
-            || context.SessionItemsLastHour + count > TriggerLimits.SessionItemsPerHour
-            || context.GlobalItemsLastHour + count > TriggerLimits.GlobalItemsPerHour)
+            || context.SessionItemsInLastHour() + count > TriggerLimits.SessionItemsPerHour
+            || context.GlobalItemsInLastHour() + count > TriggerLimits.GlobalItemsPerHour)
         {
             return SkipReason.RateLimited;
         }

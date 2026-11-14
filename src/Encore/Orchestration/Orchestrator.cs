@@ -341,12 +341,13 @@ public sealed class Orchestrator : BackgroundService
             // If the store cannot answer, treat the key as a duplicate: a skipped radio is safer than a double add.
             IsDuplicate = key => TryStore("duplicate check", () => _store.IsDuplicate(key, now, TriggerLimits.DedupeTtl), true),
             LastSessionFireAt = track.LastFireAt,
-            SessionItemsLastHour = counting
-                ? TryStore("count session", () => _store.CountAddedSince(session.Id, now - TimeSpan.FromHours(1)), fallback)
-                : 0,
-            GlobalItemsLastHour = counting
-                ? TryStore("count global", () => _store.CountAddedSince(null, now - TimeSpan.FromHours(1)), fallback)
-                : 0,
+            // Lazy: the counts are queried only when the engine reaches the rate-limit guard (not for not_last snapshots).
+            SessionItemsLastHourSource = counting
+                ? () => TryStore("count session", () => _store.CountAddedSince(session.Id, now - TimeSpan.FromHours(1)), fallback)
+                : null,
+            GlobalItemsLastHourSource = counting
+                ? () => TryStore("count global", () => _store.CountAddedSince(null, now - TimeSpan.FromHours(1)), fallback)
+                : null,
             Run = track.Run is { } run ? new RunInfo(run.LastAddedItemId, run.AddedCount, run.AddedIds) : null,
             PendingSends = [.. track.Pending.Select(p => p.ToTrigger())],
             SnapshotAt = track.LastSnapshotAt == default ? now : track.LastSnapshotAt,
@@ -584,7 +585,8 @@ public sealed class Orchestrator : BackgroundService
         var userId = session.UserId!.Value;
         var clock = Stopwatch.GetTimestamp();
 
-        var run = fire.Kind == FireKind.TopUp && track.Run is { } current
+        // A retry (attempt 2) keeps the run, so the plan's put-back songs are sent again.
+        var run = (fire.Kind == FireKind.TopUp || fire.Attempt > 1) && track.Run is { } current
             ? current
             : new SessionRun(Guid.NewGuid().ToString("N"), new RadioPlan(_options.Lookahead, _options.Batch));
         track.Run = run;
@@ -594,9 +596,10 @@ public sealed class Orchestrator : BackgroundService
         try
         {
             var queueIds = dto.NowPlayingQueue?.Select(q => q.Id).ToList() ?? [];
-            var plays = _store.RecentPlays(_options.RecentWindow, session.Id, userId, now);
+            // A store error here must not fail the fire: no history just means weaker exclusions and variety.
+            var plays = TryStore("recent plays", () => _store.RecentPlays(_options.RecentWindow, session.Id, userId, now), (IReadOnlyList<RecentPlay>)[]);
             var exclusions = RecentExclusions.Build(queueIds, item.Id, plays, _options.RecentWindow, session.Id, userId, now);
-            var history = _store.SessionHistory(session.Id, _timing.HistoryLimit);
+            var history = TryStore("session history", () => _store.SessionHistory(session.Id, _timing.HistoryLimit), (IReadOnlyList<HistorySong>)[]);
 
             PlanHandout handout;
             using (var pickTimeout = new CancellationTokenSource(_timing.PickTimeout, _time))
@@ -636,6 +639,12 @@ public sealed class Orchestrator : BackgroundService
                 outcome = EncoreStore.SentOutcome;
                 Update(s => s with { JellyfinLastOkUtc = now, JellyfinLastError = null });
                 OperationsLog.QueueAdded(_log, fire.Kind.ToWire(), session.Id, string.Join("; ", handout.Batch), 204);
+            }
+            catch (JellyfinException ex) when (!ex.OutcomeUnknown)
+            {
+                // A clear failure: the songs were not queued. Put them back so the retry sends the same ones.
+                run.Plan.PutBack(handout.Batch);
+                throw;
             }
             catch (JellyfinException ex) when (ex.OutcomeUnknown && !ct.IsCancellationRequested)
             {

@@ -187,4 +187,20 @@ public class RadioPlanTests
         public Task<PickResult> PickAsync(PickRequest request, CancellationToken ct = default) =>
             Task.FromResult(new PickResult(items, 1, 0, [PickSource.InstantMix]));
     }
+
+    [Fact]
+    public async Task Put_back_hands_the_same_songs_out_again_in_order()
+    {
+        LibraryOf("A", "B", "C", "D");
+        var plan = new RadioPlan(5, 2);
+        var seed = Song("Seed", "A");
+
+        var first = await plan.NextBatchAsync(NewPicker(), User, seed, [], new HashSet<Guid>());
+        plan.PutBack(first.Batch);
+        var again = await plan.NextBatchAsync(NewPicker(), User, seed, [], new HashSet<Guid>());
+
+        Assert.Equal(first.Batch.Select(i => i.Id), again.Batch.Select(i => i.Id));
+        Assert.Equal(first.Remaining.Select(i => i.Id), again.Remaining.Select(i => i.Id));
+        Assert.Null(again.Pick);
+    }
 }

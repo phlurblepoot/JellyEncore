@@ -168,6 +168,25 @@ public class OrchestratorTests
     }
 
     [Fact]
+    public async Task A_failed_playlast_is_retried_with_the_same_songs()
+    {
+        using var h = new OrchestratorHarness();
+        h.Jellyfin.PlayLastFailure = new JellyfinRequestException("PlayLast", 503);
+        var orchestrator = h.CreateOrchestrator();
+        await orchestrator.RefreshAllowListAsync();
+        await orchestrator.HandleSnapshotAsync(OrchestratorHarness.Snapshot(h.Time, LastSongOfWeb()));
+
+        h.Jellyfin.PlayLastFailure = null;
+        h.Time.Advance(TimeSpan.FromSeconds(20));
+        await orchestrator.HandleSnapshotAsync(OrchestratorHarness.Snapshot(h.Time, LastSongOfWeb()));
+
+        var attempts = h.Jellyfin.PlayLastAttempts.ToArray();
+        Assert.Equal(2, attempts.Length);
+        Assert.Equal(attempts[0].ItemIds, attempts[1].ItemIds);
+        Assert.Single(h.Jellyfin.PlayLasts);
+    }
+
+    [Fact]
     public async Task Queued_songs_are_confirmed_when_the_next_song_starts()
     {
         using var h = new OrchestratorHarness();

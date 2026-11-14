@@ -37,6 +37,10 @@ public sealed class TriggerHarness
 
     public int GlobalItemsLastHour { get; set; }
 
+    public Func<int>? SessionItemsSource { get; set; }
+
+    public Func<int>? GlobalItemsSource { get; set; }
+
     public int Batch { get; set; } = 2;
 
     /// <summary>The session's sends waiting for a verdict (the orchestrator's job in production; tests set it by hand).</summary>
@@ -59,6 +63,8 @@ public sealed class TriggerHarness
         LastSessionFireAt = LastSessionFireAt,
         SessionItemsLastHour = SessionItemsLastHour,
         GlobalItemsLastHour = GlobalItemsLastHour,
+        SessionItemsLastHourSource = SessionItemsSource,
+        GlobalItemsLastHourSource = GlobalItemsSource,
         Run = Run,
         PendingSends = Pending,
         SnapshotAt = Time.GetUtcNow(),
