@@ -63,6 +63,19 @@ Fixed in v0.1, not configurable: a 60-minute dedupe window, a 20-second cooldown
 - Join the same Docker network as Jellyfin and use Jellyfin's container name in `JELLYFIN_URL`.
 - Keep the API key in an `.env` file next to the compose file and reference it from the compose file. Do not write it inline.
 
+## Jellyfin Web fix (Jellyfin 12.4)
+
+Radio needs a live connection (a websocket) between Jellyfin and the player. Jellyfin 12.4 turned off legacy authentication, but the bundled Jellyfin Web client still opens `/socket?api_key=...`, which the server now rejects ("Token is required"). A web session without that socket cannot be remote-controlled, so Encore's PlayLast is not delivered and the web player never shows radio songs. Finamp is not affected.
+
+`contrib/jellyfin-web-socket-fix.js` fixes this in the browser. It renames that one query parameter to `ApiKey`, which 12.4 accepts, and only for `/socket` URLs. It is safe to run twice, keeps 12.4's stricter authentication, and can be removed once Jellyfin Web sends `ApiKey` itself.
+
+Install it with the JavaScript Injector plugin (the plugin that adds custom JavaScript to Jellyfin Web):
+
+1. Install the JavaScript Injector plugin in the Jellyfin dashboard and restart Jellyfin.
+2. Open the plugin's settings and add a new script. Name it for example "Encore socket fix" and paste the whole of `contrib/jellyfin-web-socket-fix.js`. Enable it and save.
+3. Reload Jellyfin Web (a hard refresh, Ctrl+F5) on every device that should get radio.
+4. Check in the browser's developer tools (Network, WS) that the `/socket?ApiKey=...` connection stays open, or look for `queue.confirmed` in Encore's logs after a radio fire.
+
 ## Going live
 
 1. Start with `ENCORE_DRY_RUN=true` (the default).
@@ -106,6 +119,7 @@ JSON lines on stdout. Set `LOG_LEVEL` to see more. The events an operator looks 
 | `queue.added` | Info | Songs sent with PlayLast |
 | `queue.add_failed` | Error | PlayLast failed; the reason and status are logged |
 | `queue.unconfirmed` | Warning | Songs were accepted but were not in the queue the app reported at the next song or stop. `Resend` says what happens next: `pending` (sent again now), `armed` (sent again if a song starts within 10 s), `skipped_not_playing`, `skipped_user_songs`, `already_resent` |
+| `queue.unverified` | Info | The session ended before a queue report could show the songs. Delivery is unknown, not failed; nothing is re-sent |
 | `queue.resent` | Info | The missing songs were sent once more, appended to the end of the queue |
 | `queue.add_no_reply` | Warning | PlayLast got no answer; not retried, the next queue report decides |
 | `picks.planned`, `picks.none` | Info, Warning | Which songs were picked, or that none were found |

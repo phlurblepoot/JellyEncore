@@ -156,7 +156,7 @@ public class DeliveryTests
     }
 
     [Fact]
-    public async Task A_session_that_ends_while_waiting_is_unconfirmed()
+    public async Task A_session_that_ends_while_waiting_is_unverified_not_a_failure()
     {
         var (h, orchestrator) = await StartAsync();
         using var _ = h;
@@ -164,8 +164,8 @@ public class DeliveryTests
         h.Time.Advance(TimeSpan.FromSeconds(30));
         await orchestrator.HandleSnapshotAsync(OrchestratorHarness.Snapshot(h.Time));
 
-        var verdict = Assert.Single(h.Log.Named("queue.unconfirmed"));
-        Assert.Equal("session_ended", verdict.Fields["JudgedAt"]);
+        Assert.Empty(h.Log.Named("queue.unconfirmed"));
+        Assert.Single(h.Log.Named("queue.unverified"));
     }
 
     [Fact]

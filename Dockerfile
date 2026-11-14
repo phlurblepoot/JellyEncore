@@ -6,7 +6,9 @@ COPY src/Encore/Encore.csproj src/Encore/
 COPY tests/Encore.Tests/Encore.Tests.csproj tests/Encore.Tests/
 RUN dotnet restore src/Encore/Encore.csproj
 COPY src/ src/
-RUN dotnet publish src/Encore/Encore.csproj -c Release --no-restore -o /out /p:UseAppHost=false
+# Release builds pass the tag (without the v); other builds keep the project default.
+ARG VERSION=
+RUN dotnet publish src/Encore/Encore.csproj -c Release --no-restore -o /out /p:UseAppHost=false ${VERSION:+/p:Version=$VERSION}
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS final
 WORKDIR /app

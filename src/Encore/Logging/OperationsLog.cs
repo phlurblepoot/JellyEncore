@@ -72,6 +72,11 @@ internal static partial class OperationsLog
         Message = "Queued songs not seen in run {RunId}: [{ItemIds}], judged at {JudgedAt}, next item {NextItemId}, was a re-send {WasResend}, re-send {Resend}")]
     public static partial void QueueUnconfirmed(this ILogger logger, string runId, string itemIds, string judgedAt, Guid? nextItemId, bool wasResend, string resend);
 
+    /// <summary>The session ended before a queue report could show the songs, so delivery is unknown. Not a failure.</summary>
+    [LoggerMessage(EventId = 6041, EventName = "queue.unverified", Level = LogLevel.Information,
+        Message = "Session ended before the queued songs could be checked in run {RunId}: [{ItemIds}]; delivery unknown, nothing is re-sent")]
+    public static partial void QueueUnverified(this ILogger logger, string runId, string itemIds);
+
     /// <summary>T28: the songs of a send the next queue report did not show were sent once more (appended to the end).</summary>
     [LoggerMessage(EventId = 6050, EventName = "queue.resent", Level = LogLevel.Information,
         Message = "Re-sent missing songs on session {SessionId} in run {RunId}: [{Items}], original trigger {OriginalTriggerId}, http {HttpStatus}")]

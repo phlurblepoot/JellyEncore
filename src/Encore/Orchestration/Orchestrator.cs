@@ -548,6 +548,10 @@ public sealed class Orchestrator : BackgroundService
         {
             OperationsLog.QueueConfirmed(_log, pending.RunId, ids);
         }
+        else if (judgedAt == "session_ended")
+        {
+            OperationsLog.QueueUnverified(_log, pending.RunId, ids);
+        }
         else
         {
             OperationsLog.QueueUnconfirmed(_log, pending.RunId, ids, judgedAt, nextItemId, pending.IsResend, resend);
