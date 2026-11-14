@@ -33,16 +33,16 @@ public sealed record TriggerRecord(
 public sealed record StoredRun(string RunId, Guid LastAddedItemId, int AddedCount, IReadOnlyList<Guid>? AddedIds = null);
 
 /// <summary>Rows removed by one prune pass.</summary>
-public sealed record PruneResult(int Plays, int AddedItems, int Triggers);
+public sealed record PruneResult(int Plays, int AddedItems, int Triggers, int Attempts = 0, int Negative = 0);
 
 /// <summary>
-/// SQLite store at <c>/data/encore.db</c> (design section 5). One connection, used only by the orchestrator loop.
+/// SQLite store at <c>/data/encore.db</c> (design section 5). One connection, used only by the orchestrator loop (the fetch worker uses <see cref="FetchStore"/> on its own connection).
 /// Journal in DELETE mode (not WAL): the folder may sit on Unraid's FUSE path, and the write rate is tiny.
 /// </summary>
 public sealed class EncoreStore : IDisposable
 {
     /// <summary>The schema this build writes. A database with a higher user_version refuses to open.</summary>
-    public const int SchemaVersion = 1;
+    public const int SchemaVersion = 2;
 
     /// <summary>Trigger outcomes that block a repeat fire with the same dedupe key.</summary>
     public const string SentOutcome = "sent";
@@ -91,6 +91,39 @@ public sealed class EncoreStore : IDisposable
         CREATE INDEX ix_plays_session ON plays(session_id, at_utc);
         CREATE INDEX ix_plays_user ON plays(user_id, at_utc);
         """,
+        """
+        CREATE TABLE fetched_files (
+          id INTEGER PRIMARY KEY,
+          job_id TEXT NOT NULL,
+          track_key TEXT NOT NULL,
+          artist TEXT NOT NULL, title TEXT NOT NULL, album TEXT, year INTEGER, track_no INTEGER, disc_no INTEGER,
+          isrc TEXT, deezer_track_id INTEGER, mb_artist_id TEXT, mb_recording_id TEXT, duration_s INTEGER,
+          origin TEXT NOT NULL,
+          source TEXT NOT NULL,
+          peer TEXT, remote_path TEXT, transfer_id TEXT,
+          format TEXT, bitrate_kbps INTEGER, sample_rate INTEGER, bit_depth INTEGER, size_bytes INTEGER,
+          path TEXT, jellyfin_path TEXT, jellyfin_item_id TEXT,
+          requested_utc TEXT NOT NULL, fetched_utc TEXT, imported_utc TEXT, ready_utc TEXT,
+          state TEXT NOT NULL CHECK (state IN ('downloading','importing','imported','ready','failed','deleted','promoted')),
+          fail_reason TEXT,
+          run_id TEXT NOT NULL, session_id TEXT NOT NULL, user_id TEXT NOT NULL,
+          uploads INTEGER NOT NULL DEFAULT 0,
+          kept_reason TEXT,
+          deleted_utc TEXT);
+        CREATE INDEX ix_fetched_key ON fetched_files(track_key);
+        CREATE INDEX ix_fetched_state ON fetched_files(state, requested_utc);
+        CREATE UNIQUE INDEX ix_fetched_path ON fetched_files(path) WHERE path IS NOT NULL AND state NOT IN ('failed','deleted');
+        CREATE TABLE fetch_attempts (
+          id INTEGER PRIMARY KEY,
+          job_id TEXT NOT NULL, track_key TEXT NOT NULL, fetched_file_id INTEGER REFERENCES fetched_files(id),
+          source TEXT NOT NULL, query TEXT, peer TEXT, filename TEXT,
+          outcome TEXT NOT NULL CHECK (outcome IN ('no_results','rejected','stalled','failed','cancelled','ok','dry_run')),
+          reason TEXT, score_eta_s REAL, at_utc TEXT NOT NULL, duration_ms INTEGER);
+        CREATE INDEX ix_attempts_at ON fetch_attempts(at_utc);
+        CREATE INDEX ix_attempts_key ON fetch_attempts(track_key, at_utc);
+        CREATE TABLE fetch_negative (
+          track_key TEXT PRIMARY KEY, until_utc TEXT NOT NULL, reason TEXT NOT NULL, misses INTEGER NOT NULL DEFAULT 1);
+        """,
     ];
 
     private readonly SqliteConnection _db;
@@ -133,6 +166,11 @@ public sealed class EncoreStore : IDisposable
 
             if (version < SchemaVersion)
             {
+                if (version >= 1)
+                {
+                    BackupBeforeMigration(db, path, version);
+                }
+
                 using var tx = db.BeginTransaction();
                 for (var target = version + 1; target <= SchemaVersion; target++)
                 {
@@ -392,15 +430,17 @@ public sealed class EncoreStore : IDisposable
         return new StoredRun(runId, lastItem, ids.Count, ids);
     }
 
-    /// <summary>Deletes rows past retention: plays after 14 days, added songs and triggers after 90 days.</summary>
+    /// <summary>Deletes rows past retention: plays after 14 days, added songs, triggers and fetch attempts after 90 days, expired negative-cache rows. Never <c>fetched_files</c>.</summary>
     public PruneResult Prune(DateTimeOffset now)
     {
         using var tx = _db.BeginTransaction();
         var plays = Delete(tx, "plays", "at_utc", now - PlaysRetention);
         var added = Delete(tx, "added_items", "added_utc", now - TriggersRetention);
         var triggers = Delete(tx, "triggers", "at_utc", now - TriggersRetention);
+        var attempts = Delete(tx, "fetch_attempts", "at_utc", now - TriggersRetention);
+        var negative = Delete(tx, "fetch_negative", "until_utc", now);
         tx.Commit();
-        return new PruneResult(plays, added, triggers);
+        return new PruneResult(plays, added, triggers, attempts, negative);
     }
 
     /// <summary>A value stored in <c>meta</c>, or null.</summary>
@@ -466,6 +506,24 @@ public sealed class EncoreStore : IDisposable
         cmd.CommandText = $"DELETE FROM {table} WHERE {column} < $cutoff";
         cmd.Parameters.AddWithValue("$cutoff", FormatUtc(cutoff));
         return cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// Copies the file to <c>{path}.v{old}.bak</c> before the first migration, unless that copy exists (rollback path:
+    /// the v0.1.1 build refuses a schema-2 file). VACUUM INTO makes a consistent copy through the open connection.
+    /// </summary>
+    private static void BackupBeforeMigration(SqliteConnection db, string path, int version)
+    {
+        var backup = $"{path}.v{version}.bak";
+        if (File.Exists(backup))
+        {
+            return;
+        }
+
+        using var cmd = db.CreateCommand();
+        cmd.CommandText = "VACUUM INTO $target";
+        cmd.Parameters.AddWithValue("$target", backup);
+        cmd.ExecuteNonQuery();
     }
 
     private static int ReadUserVersion(SqliteConnection db)
