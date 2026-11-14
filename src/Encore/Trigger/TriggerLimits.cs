@@ -21,4 +21,13 @@ public static class TriggerLimits
 
     /// <summary>Wait before a failed fire is tried again.</summary>
     public static readonly TimeSpan FireRetryDelay = TimeSpan.FromSeconds(15);
+
+    /// <summary>Re-sends after a missing verdict, per song (T28). A lost re-send is not tried again.</summary>
+    public const int ResendsPerSong = 1;
+
+    /// <summary>
+    /// A report newer than the send by less than this cannot prove the songs missing: the client applies PlayLast a
+    /// moment after Jellyfin answers (T28). A poll report adds ENCORE_POLL_SECONDS.
+    /// </summary>
+    public static readonly TimeSpan DeliveryLag = TimeSpan.FromSeconds(3);
 }

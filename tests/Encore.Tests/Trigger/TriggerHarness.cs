@@ -39,6 +39,14 @@ public sealed class TriggerHarness
 
     public int Batch { get; set; } = 2;
 
+    /// <summary>The session's sends waiting for a verdict (the orchestrator's job in production; tests set it by hand).</summary>
+    public List<PendingSend> Pending { get; set; } = [];
+
+    /// <summary>True when the snapshots come from a poll (adds ENCORE_POLL_SECONDS to the delivery lag).</summary>
+    public bool FromPoll { get; set; }
+
+    public int PollSeconds { get; set; } = 10;
+
     public List<TriggerOutcome> Outcomes { get; } = [];
 
     public TriggerContext Context() => new()
@@ -52,7 +60,17 @@ public sealed class TriggerHarness
         SessionItemsLastHour = SessionItemsLastHour,
         GlobalItemsLastHour = GlobalItemsLastHour,
         Run = Run,
+        PendingSends = Pending,
+        SnapshotAt = Time.GetUtcNow(),
+        SnapshotFromPoll = FromPoll,
+        PollSeconds = PollSeconds,
     };
+
+    /// <summary>A pending send of <paramref name="ids"/> whose PlayLast returned now.</summary>
+    public PendingSend SendNow(long triggerId, Guid[] ids, bool isResend = false) => new(triggerId, ids, Time.GetUtcNow(), isResend);
+
+    /// <summary>A run whose newest song is the last of <paramref name="added"/>.</summary>
+    public static RunInfo RunOf(params Guid[] added) => new(added[^1], added.Length, added);
 
     public TriggerOutcome Feed(TriggerSession snapshot)
     {
@@ -74,7 +92,8 @@ public sealed class TriggerHarness
         return last;
     }
 
-    public void MarkFired() => Memory = TriggerEngine.MarkFired(Memory!);
+    /// <summary>The orchestrator finished the fire; <paramref name="sentIds"/> are the songs it sent or dry-ran.</summary>
+    public void MarkFired(params Guid[] sentIds) => Memory = TriggerEngine.MarkFired(Memory!, sentIds);
 
     public bool MarkFailed()
     {

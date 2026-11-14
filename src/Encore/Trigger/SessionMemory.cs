@@ -18,9 +18,15 @@ public sealed record SessionMemory
 
     /// <summary>
     /// EntryQueue of the previous instance on this session. Null means unknown: the first instance
-    /// seen since Encore started, so a Finamp last-song decision cannot be made (<c>no_history</c>).
+    /// seen since Encore started, so a Finamp position decision cannot be made (<c>no_history</c>).
     /// </summary>
     public IReadOnlyList<QueueEntry>? PrevEntryQueue { get; init; }
+
+    /// <summary>
+    /// The songs the previous instance sent or dry-ran (its <see cref="PlayInstance.SentIds"/>), empty after a restart.
+    /// Guard 9b (<c>already_queued</c>) uses it (T28).
+    /// </summary>
+    public IReadOnlyList<Guid> PrevSentIds { get; init; } = [];
 
     /// <summary>Whether <c>not_allowed</c> was already reported for this session.</summary>
     public bool NotAllowedReported { get; init; }
@@ -53,4 +59,13 @@ public sealed record PlayInstance
 
     /// <summary>Skip reasons already reported in this instance.</summary>
     public ImmutableHashSet<SkipReason> ReportedReasons { get; init; } = [];
+
+    /// <summary>The songs this instance sent or dry-ran, recorded by <see cref="TriggerEngine.MarkFired(SessionMemory, IReadOnlyList{Guid})"/>.</summary>
+    public IReadOnlyList<Guid> SentIds { get; init; } = [];
+
+    /// <summary>Set at the instance's start when the delivery check calls for a re-send: the songs to send again (T28).</summary>
+    public IReadOnlyList<Guid> ResendIds { get; init; } = [];
+
+    /// <summary>The trigger id of the send that <see cref="ResendIds"/> repeats.</summary>
+    public long? ResendOf { get; init; }
 }

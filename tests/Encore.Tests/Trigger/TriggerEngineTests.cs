@@ -3,20 +3,30 @@ using static Encore.Tests.Trigger.TriggerHarness;
 
 namespace Encore.Tests.Trigger;
 
-/// <summary>The T15 cases from v01-design.md section 9.1 (TR01-TR37), plus a few unit checks.</summary>
+/// <summary>
+/// The trigger cases from v01-design.md section 9.1: TR01-TR37 (updated for the one-song buffer, T28) and the
+/// T28 cases TR38-TR64, plus a few unit checks.
+/// </summary>
 public sealed class TriggerEngineTests
 {
     private static readonly Guid A = Item("A"), B = Item("B"), C = Item("C"), D = Item("D");
-    private static readonly Guid N = Item("N"), Nm1 = Item("N-1"), M = Item("M");
+    private static readonly Guid N = Item("N"), Nm1 = Item("N-1"), Nm2 = Item("N-2"), M = Item("M");
     private static readonly Guid W = Item("W"), X = Item("X"), Y = Item("Y"), Z = Item("Z"), V = Item("V"), U = Item("U");
+    private static readonly Guid U1 = Item("U1"), U2 = Item("U2");
+    private static readonly Guid A4 = Item("A4"), A5 = Item("A5"), A6 = Item("A6");
     private static readonly Guid B1 = Item("B1");
     private static readonly Guid E1 = Item("E1"), E2 = Item("E2"), E3 = Item("E3"), E4 = Item("E4");
 
-    private static TriggerDecision.Fire AssertFire(TriggerOutcome outcome, FireKind kind, QueueModel model)
+    private static TriggerDecision.Fire AssertFire(TriggerOutcome outcome, FireKind kind, QueueModel model, FireRule? rule = null)
     {
         var fire = Assert.IsType<TriggerDecision.Fire>(outcome.Decision);
         Assert.Equal(kind, fire.Kind);
         Assert.Equal(model, fire.Model);
+        if (rule is { } expected)
+        {
+            Assert.Equal(expected, fire.Rule);
+        }
+
         Assert.Equal(InstanceState.Firing, outcome.Memory!.Instance!.State);
         return fire;
     }
@@ -30,6 +40,14 @@ public sealed class TriggerEngineTests
 
     private static void AssertNone(TriggerOutcome outcome) => Assert.IsType<TriggerDecision.None>(outcome.Decision);
 
+    private static SendVerdict AssertVerdict(TriggerOutcome outcome, DeliveryVerdict verdict, string? resend = null)
+    {
+        var single = Assert.Single(outcome.AllVerdicts);
+        Assert.Equal(verdict, single.Verdict);
+        Assert.Equal(resend, single.Resend);
+        return single;
+    }
+
     /// <summary>A Finamp track change: the stop half (no item), then the new instance.</summary>
     private static TriggerSession[] FinampChange(Guid current, Guid[] upcoming, Func<TriggerSession, TriggerSession>? change = null)
     {
@@ -37,24 +55,35 @@ public sealed class TriggerEngineTests
         return [Idle(next), next];
     }
 
+    /// <summary>Finamp N-2 then N-1 (the near-end start), marked as sent with <paramref name="sent"/>.</summary>
+    private static TriggerHarness FinampStartedAtSecondToLast(Guid[] sent, TriggerHarness? harness = null)
+    {
+        var h = harness ?? new TriggerHarness();
+        h.Feed(Finamp(Nm2, [Nm1, N]));
+        AssertFire(h.FeedAll(FinampChange(Nm1, [N])), FireKind.Start, QueueModel.Upcoming, FireRule.NearEnd);
+        h.MarkFired(sent);
+        h.Run = RunOf(sent);
+        h.LastSessionFireAt = h.Time.GetUtcNow();
+        return h;
+    }
+
     [Fact]
-    public void TR01_Finamp_last_song_fires_start()
+    public void TR01_Finamp_second_to_last_song_fires_start()
     {
         var h = new TriggerHarness();
-        var first = h.Feed(Finamp(Nm1, [N]));
-        AssertSkip(first, SkipReason.NotLast);
+        AssertSkip(h.Feed(Finamp(Nm2, [Nm1, N])), SkipReason.NotLast);
 
-        var outcome = h.FeedAll(FinampChange(N, []));
+        var outcome = h.FeedAll(FinampChange(Nm1, [N]));
 
-        AssertFire(outcome, FireKind.Start, QueueModel.Upcoming);
+        AssertFire(outcome, FireKind.Start, QueueModel.Upcoming, FireRule.NearEnd);
         Assert.Equal(1, ((TriggerDecision.Fire)outcome.Decision).Attempt);
     }
 
     [Fact]
-    public void TR02_Web_last_song_fires_start()
+    public void TR02_Web_last_song_fires_start_by_the_fallback()
     {
         var h = new TriggerHarness();
-        AssertFire(h.Feed(Web([A, B, C], 2)), FireKind.Start, QueueModel.Full);
+        AssertFire(h.Feed(Web([A, B, C], 2)), FireKind.Start, QueueModel.Full, FireRule.LastSong);
     }
 
     [Fact]
@@ -62,14 +91,14 @@ public sealed class TriggerEngineTests
     {
         var h = new TriggerHarness();
         AssertSkip(h.Feed(Finamp(X, [Y, Z])), SkipReason.NotLast);
-        AssertSkip(h.FeedAll(FinampChange(Y, [Z])), SkipReason.NotLast);
+        AssertSkip(h.FeedAll(FinampChange(Y, [Z, V])), SkipReason.NotLast);
     }
 
     [Fact]
     public void TR04_Web_mid_album_is_not_last()
     {
         var h = new TriggerHarness();
-        AssertSkip(h.Feed(Web([A, B, C], 1)), SkipReason.NotLast);
+        AssertSkip(h.Feed(Web([A, B, C], 0)), SkipReason.NotLast);
     }
 
     [Fact]
@@ -78,8 +107,8 @@ public sealed class TriggerEngineTests
         var h = new TriggerHarness();
         TriggerSession Other(TriggerSession s) => s with { UserId = OtherUser, UserName = "guest" };
 
-        var first = AssertSkip(h.Feed(Finamp(Nm1, [N], Other)), SkipReason.NotAllowed);
-        var outcomes = FinampChange(N, [], Other).Select(h.Feed).ToList();
+        var first = AssertSkip(h.Feed(Finamp(Nm2, [Nm1, N], Other)), SkipReason.NotAllowed);
+        var outcomes = FinampChange(Nm1, [N], Other).Select(h.Feed).ToList();
 
         Assert.True(first.ShouldLog);
         Assert.All(outcomes, o => Assert.False(AssertSkip(o, SkipReason.NotAllowed).ShouldLog));
@@ -113,7 +142,8 @@ public sealed class TriggerEngineTests
     {
         var h = new TriggerHarness();
         TriggerSession All(TriggerSession s) => s with { RepeatMode = "RepeatAll" };
-        h.Feed(Finamp(Nm1, [N], All));
+        h.Feed(Finamp(Nm2, [Nm1, N], All));
+        AssertSkip(h.FeedAll(FinampChange(Nm1, [N], All)), SkipReason.RepeatOn);
         AssertSkip(h.FeedAll(FinampChange(N, [], All)), SkipReason.RepeatOn);
     }
 
@@ -159,29 +189,38 @@ public sealed class TriggerEngineTests
     }
 
     [Fact]
-    public void TR12_Finamp_top_up_on_the_last_Encore_song()
+    public void TR12_Finamp_top_up_when_one_Encore_song_is_left()
     {
-        var h = new TriggerHarness { Run = new RunInfo(E2, 2) };
-        h.Feed(Finamp(E1, [E2]));
-        AssertFire(h.FeedAll(FinampChange(E2, [])), FireKind.TopUp, QueueModel.Upcoming);
+        var h = new TriggerHarness { Run = RunOf(E1, E2) };
+        AssertSkip(h.Feed(Finamp(N, [E1, E2])), SkipReason.NotLast);
+        AssertFire(h.FeedAll(FinampChange(E1, [E2])), FireKind.TopUp, QueueModel.Upcoming, FireRule.NearEnd);
     }
 
     [Fact]
-    public void TR13_Web_top_up_on_the_last_Encore_song()
+    public void TR13_Web_top_up_when_one_Encore_song_is_left()
     {
-        var h = new TriggerHarness { Run = new RunInfo(E2, 2) };
-        AssertFire(h.Feed(Web([A, B, C, D, N, E1, E2], 6)), FireKind.TopUp, QueueModel.Full);
+        var h = new TriggerHarness { Run = RunOf(E1, E2) };
+        AssertFire(h.Feed(Web([A, B, C, D, N, E1, E2], 5)), FireKind.TopUp, QueueModel.Full, FireRule.NearEnd);
     }
 
     [Fact]
-    public void TR14_Top_up_blocked_when_the_user_queued_songs_after_Encore()
+    public void TR14_User_songs_after_Encores_wait_until_one_is_left()
     {
-        var h = new TriggerHarness { Run = new RunInfo(E2, 2) };
-        h.Feed(Finamp(E1, [E2, U]));
-        AssertSkip(h.FeedAll(FinampChange(E2, [U])), SkipReason.NotLast);
+        // (a) two songs to come.
+        var h = new TriggerHarness { Run = RunOf(E1, E2) };
+        h.Feed(Finamp(N, [E1, E2, U]));
+        AssertSkip(h.FeedAll(FinampChange(E1, [E2, U])), SkipReason.NotLast);
 
-        var web = new TriggerHarness { Run = new RunInfo(E2, 2) };
-        AssertSkip(web.Feed(Web([A, E1, E2, U], 2)), SkipReason.NotLast);
+        // (b) the one song left is the user's: a new start.
+        AssertFire(h.FeedAll(FinampChange(E2, [U])), FireKind.Start, QueueModel.Upcoming, FireRule.NearEnd);
+
+        // (c) the user queued two songs.
+        var two = new TriggerHarness { Run = RunOf(E1, E2) };
+        two.Feed(Finamp(E1, [E2, U1, U2]));
+        AssertSkip(two.FeedAll(FinampChange(E2, [U1, U2])), SkipReason.NotLast);
+
+        var web = new TriggerHarness { Run = RunOf(E1, E2) };
+        AssertSkip(web.Feed(Web([A, E1, E2, U1, U2], 2)), SkipReason.NotLast);
     }
 
     [Theory]
@@ -233,7 +272,7 @@ public sealed class TriggerEngineTests
     {
         var h = new TriggerHarness();
         h.Feed(Finamp(Nm1, [N]));
-        AssertFire(h.FeedAll(FinampChange(N, [])), FireKind.Start, QueueModel.Upcoming);
+        AssertFire(h.FeedAll(FinampChange(N, [])), FireKind.Start, QueueModel.Upcoming, FireRule.LastSong);
         h.MarkFired();
 
         var idle = Idle(Finamp(N, []));
@@ -244,20 +283,20 @@ public sealed class TriggerEngineTests
     }
 
     [Fact]
-    public void TR19_Finamp_jump_straight_to_the_last_song_fires()
+    public void TR19_Finamp_jump_straight_to_the_last_song_fires_by_the_fallback()
     {
         var h = new TriggerHarness();
         h.Feed(Finamp(B, [C, D, X]));
-        AssertFire(h.FeedAll(FinampChange(X, [])), FireKind.Start, QueueModel.Upcoming);
+        AssertFire(h.FeedAll(FinampChange(X, [])), FireKind.Start, QueueModel.Upcoming, FireRule.LastSong);
     }
 
     [Fact]
-    public void TR20_Finamp_missed_instance_in_poll_mode_fires()
+    public void TR20_Finamp_missed_instance_in_poll_mode_fires_by_the_fallback()
     {
         // W was never seen: poll mode went straight from V to X.
         var h = new TriggerHarness();
         h.Feed(Finamp(V, [W, X]));
-        AssertFire(h.Feed(Finamp(X, [])), FireKind.Start, QueueModel.Upcoming);
+        AssertFire(h.Feed(Finamp(X, [])), FireKind.Start, QueueModel.Upcoming, FireRule.LastSong);
     }
 
     [Fact]
@@ -281,11 +320,11 @@ public sealed class TriggerEngineTests
     }
 
     [Fact]
-    public void TR22_Web_shuffle_fires_on_the_last_element()
+    public void TR22_Web_shuffle_fires_on_the_last_element_by_the_fallback()
     {
         var h = new TriggerHarness();
         var shuffled = Web([C, A, D, B], 3, s => s with { PlaybackOrder = "Shuffle" });
-        AssertFire(h.Feed(shuffled), FireKind.Start, QueueModel.Full);
+        AssertFire(h.Feed(shuffled), FireKind.Start, QueueModel.Full, FireRule.LastSong);
     }
 
     [Fact]
@@ -414,31 +453,32 @@ public sealed class TriggerEngineTests
     [Fact]
     public void TR33_Dedupe_key_differs_per_top_up_and_holds_item_and_prev_signature()
     {
-        var h = new TriggerHarness { Run = new RunInfo(E2, 2) };
-        h.Feed(Finamp(E1, [E2]));
-        var first = AssertFire(h.FeedAll(FinampChange(E2, [])), FireKind.TopUp, QueueModel.Upcoming);
-        h.MarkFired();
+        var h = new TriggerHarness { Run = RunOf(E1, E2) };
+        h.Feed(Finamp(N, [E1, E2]));
+        var first = AssertFire(h.FeedAll(FinampChange(E1, [E2])), FireKind.TopUp, QueueModel.Upcoming, FireRule.NearEnd);
+        h.MarkFired(E3, E4);
 
-        h.Run = new RunInfo(E4, 4);
+        h.Run = RunOf(E1, E2, E3, E4);
         h.LastSessionFireAt = h.Time.GetUtcNow();
         h.Time.Advance(TimeSpan.FromMinutes(4));
-        h.FeedAll(FinampChange(E3, [E4]));
-        var second = AssertFire(h.FeedAll(FinampChange(E4, [])), FireKind.TopUp, QueueModel.Upcoming);
+        AssertSkip(h.FeedAll(FinampChange(E2, [E3, E4])), SkipReason.NotLast);
+        h.Time.Advance(TimeSpan.FromMinutes(4));
+        var second = AssertFire(h.FeedAll(FinampChange(E3, [E4])), FireKind.TopUp, QueueModel.Upcoming, FireRule.NearEnd);
 
         Assert.NotEqual(first.DedupeKey, second.DedupeKey);
         var source = AlbumSource.ToString("N");
         Assert.Equal(
-            $"{SessionId}|{E2:N}|{source}|empty|{DedupeKey.Signature([new QueueEntry(E2, "queue")])}",
+            $"{SessionId}|{E1:N}|{source}|{DedupeKey.Signature([new QueueEntry(E2, "queue")])}|{DedupeKey.Signature([new QueueEntry(E1, "queue"), new QueueEntry(E2, "queue")])}",
             first.DedupeKey);
-        Assert.Contains(E4.ToString("N"), second.DedupeKey);
-        Assert.EndsWith(DedupeKey.Signature([new QueueEntry(E4, "queue")]), second.DedupeKey);
+        Assert.Contains(E3.ToString("N"), second.DedupeKey);
+        Assert.EndsWith(DedupeKey.Signature([new QueueEntry(E3, "queue"), new QueueEntry(E4, "queue")]), second.DedupeKey);
     }
 
     [Fact]
     public void TR34_Web_single_song_fires_without_history()
     {
         var h = new TriggerHarness();
-        AssertFire(h.Feed(Web([X], 0)), FireKind.Start, QueueModel.Full);
+        AssertFire(h.Feed(Web([X], 0)), FireKind.Start, QueueModel.Full, FireRule.LastSong);
     }
 
     [Fact]
@@ -446,17 +486,19 @@ public sealed class TriggerEngineTests
     {
         var h = new TriggerHarness { Batch = 1 };
         h.Feed(Finamp(M, [N]));
-        AssertFire(h.FeedAll(FinampChange(N, [])), FireKind.Start, QueueModel.Upcoming);
-        h.MarkFired();
+        AssertFire(h.FeedAll(FinampChange(N, [])), FireKind.Start, QueueModel.Upcoming, FireRule.LastSong);
+        h.MarkFired(E1);
 
         // Encore added E1 while N played; the add is invisible until the next stop, so E1's entry is [] and prev is N's [].
-        h.Run = new RunInfo(E1, 1);
+        h.Run = RunOf(E1);
         h.LastSessionFireAt = h.Time.GetUtcNow();
         h.Time.Advance(TimeSpan.FromMinutes(4));
         var outcome = h.FeedAll(FinampChange(E1, []));
 
-        AssertFire(outcome, FireKind.TopUp, QueueModel.Upcoming);
+        // Not already_queued: the current song E1 is one of the previous instance's sent songs.
+        AssertFire(outcome, FireKind.TopUp, QueueModel.Upcoming, FireRule.LastSong);
         Assert.Empty(outcome.Memory!.PrevEntryQueue!);
+        Assert.Equal([E1], outcome.Memory.PrevSentIds);
     }
 
     [Fact]
@@ -471,27 +513,391 @@ public sealed class TriggerEngineTests
     public void TR37_Finamp_album_replayed_within_the_hour_fires_again()
     {
         var h = new TriggerHarness { IsDuplicate = static _ => true };
-        h.Feed(Finamp(Nm1, [N]));
-        var first = AssertFire(h.FeedAll(FinampChange(N, [])), FireKind.Start, QueueModel.Upcoming);
-        h.MarkFired();
+        h.Feed(Finamp(Nm2, [Nm1, N]));
+        var first = AssertFire(h.FeedAll(FinampChange(Nm1, [N])), FireKind.Start, QueueModel.Upcoming, FireRule.NearEnd);
+        h.MarkFired(E1, E2);
         h.LastSessionFireAt = h.Time.GetUtcNow();
         h.SessionItemsLastHour = 2;
 
-        h.Feed(Idle(Finamp(N, [])));
+        h.Feed(Idle(Finamp(Nm1, [N])));
         h.Time.Advance(TimeSpan.FromMinutes(40));
-        h.FeedAll(FinampChange(Nm1, [N]));
-        var second = AssertFire(h.FeedAll(FinampChange(N, [])), FireKind.Start, QueueModel.Upcoming);
+        h.FeedAll(FinampChange(Nm2, [Nm1, N]));
+        var second = AssertFire(h.FeedAll(FinampChange(Nm1, [N])), FireKind.Start, QueueModel.Upcoming, FireRule.NearEnd);
 
         Assert.Equal(first.DedupeKey, second.DedupeKey);
     }
+
+    // ---- T28: the one-song buffer ----
+
+    [Fact]
+    public void TR38_Fallback_fires_when_the_near_end_fire_was_missed()
+    {
+        var h = new TriggerHarness();
+        AssertSkip(h.Feed(Finamp(Nm1, [N])), SkipReason.NoHistory);
+        AssertFire(h.FeedAll(FinampChange(N, [])), FireKind.Start, QueueModel.Upcoming, FireRule.LastSong);
+    }
+
+    [Fact]
+    public void TR39_Web_second_to_last_fires_start()
+    {
+        var h = new TriggerHarness();
+        AssertFire(h.Feed(Web([A, B, C], 1)), FireKind.Start, QueueModel.Full, FireRule.NearEnd);
+    }
+
+    [Fact]
+    public void TR40_Finamp_near_end_needs_history()
+    {
+        var h = new TriggerHarness();
+        AssertSkip(h.Feed(Finamp(Nm1, [N])), SkipReason.NoHistory);
+    }
+
+    [Fact]
+    public void TR41_Finamp_stale_one_entry_list_after_idle_is_skipped()
+    {
+        var h = new TriggerHarness();
+        AssertSkip(h.Feed(Finamp(A4, [A5, A6])), SkipReason.NotLast);
+        var idle = Idle(Finamp(A4, [A5, A6]));
+        h.FeedAll(idle, idle, idle);
+        h.Time.Advance(TimeSpan.FromMinutes(10));
+
+        AssertSkip(h.Feed(Finamp(B1, [A6])), SkipReason.StaleQueue);
+    }
+
+    [Fact]
+    public void TR42_Finamp_jump_to_the_second_to_last_fires()
+    {
+        var h = new TriggerHarness();
+        h.Feed(Finamp(B, [C, D, X, Y]));
+        AssertFire(h.FeedAll(FinampChange(X, [Y])), FireKind.Start, QueueModel.Upcoming, FireRule.NearEnd);
+    }
+
+    [Fact]
+    public void TR43_Web_shuffle_fires_on_the_next_to_last_element()
+    {
+        var h = new TriggerHarness();
+        var shuffled = Web([C, A, D, B], 2, s => s with { PlaybackOrder = "Shuffle" });
+        AssertFire(h.Feed(shuffled), FireKind.Start, QueueModel.Full, FireRule.NearEnd);
+    }
+
+    [Fact]
+    public void TR44_Near_end_right_after_a_re_send()
+    {
+        // N-1 sent E1, E2 (fired at the near end); at N they are missing, so N re-sends them.
+        var h = FinampStartedAtSecondToLast([E1, E2]);
+        h.Pending = [h.SendNow(7, [E1, E2])];
+        h.Time.Advance(TimeSpan.FromSeconds(60));
+        AssertFire(h.FeedAll(FinampChange(N, [])), FireKind.Resend, QueueModel.Upcoming, FireRule.Resend);
+        h.MarkFired(E1, E2);
+        h.Run = RunOf(E1, E2, E1, E2);
+        h.LastSessionFireAt = h.Time.GetUtcNow();
+        h.Pending = [h.SendNow(8, [E1, E2], isResend: true)];
+
+        // E1 starts; N's entry was [] (the re-send was invisible), so freshness comes from the run's songs.
+        h.Time.Advance(TimeSpan.FromSeconds(200));
+        var outcome = h.FeedAll(FinampChange(E1, [E2]));
+
+        AssertVerdict(outcome, DeliveryVerdict.Confirmed);
+        AssertFire(outcome, FireKind.TopUp, QueueModel.Upcoming, FireRule.NearEnd);
+    }
+
+    [Fact]
+    public void TR45_Batch_1_tops_up_one_song_at_a_time()
+    {
+        var h = new TriggerHarness { Batch = 1 };
+        h.Feed(Finamp(Nm2, [Nm1, N]));
+        AssertFire(h.FeedAll(FinampChange(Nm1, [N])), FireKind.Start, QueueModel.Upcoming, FireRule.NearEnd);
+        h.MarkFired(E1);
+        h.Run = RunOf(E1);
+        h.LastSessionFireAt = h.Time.GetUtcNow();
+
+        h.Time.Advance(TimeSpan.FromMinutes(3));
+        AssertFire(h.FeedAll(FinampChange(N, [E1])), FireKind.TopUp, QueueModel.Upcoming, FireRule.NearEnd);
+        h.MarkFired(E2);
+        h.Run = RunOf(E1, E2);
+        h.LastSessionFireAt = h.Time.GetUtcNow();
+
+        h.Time.Advance(TimeSpan.FromMinutes(3));
+        AssertFire(h.FeedAll(FinampChange(E1, [E2])), FireKind.TopUp, QueueModel.Upcoming, FireRule.NearEnd);
+    }
+
+    [Fact]
+    public void TR46_Already_queued_blocks_the_fallback_after_a_lost_send()
+    {
+        var h = FinampStartedAtSecondToLast([E1, E2]);
+        h.Time.Advance(TimeSpan.FromMinutes(3));
+
+        // Nothing pending (the store failed, so nothing was armed); the songs are not in N's report.
+        AssertSkip(h.FeedAll(FinampChange(N, [])), SkipReason.AlreadyQueued);
+        Assert.Single(h.Outcomes, o => o.Decision is TriggerDecision.Fire);
+    }
+
+    [Fact]
+    public void TR47_Already_queued_keeps_dry_run_to_one_fire_per_queue_end()
+    {
+        // Finamp: dry-run songs never show up.
+        var finamp = FinampStartedAtSecondToLast([E1, E2]);
+        finamp.Time.Advance(TimeSpan.FromMinutes(3));
+        AssertSkip(finamp.FeedAll(FinampChange(N, [])), SkipReason.AlreadyQueued);
+        Assert.Single(finamp.Outcomes, o => o.Decision is TriggerDecision.Fire);
+
+        // Web: b/#1 fires a dry run, then c/#2 is the last song.
+        var web = new TriggerHarness();
+        AssertFire(web.Feed(Web([A, B, C], 1)), FireKind.Start, QueueModel.Full, FireRule.NearEnd);
+        web.MarkFired(E1, E2);
+        web.LastSessionFireAt = web.Time.GetUtcNow();
+        web.Time.Advance(TimeSpan.FromMinutes(3));
+        AssertSkip(web.Feed(Web([A, B, C], 2)), SkipReason.AlreadyQueued);
+        Assert.Single(web.Outcomes, o => o.Decision is TriggerDecision.Fire);
+    }
+
+    [Fact]
+    public void TR48_Already_queued_does_not_block_the_radio_song()
+    {
+        // The poll missed N: straight from N-1 to E1.
+        var h = FinampStartedAtSecondToLast([E1, E2]);
+        h.Time.Advance(TimeSpan.FromMinutes(5));
+        AssertFire(h.FeedAll(FinampChange(E1, [E2])), FireKind.TopUp, QueueModel.Upcoming, FireRule.NearEnd);
+    }
+
+    [Fact]
+    public void TR49_Verdict_confirmed_when_the_songs_are_in_the_report()
+    {
+        var h = FinampStartedAtSecondToLast([E1, E2]);
+        h.Pending = [h.SendNow(7, [E1, E2])];
+        h.Time.Advance(TimeSpan.FromSeconds(60));
+
+        var outcome = h.FeedAll(FinampChange(N, [E1, E2]));
+
+        Assert.Equal(7, AssertVerdict(outcome, DeliveryVerdict.Confirmed).TriggerId);
+        AssertSkip(outcome, SkipReason.NotLast);
+    }
+
+    [Fact]
+    public void TR50_Verdict_confirmed_by_the_current_song_then_fallback_top_up()
+    {
+        var h = FinampStartedAtSecondToLast([E1, E2]);
+        h.Pending = [h.SendNow(7, [E1, E2])];
+
+        // The poll missed N and E1.
+        h.Time.Advance(TimeSpan.FromSeconds(300));
+        var outcome = h.Feed(Finamp(E2, []));
+
+        AssertVerdict(outcome, DeliveryVerdict.Confirmed);
+        AssertFire(outcome, FireKind.TopUp, QueueModel.Upcoming, FireRule.LastSong);
+    }
+
+    [Fact]
+    public void TR51_Web_fallback_top_up_on_the_last_Encore_song()
+    {
+        var h = new TriggerHarness { Run = RunOf(E1, E2) };
+        AssertFire(h.Feed(Web([A, B, C, D, N, E1, E2], 6)), FireKind.TopUp, QueueModel.Full, FireRule.LastSong);
+    }
+
+    [Fact]
+    public void TR52_Missing_send_is_re_sent_Finamp()
+    {
+        var h = FinampStartedAtSecondToLast([E1, E2]);
+        h.Pending = [h.SendNow(7, [E1, E2])];
+        h.Time.Advance(TimeSpan.FromSeconds(60));
+
+        var outcome = h.FeedAll(FinampChange(N, []));
+
+        AssertVerdict(outcome, DeliveryVerdict.Missing, ResendNames.Pending);
+        var fire = AssertFire(outcome, FireKind.Resend, QueueModel.Upcoming, FireRule.Resend);
+        Assert.Equal([E1, E2], fire.ItemIds);
+        Assert.Equal($"{SessionId}|resend|7", fire.DedupeKey);
+    }
+
+    [Fact]
+    public void TR53_Missing_send_is_re_sent_web()
+    {
+        var h = new TriggerHarness();
+        AssertFire(h.Feed(Web([A, B, C], 1)), FireKind.Start, QueueModel.Full, FireRule.NearEnd);
+        h.MarkFired(E1, E2);
+        h.Run = RunOf(E1, E2);
+        h.LastSessionFireAt = h.Time.GetUtcNow();
+        h.Pending = [h.SendNow(3, [E1, E2])];
+        h.Time.Advance(TimeSpan.FromSeconds(60));
+
+        var outcome = h.Feed(Web([A, B, C], 2));
+
+        AssertVerdict(outcome, DeliveryVerdict.Missing, ResendNames.Pending);
+        Assert.Equal([E1, E2], AssertFire(outcome, FireKind.Resend, QueueModel.Full, FireRule.Resend).ItemIds);
+    }
+
+    [Fact]
+    public void TR54_A_report_inside_the_delivery_lag_defers_the_verdict()
+    {
+        var h = FinampStartedAtSecondToLast([E1, E2]);
+        h.Pending = [h.SendNow(7, [E1, E2])];
+        h.Time.Advance(TimeSpan.FromSeconds(1));
+
+        var outcome = h.FeedAll(FinampChange(N, []));
+
+        AssertVerdict(outcome, DeliveryVerdict.Deferred);
+        AssertSkip(outcome, SkipReason.AlreadyQueued);
+    }
+
+    [Fact]
+    public void TR55_A_poll_report_gets_the_poll_interval_on_top_of_the_lag()
+    {
+        var h = FinampStartedAtSecondToLast([E1, E2]);
+        h.FromPoll = true;
+        h.PollSeconds = 10;
+        h.Pending = [h.SendNow(7, [E1, E2])];
+        h.Time.Advance(TimeSpan.FromSeconds(8));
+        AssertVerdict(h.FeedAll(FinampChange(N, [])), DeliveryVerdict.Deferred);
+
+        // Socket reports need only the 3 s lag; a poll needs 13 s.
+        Assert.Equal(TimeSpan.FromSeconds(13), DeliveryJudge.Lag(fromPoll: true, pollSeconds: 10));
+        Assert.Equal(TimeSpan.FromSeconds(3), DeliveryJudge.Lag(fromPoll: false, pollSeconds: 10));
+    }
+
+    [Fact]
+    public void TR56_Deferred_then_confirmed_at_the_next_change()
+    {
+        var h = FinampStartedAtSecondToLast([E1, E2]);
+        h.Pending = [h.SendNow(7, [E1, E2])];
+        h.Time.Advance(TimeSpan.FromSeconds(1));
+        AssertVerdict(h.FeedAll(FinampChange(N, [])), DeliveryVerdict.Deferred);
+
+        h.Time.Advance(TimeSpan.FromSeconds(199));
+        var outcome = h.FeedAll(FinampChange(E1, [E2]));
+
+        AssertVerdict(outcome, DeliveryVerdict.Confirmed);
+        AssertFire(outcome, FireKind.TopUp, QueueModel.Upcoming, FireRule.NearEnd);
+    }
+
+    [Fact]
+    public void TR57_A_lost_re_send_is_not_sent_again()
+    {
+        var h = FinampStartedAtSecondToLast([E1, E2]);
+        h.Pending = [h.SendNow(8, [E1, E2], isResend: true)];
+        h.Time.Advance(TimeSpan.FromSeconds(60));
+
+        var outcome = h.FeedAll(FinampChange(N, []));
+
+        AssertVerdict(outcome, DeliveryVerdict.Missing, ResendNames.AlreadyResent);
+        AssertSkip(outcome, SkipReason.AlreadyQueued);
+        Assert.Empty(outcome.Memory!.Instance!.ResendIds);
+    }
+
+    [Fact]
+    public void TR58_No_re_send_while_the_user_has_two_songs_left()
+    {
+        var h = FinampStartedAtSecondToLast([E1, E2]);
+        h.Pending = [h.SendNow(7, [E1, E2])];
+        h.Time.Advance(TimeSpan.FromSeconds(60));
+
+        var outcome = h.FeedAll(FinampChange(N, [U1, U2]));
+        AssertVerdict(outcome, DeliveryVerdict.Missing, ResendNames.SkippedUserSongs);
+        AssertSkip(outcome, SkipReason.NotLast);
+
+        h.Pending = [];
+        h.Time.Advance(TimeSpan.FromMinutes(3));
+        AssertFire(h.FeedAll(FinampChange(U1, [U2])), FireKind.Start, QueueModel.Upcoming, FireRule.NearEnd);
+    }
+
+    [Fact]
+    public void TR59_Re_send_with_one_user_song_left()
+    {
+        var h = FinampStartedAtSecondToLast([E1, E2]);
+        h.Pending = [h.SendNow(7, [E1, E2])];
+        h.Time.Advance(TimeSpan.FromSeconds(60));
+
+        var outcome = h.FeedAll(FinampChange(N, [U]));
+
+        AssertVerdict(outcome, DeliveryVerdict.Missing, ResendNames.Pending);
+        Assert.Equal([E1, E2], AssertFire(outcome, FireKind.Resend, QueueModel.Upcoming, FireRule.Resend).ItemIds);
+    }
+
+    [Fact]
+    public void TR60_Re_send_waits_for_the_cooldown()
+    {
+        var h = FinampStartedAtSecondToLast([E1, E2]);
+        h.Pending = [h.SendNow(7, [E1, E2])];
+        h.Time.Advance(TimeSpan.FromSeconds(60));
+        h.LastSessionFireAt = h.Time.GetUtcNow() - TimeSpan.FromSeconds(10);
+
+        AssertSkip(h.FeedAll(FinampChange(N, [])), SkipReason.RateLimited);
+        h.Pending = [];
+
+        h.Time.Advance(TimeSpan.FromSeconds(11));
+        var outcome = h.Feed(Finamp(N, []));
+        Assert.False(outcome.InstanceStarted);
+        AssertFire(outcome, FireKind.Resend, QueueModel.Upcoming, FireRule.Resend);
+    }
+
+    [Fact]
+    public void TR61_Re_send_counts_against_the_caps()
+    {
+        var capped = FinampStartedAtSecondToLast([E1, E2]);
+        capped.Run = new RunInfo(E2, TriggerLimits.RunCap, [E1, E2]);
+        capped.Pending = [capped.SendNow(7, [E1, E2])];
+        capped.Time.Advance(TimeSpan.FromSeconds(60));
+        AssertSkip(capped.FeedAll(FinampChange(N, [])), SkipReason.RunCap);
+
+        var hourly = FinampStartedAtSecondToLast([E1, E2]);
+        hourly.SessionItemsLastHour = 29;
+        hourly.Pending = [hourly.SendNow(7, [E1, E2])];
+        hourly.Time.Advance(TimeSpan.FromSeconds(60));
+        AssertSkip(hourly.FeedAll(FinampChange(N, [])), SkipReason.RateLimited);
+    }
+
+    [Fact]
+    public void TR62_Re_send_waits_while_repeat_is_on()
+    {
+        var h = FinampStartedAtSecondToLast([E1, E2]);
+        h.Pending = [h.SendNow(7, [E1, E2])];
+        h.Time.Advance(TimeSpan.FromSeconds(60));
+
+        // The verdict is given even under repeat; the re-send itself waits.
+        var outcome = h.FeedAll(FinampChange(N, [], s => s with { RepeatMode = "RepeatAll" }));
+        AssertVerdict(outcome, DeliveryVerdict.Missing, ResendNames.Pending);
+        AssertSkip(outcome, SkipReason.RepeatOn);
+        h.Pending = [];
+
+        h.Time.Advance(TimeSpan.FromSeconds(5));
+        AssertFire(h.Feed(Finamp(N, [])), FireKind.Resend, QueueModel.Upcoming, FireRule.Resend);
+    }
+
+    [Fact]
+    public void TR63_Re_send_is_retried_on_a_clear_error_then_gives_up()
+    {
+        var h = FinampStartedAtSecondToLast([E1, E2]);
+        h.Pending = [h.SendNow(7, [E1, E2])];
+        h.Time.Advance(TimeSpan.FromSeconds(60));
+        AssertFire(h.FeedAll(FinampChange(N, [])), FireKind.Resend, QueueModel.Upcoming);
+        h.Pending = [];
+        Assert.False(h.MarkFailed());
+
+        h.Time.Advance(TimeSpan.FromSeconds(15));
+        var retry = AssertFire(h.Feed(Finamp(N, [])), FireKind.Resend, QueueModel.Upcoming);
+        Assert.Equal(2, retry.Attempt);
+        Assert.Equal([E1, E2], retry.ItemIds);
+
+        Assert.True(h.MarkFailed());
+        h.Time.Advance(TimeSpan.FromMinutes(1));
+        AssertNone(h.Feed(Finamp(N, [])));
+    }
+
+    [Fact]
+    public void TR64_Top_up_when_a_user_song_sits_before_Encores_last()
+    {
+        var h = new TriggerHarness { Run = RunOf(E1, E2) };
+        AssertSkip(h.Feed(Finamp(E1, [U, E2])), SkipReason.NotLast);
+        AssertFire(h.FeedAll(FinampChange(U, [E2])), FireKind.TopUp, QueueModel.Upcoming, FireRule.NearEnd);
+    }
+
+    // ---- unit checks ----
 
     [Fact]
     public void Skip_reason_is_logged_once_per_instance()
     {
         var h = new TriggerHarness();
-        var first = AssertSkip(h.Feed(Web([A, B, C], 1)), SkipReason.NotLast);
-        var again = AssertSkip(h.Feed(Web([A, B, C], 1)), SkipReason.NotLast);
-        var nextSong = AssertSkip(h.Feed(Web([A, B, C, D], 2)), SkipReason.NotLast);
+        var first = AssertSkip(h.Feed(Web([A, B, C, D], 0)), SkipReason.NotLast);
+        var again = AssertSkip(h.Feed(Web([A, B, C, D], 0)), SkipReason.NotLast);
+        var nextSong = AssertSkip(h.Feed(Web([A, B, C, D], 1)), SkipReason.NotLast);
 
         Assert.True(first.ShouldLog);
         Assert.False(again.ShouldLog);
@@ -511,17 +917,47 @@ public sealed class TriggerEngineTests
     }
 
     [Fact]
-    public void Mark_fired_ends_the_instance_and_ignores_other_states()
+    public void Mark_fired_ends_the_instance_records_sent_ids_and_ignores_other_states()
     {
         var h = new TriggerHarness();
-        h.Feed(Web([A, B, C], 1));
+        h.Feed(Web([A, B, C, D], 0));
         var notFiring = h.Memory!;
-        Assert.Same(notFiring, TriggerEngine.MarkFired(notFiring));
+        Assert.Same(notFiring, TriggerEngine.MarkFired(notFiring, [E1]));
         Assert.False(TriggerEngine.MarkFailed(notFiring, h.Time.GetUtcNow()).GaveUp);
 
-        h.Feed(Web([A, B, C], 2));
-        h.MarkFired();
+        h.Feed(Web([A, B, C, D], 2));
+        h.MarkFired(E1, E2);
         Assert.Equal(InstanceState.Fired, h.Memory!.Instance!.State);
+        Assert.Equal([E1, E2], h.Memory.Instance.SentIds);
+
+        h.Feed(Web([A, B, C, D], 3));
+        Assert.Equal([E1, E2], h.Memory!.PrevSentIds);
+        Assert.Empty(h.Memory.Instance!.SentIds);
+    }
+
+    [Fact]
+    public void Verdicts_are_given_only_on_the_first_snapshot_of_an_instance()
+    {
+        var h = FinampStartedAtSecondToLast([E1, E2]);
+        h.Pending = [h.SendNow(7, [E1, E2])];
+
+        // Still the instance that sent: no verdict, however late.
+        h.Time.Advance(TimeSpan.FromMinutes(2));
+        Assert.Empty(h.Feed(Finamp(Nm1, [N])).AllVerdicts);
+    }
+
+    [Fact]
+    public void Delivery_judge_is_per_send()
+    {
+        var t0 = new DateTimeOffset(2026, 11, 20, 18, 0, 0, TimeSpan.Zero);
+        var later = t0 + TimeSpan.FromSeconds(60);
+
+        // One song of the send shows up: the whole send arrived (the other was removed by the user).
+        Assert.Equal(DeliveryVerdict.Confirmed, DeliveryJudge.Judge([E1, E2], N, [new QueueEntry(E2, "queue")], t0, later, false, 10));
+        Assert.Equal(DeliveryVerdict.Confirmed, DeliveryJudge.Judge([E1, E2], E1, [], t0, later, false, 10));
+        Assert.Equal(DeliveryVerdict.Missing, DeliveryJudge.Judge([E1, E2], N, [], t0, later, false, 10));
+        Assert.Equal(DeliveryVerdict.Deferred, DeliveryJudge.Judge([E1, E2], N, [], t0, t0 + TimeSpan.FromSeconds(2), false, 10));
+        Assert.Equal(DeliveryVerdict.Missing, DeliveryJudge.Judge([E1, E2], N, [], t0, t0 + TimeSpan.FromSeconds(3), false, 10));
     }
 
     [Fact]
@@ -541,9 +977,10 @@ public sealed class TriggerEngineTests
     public void Wire_names_match_the_design()
     {
         Assert.Equal(
-            "not_allowed,not_audio,no_remote_control,repeat_on,unknown_client,stale_queue,no_history,not_last,duplicate,rate_limited,run_cap",
+            "not_allowed,not_audio,no_remote_control,repeat_on,unknown_client,stale_queue,no_history,not_last,duplicate,rate_limited,run_cap,already_queued",
             string.Join(',', Enum.GetValues<SkipReason>().Select(r => r.ToWire())));
-        Assert.Equal("topup", FireKind.TopUp.ToWire());
+        Assert.Equal("start,topup,resend", string.Join(',', Enum.GetValues<FireKind>().Select(k => k.ToWire())));
+        Assert.Equal("near_end,last_song,resend", string.Join(',', Enum.GetValues<FireRule>().Select(r => r.ToWire())));
         Assert.Equal("upcoming", QueueModel.Upcoming.ToWire());
     }
 }

@@ -76,7 +76,16 @@ public class DeliveryTests
 
         Assert.Single(h.Log.Named("queue.confirmed"));
         Assert.Empty(h.Log.Named("queue.unconfirmed"));
-        Assert.Single(h.Jellyfin.PlayLastAttempts);
+
+        // T28: the first added song is the next-to-last entry, so a near-end top-up fires with new songs; the
+        // timed-out send is not sent again.
+        Assert.Equal(2, h.Jellyfin.PlayLastAttempts.Count);
+        var second = h.Jellyfin.PlayLastAttempts.Last().ItemIds;
+        Assert.Empty(second.Intersect(sent));
+        var fired = h.Log.Named("trigger.fired").Last();
+        Assert.Equal("topup", fired.Fields["Kind"]);
+        Assert.Equal("near_end", fired.Fields["Rule"]);
+        Assert.Empty(h.Log.Named("queue.resent"));
     }
 
     [Fact]

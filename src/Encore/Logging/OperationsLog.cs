@@ -40,8 +40,8 @@ internal static partial class OperationsLog
     public static partial void TriggerSkippedDebug(this ILogger logger, string sessionId, string? userName, string? client, string reason);
 
     [LoggerMessage(EventId = 4110, EventName = "trigger.fired", Level = LogLevel.Information,
-        Message = "Radio {Kind} on session {SessionId}: model {Model}, item {ItemId} {ItemName}, run {RunId}, key {DedupeKey}")]
-    public static partial void TriggerFired(this ILogger logger, string kind, string sessionId, string model, Guid itemId, string? itemName, string runId, string dedupeKey);
+        Message = "Radio {Kind} on session {SessionId} by rule {Rule}: model {Model}, item {ItemId} {ItemName}, run {RunId}, key {DedupeKey}")]
+    public static partial void TriggerFired(this ILogger logger, string kind, string rule, string sessionId, string model, Guid itemId, string? itemName, string runId, string dedupeKey);
 
     [LoggerMessage(EventId = 4120, EventName = "trigger.gave_up", Level = LogLevel.Warning,
         Message = "Radio gave up on session {SessionId} after {Attempts} attempts: {LastError}")]
@@ -69,8 +69,18 @@ internal static partial class OperationsLog
     public static partial void QueueConfirmed(this ILogger logger, string runId, string itemIds);
 
     [LoggerMessage(EventId = 6040, EventName = "queue.unconfirmed", Level = LogLevel.Warning,
-        Message = "Queued songs not seen in run {RunId}: [{ItemIds}], judged at {JudgedAt}, next item {NextItemId}")]
-    public static partial void QueueUnconfirmed(this ILogger logger, string runId, string itemIds, string judgedAt, Guid? nextItemId);
+        Message = "Queued songs not seen in run {RunId}: [{ItemIds}], judged at {JudgedAt}, next item {NextItemId}, was a re-send {WasResend}, re-send {Resend}")]
+    public static partial void QueueUnconfirmed(this ILogger logger, string runId, string itemIds, string judgedAt, Guid? nextItemId, bool wasResend, string resend);
+
+    /// <summary>T28: the songs of a send the next queue report did not show were sent once more (appended to the end).</summary>
+    [LoggerMessage(EventId = 6050, EventName = "queue.resent", Level = LogLevel.Information,
+        Message = "Re-sent missing songs on session {SessionId} in run {RunId}: [{Items}], original trigger {OriginalTriggerId}, http {HttpStatus}")]
+    public static partial void QueueResent(this ILogger logger, string sessionId, string runId, string items, long originalTriggerId, int? httpStatus);
+
+    /// <summary>T28: the report may predate the songs (DeliveryLag), so the send is judged at the next change.</summary>
+    [LoggerMessage(EventId = 6060, EventName = "queue.verdict_deferred", Level = LogLevel.Debug,
+        Message = "Delivery verdict deferred on session {SessionId} for trigger {TriggerId}: report {ReportAgeMs} ms after the send, from {Source}")]
+    public static partial void QueueVerdictDeferred(this ILogger logger, string sessionId, long triggerId, long reportAgeMs, string source);
 
     [LoggerMessage(EventId = 8010, EventName = "worker.crashed", Level = LogLevel.Critical,
         Message = "Component {Component} failed on a step and went on: {Error}")]

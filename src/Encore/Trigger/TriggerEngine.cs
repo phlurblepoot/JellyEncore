@@ -1,8 +1,12 @@
+using System.Globalization;
+
 namespace Encore.Trigger;
 
 /// <summary>
 /// Pure trigger logic (design sections 2 and 3). Given a session snapshot, the session's memory and
 /// the context, it decides whether Encore should add songs now. No I/O, no clock, no state of its own.
+/// Since T28 it fires when one song is left after the current one (near-end), keeps the last-song rule as a
+/// fallback, and judges pending sends at each new play instance (re-sending a missing one once).
 /// </summary>
 public static class TriggerEngine
 {
@@ -46,7 +50,21 @@ public static class TriggerEngine
             return new(tracked, TriggerDecision.None.Instance, started);
         }
 
-        var instance = tracked.Instance;
+        // 7b. Delivery verdicts, on the first snapshot of a new instance only, before guards 4-7.
+        IReadOnlyList<SendVerdict>? verdicts = null;
+        if (started && context.PendingSends.Count > 0)
+        {
+            (tracked, verdicts) = JudgePending(tracked, session, model, context);
+        }
+
+        var outcome = Decide(session, tracked, started, model, webShaped, context);
+        return verdicts is null ? outcome : outcome with { Verdicts = verdicts };
+    }
+
+    private static TriggerOutcome Decide(TriggerSession session, SessionMemory tracked, bool started, QueueModel model, bool webShaped, TriggerContext context)
+    {
+        var item = session.NowPlayingItem!;
+        var instance = tracked.Instance!;
 
         // 4. Audio only (not videos, episodes or audiobooks).
         if (!string.Equals(item.Type, AudioType, StringComparison.Ordinal))
@@ -72,33 +90,61 @@ public static class TriggerEngine
             return Skip(tracked, webShaped ? SkipReason.StaleQueue : SkipReason.UnknownClient, model, started);
         }
 
-        // 8-9. Fresh queue and the last-song rule.
+        // 7c. Re-send path: this instance's one fire is the re-send; guards 8, 9, 9b and 11 do not apply.
+        if (instance.ResendIds.Count > 0)
+        {
+            if (Waiting(instance, context))
+            {
+                return new(tracked, TriggerDecision.None.Instance, started);
+            }
+
+            if (Limited(context, instance.ResendIds.Count) is { } limit)
+            {
+                return Skip(tracked, limit, model, started);
+            }
+
+            var original = instance.ResendOf?.ToString(CultureInfo.InvariantCulture) ?? "-";
+            var resend = new TriggerDecision.Fire(
+                FireKind.Resend, model, $"{session.Id}|resend|{original}", instance.Attempts + 1, FireRule.Resend, instance.ResendIds);
+            return Firing(tracked, resend, started);
+        }
+
+        // 8-9. Fresh queue and the position rules (near-end, last-song fallback).
         var lastAdded = context.Run?.LastAddedItemId;
+        FireRule rule;
         if (model == QueueModel.Full)
         {
-            var last = instance.EntryQueue[^1];
-            if (last.Id != item.Id || !string.Equals(last.PlaylistItemId, session.PlaylistItemId, StringComparison.Ordinal))
+            var after = SongsAfter(session, instance, model);
+            if (after >= 2)
             {
                 return Skip(tracked, SkipReason.NotLast, model, started);
             }
+
+            rule = after == 1 ? FireRule.NearEnd : FireRule.LastSong;
         }
         else
         {
-            var reason = UpcomingRule(instance.EntryQueue, tracked.PrevEntryQueue, item.Id, lastAdded);
+            var (passed, reason) = UpcomingRule(instance.EntryQueue, tracked.PrevEntryQueue, item.Id, lastAdded, context.Run);
             if (reason is { } failed)
             {
                 return Skip(tracked, failed, model, started);
             }
+
+            rule = passed;
+        }
+
+        // 9b. The previous instance sent songs this report does not show: the delivery check owns that case.
+        if (tracked.PrevSentIds.Count > 0
+            && !tracked.PrevSentIds.Contains(item.Id)
+            && !instance.EntryQueue.Any(e => tracked.PrevSentIds.Contains(e.Id)))
+        {
+            return Skip(tracked, SkipReason.AlreadyQueued, model, started);
         }
 
         // 10. One fire per instance; a failed fire waits before its retry.
-        switch (instance.State)
+        if (Waiting(instance, context))
         {
-            case InstanceState.Firing or InstanceState.Fired or InstanceState.GaveUp:
-                return new(tracked, TriggerDecision.None.Instance, started);
-            case InstanceState.FireFailed when instance.FailedAt is { } failedAt
-                && context.Now - failedAt < TriggerLimits.FireRetryDelay:
-                return new(tracked, TriggerDecision.None.Instance, started);
+            return new(tracked, TriggerDecision.None.Instance, started);
         }
 
         // 11. Durable dedupe, Full model only (Finamp is restart-safe through no_history).
@@ -109,38 +155,36 @@ public static class TriggerEngine
         }
 
         // 12. Rate limits and the run cap.
-        if (IsRateLimited(context))
+        if (Limited(context, context.Batch) is { } limited)
         {
-            return Skip(tracked, SkipReason.RateLimited, model, started);
+            return Skip(tracked, limited, model, started);
         }
 
-        if ((context.Run?.AddedCount ?? 0) >= TriggerLimits.RunCap)
-        {
-            return Skip(tracked, SkipReason.RunCap, model, started);
-        }
-
-        // 13. Fire. The Firing state is set here, before the orchestrator awaits anything.
-        var kind = lastAdded is { } added && added == item.Id ? FireKind.TopUp : FireKind.Start;
-        var attempt = instance.Attempts + 1;
-        var firing = tracked with
-        {
-            Instance = instance with { State = InstanceState.Firing, Attempts = attempt, FailedAt = null },
-        };
-        return new(firing, new TriggerDecision.Fire(kind, model, key, attempt), started);
+        // 13. topup when the song that plays last is the last one Encore added; otherwise start.
+        var final = instance.EntryQueue.Count > 0 ? instance.EntryQueue[^1].Id : item.Id;
+        var kind = lastAdded is { } added && added == final ? FireKind.TopUp : FireKind.Start;
+        return Firing(tracked, new TriggerDecision.Fire(kind, model, key, instance.Attempts + 1, rule), started);
     }
 
-    /// <summary>The orchestrator finished a fire (sent, dry run, or no picks): no more fires in this instance.</summary>
-    public static SessionMemory MarkFired(SessionMemory memory)
+    /// <summary>The orchestrator finished a fire that sent nothing (no picks): no more fires in this instance.</summary>
+    public static SessionMemory MarkFired(SessionMemory memory) => MarkFired(memory, []);
+
+    /// <summary>
+    /// The orchestrator finished a fire (sent, sent without an answer, dry run, or no picks): no more fires in this
+    /// instance. <paramref name="sentIds"/> are the songs it sent or dry-ran (empty for no picks), for guard 9b.
+    /// </summary>
+    public static SessionMemory MarkFired(SessionMemory memory, IReadOnlyList<Guid> sentIds)
     {
         ArgumentNullException.ThrowIfNull(memory);
+        ArgumentNullException.ThrowIfNull(sentIds);
         return memory.Instance is { State: InstanceState.Firing } instance
-            ? memory with { Instance = instance with { State = InstanceState.Fired } }
+            ? memory with { Instance = instance with { State = InstanceState.Fired, SentIds = [.. sentIds] } }
             : memory;
     }
 
     /// <summary>
     /// The orchestrator's fire failed. The instance retries after <see cref="TriggerLimits.FireRetryDelay"/>,
-    /// or gives up after <see cref="TriggerLimits.FireAttempts"/> attempts.
+    /// or gives up after <see cref="TriggerLimits.FireAttempts"/> attempts. A re-send keeps its songs for the retry.
     /// </summary>
     public static (SessionMemory Memory, bool GaveUp) MarkFailed(SessionMemory memory, DateTimeOffset now)
     {
@@ -185,40 +229,130 @@ public static class TriggerEngine
     }
 
     /// <summary>
-    /// Finamp's last-song rule (design section 2). Returns null when the current song is the last one,
-    /// otherwise the reason it is not.
+    /// Songs still to come after the current one: Full counts the entries after the current entry, Upcoming the
+    /// whole list. -1 for Unknown.
     /// </summary>
-    private static SkipReason? UpcomingRule(
+    private static int SongsAfter(TriggerSession session, PlayInstance instance, QueueModel model)
+    {
+        if (model == QueueModel.Upcoming)
+        {
+            return instance.EntryQueue.Count;
+        }
+
+        if (model != QueueModel.Full)
+        {
+            return -1;
+        }
+
+        var queue = instance.EntryQueue;
+        for (var i = queue.Count - 1; i >= 0; i--)
+        {
+            if (queue[i].Id == instance.ItemId && string.Equals(queue[i].PlaylistItemId, session.PlaylistItemId, StringComparison.Ordinal))
+            {
+                return queue.Count - 1 - i;
+            }
+        }
+
+        return -1;
+    }
+
+    /// <summary>
+    /// Step 7b: judges every pending send against this new instance's report. A missing send that may be re-sent
+    /// (not a re-send itself, at most one song still to come) becomes the instance's <see cref="PlayInstance.ResendIds"/>.
+    /// </summary>
+    private static (SessionMemory Memory, IReadOnlyList<SendVerdict> Verdicts) JudgePending(
+        SessionMemory tracked, TriggerSession session, QueueModel model, TriggerContext context)
+    {
+        var instance = tracked.Instance!;
+        var snapshotAt = context.SnapshotAt ?? context.Now;
+        var after = SongsAfter(session, instance, model);
+        var verdicts = new List<SendVerdict>(context.PendingSends.Count);
+        var resend = new List<Guid>();
+        long? resendOf = null;
+
+        foreach (var send in context.PendingSends)
+        {
+            // A send a stop already judged missing stays missing; this new instance may take its re-send.
+            var verdict = send.MissingLoggedAt is not null
+                ? DeliveryVerdict.Missing
+                : DeliveryJudge.Judge(send.ItemIds, instance.ItemId, instance.EntryQueue, send.DoneAt, snapshotAt, context.SnapshotFromPoll, context.PollSeconds);
+            if (verdict != DeliveryVerdict.Missing)
+            {
+                verdicts.Add(new SendVerdict(send.TriggerId, verdict));
+                continue;
+            }
+
+            string plan;
+            if (send.IsResend)
+            {
+                plan = ResendNames.AlreadyResent;
+            }
+            else if (after >= 2)
+            {
+                plan = ResendNames.SkippedUserSongs;
+            }
+            else
+            {
+                plan = ResendNames.Pending;
+                resendOf ??= send.TriggerId;
+                foreach (var id in send.ItemIds.Where(id => !resend.Contains(id)))
+                {
+                    resend.Add(id);
+                }
+            }
+
+            verdicts.Add(new SendVerdict(send.TriggerId, verdict, plan));
+        }
+
+        if (resend.Count > 0)
+        {
+            tracked = tracked with { Instance = instance with { ResendIds = resend, ResendOf = resendOf } };
+        }
+
+        return (tracked, verdicts);
+    }
+
+    /// <summary>Finamp's position rules (design section 2). Returns the rule that passed, or the reason none did.</summary>
+    private static (FireRule Rule, SkipReason? Reason) UpcomingRule(
         IReadOnlyList<QueueEntry> entry,
         IReadOnlyList<QueueEntry>? prev,
         Guid current,
-        Guid? lastAdded)
+        Guid? lastAdded,
+        RunInfo? run)
     {
-        // A non-empty upcoming list is a fresh report of songs still to come.
-        if (entry.Count > 0)
+        // Two or more songs still to come: a fresh report, not near the end.
+        if (entry.Count >= 2)
         {
-            return SkipReason.NotLast;
+            return (FireRule.NearEnd, SkipReason.NotLast);
         }
 
-        // First instance since Encore started: [] cannot be trusted.
+        // First instance since Encore started: the list cannot be trusted.
         if (prev is null)
         {
-            return SkipReason.NoHistory;
+            return (FireRule.NearEnd, SkipReason.NoHistory);
         }
 
-        // (a) the previous instance's upcoming list ended with this song.
+        if (entry.Count == 1)
+        {
+            // Near-end: we moved here through a known queue, or this is a song the run added (right after a re-send).
+            return prev.Any(e => e.Id == current) || run?.Added(current) == true
+                ? (FireRule.NearEnd, null)
+                : (FireRule.NearEnd, SkipReason.StaleQueue);
+        }
+
+        // Fallback (a): the previous instance's upcoming list ended with this song.
         if (prev.Count > 0 && prev[^1].Id == current)
         {
-            return null;
+            return (FireRule.LastSong, null);
         }
 
-        // (b) top-up clause: this is the last song Encore added (needed for ENCORE_BATCH=1).
+        // Fallback (b), the top-up clause: this is the last song Encore added (needed for ENCORE_BATCH=1).
         if (lastAdded is { } added && added == current)
         {
-            return null;
+            return (FireRule.LastSong, null);
         }
 
-        return prev.Count == 0 ? SkipReason.StaleQueue : SkipReason.NotLast;
+        return (FireRule.LastSong, prev.Count == 0 ? SkipReason.StaleQueue : SkipReason.NotLast);
     }
 
     private static (SessionMemory Memory, bool Started) Track(SessionMemory memory, TriggerSession session)
@@ -245,6 +379,7 @@ public static class TriggerEngine
             Idle = false,
             InstanceCount = sequence,
             PrevEntryQueue = current?.EntryQueue ?? memory.PrevEntryQueue,
+            PrevSentIds = current?.SentIds ?? [],
             Instance = new PlayInstance
             {
                 ItemId = item.Id,
@@ -254,6 +389,24 @@ public static class TriggerEngine
             },
         };
         return (next, true);
+    }
+
+    /// <summary>Guard 10: the instance already fired, is firing, gave up, or waits for its retry.</summary>
+    private static bool Waiting(PlayInstance instance, TriggerContext context) => instance.State switch
+    {
+        InstanceState.Firing or InstanceState.Fired or InstanceState.GaveUp => true,
+        InstanceState.FireFailed => instance.FailedAt is { } failedAt && context.Now - failedAt < TriggerLimits.FireRetryDelay,
+        _ => false,
+    };
+
+    private static TriggerOutcome Firing(SessionMemory tracked, TriggerDecision.Fire fire, bool started)
+    {
+        // The Firing state is set here, before the orchestrator awaits anything.
+        var firing = tracked with
+        {
+            Instance = tracked.Instance! with { State = InstanceState.Firing, Attempts = fire.Attempt, FailedAt = null },
+        };
+        return new(firing, fire, started);
     }
 
     private static TriggerOutcome Skip(SessionMemory memory, SkipReason reason, QueueModel model, bool started)
@@ -266,10 +419,18 @@ public static class TriggerEngine
         return new(next, new TriggerDecision.Skip(reason, model, first), started);
     }
 
-    private static bool IsRateLimited(TriggerContext context) =>
-        (context.LastSessionFireAt is { } last && context.Now - last < TriggerLimits.SessionCooldown)
-        || context.SessionItemsLastHour + context.Batch > TriggerLimits.SessionItemsPerHour
-        || context.GlobalItemsLastHour + context.Batch > TriggerLimits.GlobalItemsPerHour;
+    /// <summary>Guard 12 for <paramref name="count"/> songs: cooldown and hourly limits, then the run cap.</summary>
+    private static SkipReason? Limited(TriggerContext context, int count)
+    {
+        if ((context.LastSessionFireAt is { } last && context.Now - last < TriggerLimits.SessionCooldown)
+            || context.SessionItemsLastHour + count > TriggerLimits.SessionItemsPerHour
+            || context.GlobalItemsLastHour + count > TriggerLimits.GlobalItemsPerHour)
+        {
+            return SkipReason.RateLimited;
+        }
+
+        return (context.Run?.AddedCount ?? 0) >= TriggerLimits.RunCap ? SkipReason.RunCap : null;
+    }
 
     private static bool IsOwnSession(TriggerSession session, TriggerContext context) =>
         !string.IsNullOrEmpty(context.OwnDeviceId)

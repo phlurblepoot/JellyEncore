@@ -10,7 +10,8 @@ namespace Encore.Store;
 public sealed class StoreException(string message, Exception? inner = null) : Exception(message, inner);
 
 /// <summary>One trigger outcome as written to <c>triggers</c>.</summary>
-/// <param name="Outcome">sent | dry_run | no_picks | failed.</param>
+/// <param name="Outcome">sent | sent_unconfirmed | dry_run | no_picks | failed.</param>
+/// <param name="Kind">start | topup | resend (T28).</param>
 public sealed record TriggerRecord(
     DateTimeOffset AtUtc,
     string SessionId,
@@ -28,7 +29,8 @@ public sealed record TriggerRecord(
     string? Error = null);
 
 /// <summary>What the store knows about a session's latest radio run.</summary>
-public sealed record StoredRun(string RunId, Guid LastAddedItemId, int AddedCount);
+/// <param name="AddedIds">Every song the run added (re-sends included), oldest first (T28: the run's <c>addedIds</c>).</param>
+public sealed record StoredRun(string RunId, Guid LastAddedItemId, int AddedCount, IReadOnlyList<Guid>? AddedIds = null);
 
 /// <summary>Rows removed by one prune pass.</summary>
 public sealed record PruneResult(int Plays, int AddedItems, int Triggers);
@@ -260,12 +262,22 @@ public sealed class EncoreStore : IDisposable
         cmd.ExecuteNonQuery();
     }
 
-    /// <summary>How many trigger rows have this outcome (sent, dry_run, no_picks or failed).</summary>
-    public int CountTriggers(string outcome)
+    /// <summary>
+    /// How many trigger rows have this outcome (sent, sent_unconfirmed, dry_run, no_picks or failed), optionally only
+    /// of one kind (start, topup or resend).
+    /// </summary>
+    public int CountTriggers(string outcome, string? kind = null)
     {
         using var cmd = _db.CreateCommand();
-        cmd.CommandText = "SELECT COUNT(*) FROM triggers WHERE outcome = $outcome";
+        cmd.CommandText = kind is null
+            ? "SELECT COUNT(*) FROM triggers WHERE outcome = $outcome"
+            : "SELECT COUNT(*) FROM triggers WHERE outcome = $outcome AND kind = $kind";
         cmd.Parameters.AddWithValue("$outcome", outcome);
+        if (kind is not null)
+        {
+            cmd.Parameters.AddWithValue("$kind", kind);
+        }
+
         return Convert.ToInt32(cmd.ExecuteScalar(), CultureInfo.InvariantCulture);
     }
 
@@ -340,7 +352,7 @@ public sealed class EncoreStore : IDisposable
 
     /// <summary>
     /// The session's latest radio run, if one added songs at or after <paramref name="since"/>: its id, the last song
-    /// added and how many songs the run has added. Used after a restart (design section 3).
+    /// added, how many songs the run has added and their ids. Used after a restart (design section 3).
     /// </summary>
     public StoredRun? LatestRun(string sessionId, DateTimeOffset since)
     {
@@ -365,10 +377,19 @@ public sealed class EncoreStore : IDisposable
             lastItem = Guid.ParseExact(reader.GetString(1), "N");
         }
 
-        using var count = _db.CreateCommand();
-        count.CommandText = "SELECT COUNT(*) FROM added_items WHERE run_id = $run";
-        count.Parameters.AddWithValue("$run", runId);
-        return new StoredRun(runId, lastItem, Convert.ToInt32(count.ExecuteScalar(), CultureInfo.InvariantCulture));
+        using var all = _db.CreateCommand();
+        all.CommandText = "SELECT item_id FROM added_items WHERE run_id = $run ORDER BY id";
+        all.Parameters.AddWithValue("$run", runId);
+        var ids = new List<Guid>();
+        using (var reader = all.ExecuteReader())
+        {
+            while (reader.Read())
+            {
+                ids.Add(Guid.ParseExact(reader.GetString(0), "N"));
+            }
+        }
+
+        return new StoredRun(runId, lastItem, ids.Count, ids);
     }
 
     /// <summary>Deletes rows past retention: plays after 14 days, added songs and triggers after 90 days.</summary>

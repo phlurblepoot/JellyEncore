@@ -185,6 +185,10 @@ public class OrchestratorTests
         Assert.Single(h.Log.Named("queue.confirmed"));
         Assert.Empty(h.Log.Named("queue.unconfirmed"));
         Assert.Equal(0, orchestrator.Status.Unconfirmed);
+
+        // T28: the first added song is next-to-last, so the second PlayLast is a near-end top-up.
+        Assert.Equal(2, h.Jellyfin.PlayLasts.Count);
+        Assert.Equal("topup", h.Log.Named("trigger.fired").Last().Fields["Kind"]);
     }
 
     [Fact]

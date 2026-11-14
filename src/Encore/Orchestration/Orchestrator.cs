@@ -126,15 +126,16 @@ public sealed class Orchestrator : BackgroundService
             }
 
             // One bad session must not stop the others in the same snapshot from being evaluated.
-            await SafelyAsync("session", () => ProcessSessionAsync(dto, ct), ct).ConfigureAwait(false);
+            await SafelyAsync("session", () => ProcessSessionAsync(dto, snapshot, ct), ct).ConfigureAwait(false);
         }
 
         // A snapshot lists every session. One that waited for a delivery verdict and is gone has ended: whatever was
-        // queued will not play there, so judge it now instead of keeping it until the tracker is forgotten.
+        // queued will not play there, so judge it now instead of keeping it until the tracker is forgotten. Nothing
+        // is re-sent to a session that is gone.
         var present = new HashSet<string>(snapshot.Sessions.Select(s => s.Id ?? string.Empty), StringComparer.Ordinal);
-        foreach (var track in _sessions.Where(kv => kv.Value.Pending is not null && !present.Contains(kv.Key)).Select(kv => kv.Value).ToList())
+        foreach (var track in _sessions.Where(kv => kv.Value.Pending.Count > 0 && !present.Contains(kv.Key)).Select(kv => kv.Value).ToList())
         {
-            ResolveDelivery(track, confirmed: false, "session_ended", null, _time.GetUtcNow());
+            DropPending(track, "session_ended", _time.GetUtcNow());
         }
 
         JudgeLongStops(_time.GetUtcNow());
@@ -257,7 +258,7 @@ public sealed class Orchestrator : BackgroundService
         RefreshCounts();
     }
 
-    private async Task ProcessSessionAsync(SessionInfoDto dto, CancellationToken ct)
+    private async Task ProcessSessionAsync(SessionInfoDto dto, SessionsSnapshot snapshot, CancellationToken ct)
     {
         var now = _time.GetUtcNow();
         var session = SessionMapping.ToTrigger(dto);
@@ -277,12 +278,16 @@ public sealed class Orchestrator : BackgroundService
         track.Allowed = allowed;
         track.LastDto = dto;
         track.LastSession = session;
+        track.LastSnapshotAt = snapshot.ReceivedAt;
+        track.LastSnapshotFromPoll = snapshot.Source == SnapshotSource.Poll;
         if (dto.NowPlayingItem is null)
         {
-            JudgeStopped(track, dto, now);
+            JudgeStopped(track, session, now);
         }
         else
         {
+            // A song that starts after the grace does not take a re-send armed at the stop: settle the stop first.
+            JudgeLongStop(track, now);
             track.StoppedSince = null;
         }
 
@@ -304,7 +309,10 @@ public sealed class Orchestrator : BackgroundService
 
         if (outcome.InstanceStarted)
         {
+            // A re-send the previous instance never got out (cooldown, caps, repeat) is dropped with it.
+            track.Resend = null;
             OnInstanceStarted(track, session, dto, allowed, now);
+            ApplyVerdicts(track, session, outcome.AllVerdicts, now);
         }
 
         if (outcome.Decision is TriggerDecision.Skip skip)
@@ -339,20 +347,29 @@ public sealed class Orchestrator : BackgroundService
             GlobalItemsLastHour = counting
                 ? TryStore("count global", () => _store.CountAddedSince(null, now - TimeSpan.FromHours(1)), fallback)
                 : 0,
-            Run = track.Run is { } run ? new RunInfo(run.LastAddedItemId, run.AddedCount) : null,
+            Run = track.Run is { } run ? new RunInfo(run.LastAddedItemId, run.AddedCount, run.AddedIds) : null,
+            PendingSends = [.. track.Pending.Select(p => p.ToTrigger())],
+            SnapshotAt = track.LastSnapshotAt == default ? now : track.LastSnapshotAt,
+            SnapshotFromPoll = track.LastSnapshotFromPoll,
+            PollSeconds = _options.PollSeconds,
         };
     }
 
     private SessionRun? LoadRun(string sessionId, DateTimeOffset now)
     {
         var stored = TryStore("latest run", () => _store.LatestRun(sessionId, now - _timing.RunResumeWindow), (StoredRun?)null);
-        return stored is null
-            ? null
-            : new SessionRun(stored.RunId, new RadioPlan(_options.Lookahead, _options.Batch))
-            {
-                LastAddedItemId = stored.LastAddedItemId,
-                AddedCount = stored.AddedCount,
-            };
+        if (stored is null)
+        {
+            return null;
+        }
+
+        var run = new SessionRun(stored.RunId, new RadioPlan(_options.Lookahead, _options.Batch))
+        {
+            LastAddedItemId = stored.LastAddedItemId,
+            AddedCount = stored.AddedCount,
+        };
+        run.AddedIds.UnionWith(stored.AddedIds ?? []);
+        return run;
     }
 
     private void OnInstanceStarted(SessionTrack track, TriggerSession session, SessionInfoDto dto, bool allowed, DateTimeOffset now)
@@ -366,14 +383,6 @@ public sealed class Orchestrator : BackgroundService
 
         OperationsLog.TrackChanged(_log, session.Id, item.Id, instance.EntryQueue.Count, track.Memory.PrevEntryQueue?.Count ?? -1, session.RepeatMode, instance.Sequence);
 
-        // Delivery check: the session's next play instance shows whether the songs were really queued.
-        if (track.Pending is { } pending)
-        {
-            var batch = pending.ItemIds;
-            var confirmed = batch.Contains(item.Id) || instance.EntryQueue.Any(e => batch.Contains(e.Id));
-            ResolveDelivery(track, confirmed, "next_song", item.Id, now);
-        }
-
         if (allowed && session.UserId is { } userId && string.Equals(item.Type, AudioType, StringComparison.Ordinal))
         {
             var artist = Picker.ArtistOf(dto.NowPlayingItem!)?.Id;
@@ -383,56 +392,156 @@ public sealed class Orchestrator : BackgroundService
     }
 
     /// <summary>
-    /// The session shows no playing item while a batch waits for its verdict. In Jellyfin 12.4 that happens only after
-    /// the client's PlaybackStopped, and the server stores the stop's queue just before it clears the item, so the
-    /// queue in this snapshot is the client's fresh report. A non-empty report is judged at once (jellyfin-web lists
-    /// the whole queue; Finamp lists what comes next). An empty or missing report is ambiguous: a real stop, or Finamp
-    /// moving onto the last queued song. That waits <see cref="OrchestratorTiming.StoppedVerdictGrace"/>; a new song
-    /// within it is judged by the next-song check instead.
+    /// Applies the trigger's delivery verdicts from a new play instance (design section 3, step 7b): confirmed sends
+    /// are marked and dropped, deferred ones wait for the next change, missing ones are marked and logged (once), and a
+    /// missing send the trigger set up for a re-send is kept in <see cref="SessionTrack.Resend"/> for the fire.
     /// </summary>
-    private void JudgeStopped(SessionTrack track, SessionInfoDto dto, DateTimeOffset now)
+    private void ApplyVerdicts(SessionTrack track, TriggerSession session, IReadOnlyList<SendVerdict> verdicts, DateTimeOffset now)
     {
-        if (track.Pending is not { } pending)
+        foreach (var verdict in verdicts)
         {
-            return;
+            var index = track.Pending.FindIndex(p => p.TriggerId == verdict.TriggerId);
+            if (index < 0)
+            {
+                continue;
+            }
+
+            var pending = track.Pending[index];
+            switch (verdict.Verdict)
+            {
+                case DeliveryVerdict.Deferred:
+                    var age = (long)(track.LastSnapshotAt - pending.DoneAt).TotalMilliseconds;
+                    OperationsLog.QueueVerdictDeferred(_log, session.Id, pending.TriggerId, age, track.LastSnapshotFromPoll ? "poll" : "socket");
+                    continue;
+                case DeliveryVerdict.Confirmed:
+                    track.Pending.RemoveAt(index);
+                    RecordVerdict(pending, confirmed: true, "next_song", null, string.Empty, now);
+                    continue;
+                default:
+                    track.Pending.RemoveAt(index);
+                    var plan = verdict.Resend ?? ResendNames.SkippedUserSongs;
+                    if (pending.MissingLoggedAt is null)
+                    {
+                        RecordVerdict(pending, confirmed: false, "next_song", session.NowPlayingItem?.Id, plan, now);
+                    }
+
+                    if (plan == ResendNames.Pending)
+                    {
+                        track.Resend = track.Resend is { } earlier
+                            ? earlier with { Items = [.. earlier.Items, .. pending.Items.Where(i => earlier.Items.All(e => e.Id != i.Id))] }
+                            : pending;
+                    }
+
+                    continue;
+            }
         }
 
-        if (dto.NowPlayingQueue is { Count: > 0 } queue)
+        if (track.Pending.Count == 0)
         {
-            var confirmed = queue.Any(q => pending.ItemIds.Contains(q.Id));
-            ResolveDelivery(track, confirmed, "stopped", null, now);
-        }
-        else
-        {
-            track.StoppedSince ??= now;
+            track.StoppedSince = null;
         }
     }
 
     /// <summary>
-    /// A session stopped with an empty or missing queue report, and no song started within the grace: it was a real
-    /// stop, not a track change, so the batch did not arrive. Runs on every tick and snapshot.
+    /// The session shows no playing item while a send waits for its verdict. In Jellyfin 12.4 that happens only after
+    /// the client's PlaybackStopped, and the server stores the stop's queue just before it clears the item, so the
+    /// queue in this snapshot is the client's fresh report. A non-empty report is judged at once (jellyfin-web lists
+    /// the whole queue; Finamp lists what comes next), unless it may predate the songs (delivery lag). An empty or
+    /// missing report is ambiguous: a real stop, or Finamp moving onto the last queued song. That waits
+    /// <see cref="OrchestratorTiming.StoppedVerdictGrace"/>; a new song within it is judged by the trigger instead.
+    /// Nothing is ever re-sent here: PlayLast to a stopped client starts music or loads a new queue (T28). A send found
+    /// missing is re-sent only if a new song starts within the grace.
     /// </summary>
-    private void JudgeLongStops(DateTimeOffset now)
+    private void JudgeStopped(SessionTrack track, TriggerSession session, DateTimeOffset now)
     {
-        foreach (var track in _sessions.Values.ToList())
-        {
-            if (track.Pending is not null && track.StoppedSince is { } stopped && now - stopped >= _timing.StoppedVerdictGrace)
-            {
-                ResolveDelivery(track, confirmed: false, "stopped", null, now);
-            }
-        }
-    }
-
-    /// <summary>Records the delivery verdict of the pending batch and logs <c>queue.confirmed</c> or <c>queue.unconfirmed</c>.</summary>
-    private void ResolveDelivery(SessionTrack track, bool confirmed, string judgedAt, Guid? nextItemId, DateTimeOffset now)
-    {
-        if (track.Pending is not { } pending)
+        if (track.Pending.Count == 0)
         {
             return;
         }
 
-        track.Pending = null;
+        track.StoppedSince ??= now;
+        if (session.NowPlayingQueue.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var pending in track.Pending.ToList())
+        {
+            if (pending.MissingLoggedAt is not null)
+            {
+                continue;
+            }
+
+            var verdict = DeliveryJudge.Judge(
+                pending.ItemIds, null, session.NowPlayingQueue, pending.DoneAt, track.LastSnapshotAt, track.LastSnapshotFromPoll, _options.PollSeconds);
+            var index = track.Pending.IndexOf(pending);
+            switch (verdict)
+            {
+                case DeliveryVerdict.Confirmed:
+                    track.Pending.RemoveAt(index);
+                    RecordVerdict(pending, confirmed: true, "stopped", null, string.Empty, now);
+                    break;
+                case DeliveryVerdict.Missing when pending.IsResend:
+                    track.Pending.RemoveAt(index);
+                    RecordVerdict(pending, confirmed: false, "stopped", null, ResendNames.AlreadyResent, now);
+                    break;
+                case DeliveryVerdict.Missing:
+                    track.Pending[index] = pending with { MissingLoggedAt = now };
+                    RecordVerdict(pending, confirmed: false, "stopped", null, ResendNames.Armed, now);
+                    break;
+                default:
+                    var age = (long)(track.LastSnapshotAt - pending.DoneAt).TotalMilliseconds;
+                    OperationsLog.QueueVerdictDeferred(_log, session.Id, pending.TriggerId, age, track.LastSnapshotFromPoll ? "poll" : "socket");
+                    break;
+            }
+        }
+
+        if (track.Pending.Count == 0)
+        {
+            track.StoppedSince = null;
+        }
+    }
+
+    /// <summary>Runs <see cref="JudgeLongStop"/> on every session. Runs on every tick and snapshot.</summary>
+    private void JudgeLongStops(DateTimeOffset now)
+    {
+        foreach (var track in _sessions.Values.ToList())
+        {
+            JudgeLongStop(track, now);
+        }
+    }
+
+    /// <summary>
+    /// A session stopped while sends waited, and no song started within the grace: it was a real stop, not a track
+    /// change. Sends not judged yet are unconfirmed; sends a stop already judged missing lose their armed re-send.
+    /// </summary>
+    private void JudgeLongStop(SessionTrack track, DateTimeOffset now)
+    {
+        if (track.Pending.Count > 0 && track.StoppedSince is { } stopped && now - stopped >= _timing.StoppedVerdictGrace)
+        {
+            DropPending(track, "stopped", now);
+        }
+    }
+
+    /// <summary>Drops every pending send without a re-send (a stop past the grace, or the session ended).</summary>
+    private void DropPending(SessionTrack track, string judgedAt, DateTimeOffset now)
+    {
+        foreach (var pending in track.Pending)
+        {
+            if (pending.MissingLoggedAt is null)
+            {
+                RecordVerdict(pending, confirmed: false, judgedAt, null, pending.IsResend ? ResendNames.AlreadyResent : ResendNames.SkippedNotPlaying, now);
+            }
+        }
+
+        track.Pending.Clear();
+        track.Resend = null;
         track.StoppedSince = null;
+    }
+
+    /// <summary>Records one send's delivery verdict and logs <c>queue.confirmed</c> or <c>queue.unconfirmed</c>.</summary>
+    private void RecordVerdict(PendingDelivery pending, bool confirmed, string judgedAt, Guid? nextItemId, string resend, DateTimeOffset now)
+    {
         var ids = string.Join(',', pending.ItemIds.Select(id => id.ToString("N")));
         TryStoreAction("delivery", () => _store.MarkDelivery(pending.TriggerId, confirmed, now));
         if (confirmed)
@@ -441,14 +550,14 @@ public sealed class Orchestrator : BackgroundService
         }
         else
         {
-            OperationsLog.QueueUnconfirmed(_log, pending.RunId, ids, judgedAt, nextItemId);
+            OperationsLog.QueueUnconfirmed(_log, pending.RunId, ids, judgedAt, nextItemId, pending.IsResend, resend);
             Update(s => s with { Unconfirmed = s.Unconfirmed + 1 });
         }
     }
 
     private void LogSkip(TriggerSession session, SkipReason reason)
     {
-        if (reason is SkipReason.NotLast or SkipReason.NotAllowed)
+        if (reason is SkipReason.NotLast or SkipReason.NotAllowed or SkipReason.AlreadyQueued)
         {
             OperationsLog.TriggerSkippedDebug(_log, session.Id, session.UserName, session.Client, reason.ToWire());
         }
@@ -461,6 +570,12 @@ public sealed class Orchestrator : BackgroundService
     private async Task FireAsync(SessionTrack track, TriggerSession session, SessionInfoDto dto, TriggerDecision.Fire fire, DateTimeOffset now, CancellationToken ct)
     {
         // The trigger fires only for a playing item of an allow-listed user.
+        if (fire.Kind == FireKind.Resend)
+        {
+            await ResendAsync(track, session, dto, fire, now, ct).ConfigureAwait(false);
+            return;
+        }
+
         var item = dto.NowPlayingItem!;
         var userId = session.UserId!.Value;
         var clock = Stopwatch.GetTimestamp();
@@ -470,7 +585,7 @@ public sealed class Orchestrator : BackgroundService
             : new SessionRun(Guid.NewGuid().ToString("N"), new RadioPlan(_options.Lookahead, _options.Batch));
         track.Run = run;
 
-        OperationsLog.TriggerFired(_log, fire.Kind.ToWire(), session.Id, fire.Model.ToWire(), item.Id, item.Name, run.RunId, fire.DedupeKey);
+        OperationsLog.TriggerFired(_log, fire.Kind.ToWire(), fire.Rule.ToWire(), session.Id, fire.Model.ToWire(), item.Id, item.Name, run.RunId, fire.DedupeKey);
 
         try
         {
@@ -534,7 +649,72 @@ public sealed class Orchestrator : BackgroundService
             var triggerId = RecordOutcome(track, session, run, fire, outcome, now, clock, handout.Batch, status, error);
             if (triggerId is { } id)
             {
-                track.Pending = new PendingDelivery(id, run.RunId, ids);
+                track.Pending.Add(new PendingDelivery(id, run.RunId, handout.Batch, _time.GetUtcNow(), IsResend: false));
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            RecordFailure(track, session, run, fire, now, clock, ex);
+        }
+    }
+
+    /// <summary>
+    /// Sends the songs of a missing send once more (design section 3, fire handling step 7): no picker, no plan. The
+    /// answer is handled like any send: 204 is sent, no answer is sent_unconfirmed (never retried), any other failure
+    /// is retried 15 s later with the same songs. A sent re-send is a pending send of its own, marked as a re-send.
+    /// </summary>
+    private async Task ResendAsync(SessionTrack track, TriggerSession session, SessionInfoDto dto, TriggerDecision.Fire fire, DateTimeOffset now, CancellationToken ct)
+    {
+        var item = dto.NowPlayingItem!;
+        var clock = Stopwatch.GetTimestamp();
+        var ids = fire.ItemIds ?? [];
+        if (track.Resend is not { } original || ids.Count == 0 || _options.DryRun)
+        {
+            // Nothing to send (the trigger and the tracker disagree, or dry run, which never arms a pending send).
+            track.Memory = TriggerEngine.MarkFired(track.Memory!);
+            return;
+        }
+
+        var items = ids
+            .Select(id => original.Items.FirstOrDefault(i => i.Id == id))
+            .OfType<PickedItem>()
+            .ToList();
+        var run = track.Run ??= new SessionRun(original.RunId, new RadioPlan(_options.Lookahead, _options.Batch));
+        OperationsLog.TriggerFired(_log, fire.Kind.ToWire(), fire.Rule.ToWire(), session.Id, fire.Model.ToWire(), item.Id, item.Name, run.RunId, fire.DedupeKey);
+        var listed = string.Join("; ", items);
+
+        try
+        {
+            string outcome;
+            string? error = null;
+            int? status = 204;
+            try
+            {
+                await _jellyfin.PlayLastAsync(session.Id, [.. items.Select(i => i.Id)], ct).ConfigureAwait(false);
+                outcome = EncoreStore.SentOutcome;
+                Update(s => s with { JellyfinLastOkUtc = now, JellyfinLastError = null });
+            }
+            catch (JellyfinException ex) when (ex.OutcomeUnknown && !ct.IsCancellationRequested)
+            {
+                // As for any send: the songs may be queued already, so no retry; the next report decides.
+                outcome = EncoreStore.SentNoReplyOutcome;
+                status = null;
+                error = Truncate(ex.Message);
+                var reason = error;
+                Update(s => s with { JellyfinLastError = reason });
+                OperationsLog.QueueAddNoReply(_log, session.Id, error, listed);
+            }
+
+            OperationsLog.QueueResent(_log, session.Id, run.RunId, listed, original.TriggerId, status);
+            track.Resend = null;
+            var triggerId = RecordOutcome(track, session, run, fire, outcome, now, clock, items, status, error);
+            if (triggerId is { } id)
+            {
+                track.Pending.Add(new PendingDelivery(id, run.RunId, items, _time.GetUtcNow(), IsResend: true));
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -568,10 +748,12 @@ public sealed class Orchestrator : BackgroundService
 
         // A send without an answer counts as sent: the songs may be in the queue.
         var sent = outcome is EncoreStore.SentOutcome or EncoreStore.SentNoReplyOutcome;
-        if (items.Count > 0 && (sent || outcome == EncoreStore.DryRunOutcome))
+        var counted = items.Count > 0 && (sent || outcome == EncoreStore.DryRunOutcome);
+        if (counted)
         {
             run.LastAddedItemId = items[^1].Id;
             run.AddedCount += items.Count;
+            run.AddedIds.UnionWith(items.Select(i => i.Id));
         }
 
         if (sent || outcome == EncoreStore.DryRunOutcome)
@@ -579,7 +761,8 @@ public sealed class Orchestrator : BackgroundService
             track.LastFireAt = now;
         }
 
-        track.Memory = TriggerEngine.MarkFired(track.Memory!);
+        // The sent (or dry-run) songs go into the instance, so the next instance can tell whether they showed up (guard 9b).
+        track.Memory = TriggerEngine.MarkFired(track.Memory!, counted ? [.. items.Select(i => i.Id)] : []);
         Update(s => s with
         {
             Fired = s.Fired + 1,

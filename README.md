@@ -1,16 +1,16 @@
 # JellyEncore
 
-Encore is a small .NET 10 service that runs alongside a Jellyfin 12.4 server. When a listed user's music queue reaches its last song, Encore adds more songs to the queue, so the music keeps going. In v0.1 it only uses songs already in the library.
+Encore is a small .NET 10 service that runs alongside a Jellyfin 12.4 server. When a listed user's music queue is down to one song after the current one, Encore adds more songs to the queue, so the music keeps going. In v0.1 it only uses songs already in the library.
 
 ## What it does
 
-When an allow-listed user's queue reaches its last song, Encore adds `ENCORE_BATCH` (2) owned songs to the end of that session's queue with PlayLast. When the last song Encore added becomes the last song again, it adds the next batch (a top-up), so the radio keeps going for up to about 60 songs per run. Songs come from similar artists, similar songs and an instant mix, and never repeat within the recent window.
+When an allow-listed user's queue is down to one song after the current one (the current song is the second-to-last), Encore adds `ENCORE_BATCH` (2) owned songs to the end of that session's queue with PlayLast. When only the last song Encore added is still to come, it adds the next batch (a top-up), so a song is always left to play and the radio keeps going for up to about 60 songs per run. If the app's next queue report does not show the songs, Encore sends them once more (only while something is playing, and never just because a request got no answer). If the second-to-last song was missed (a restart, a skip straight to the last song), the last song still starts the radio. Songs come from similar artists, similar songs and an instant mix, and never repeat within the recent window.
 
 Works with Jellyfin Web and Finamp. Other apps are skipped (reason `unknown_client`). Nothing is added while a session has repeat on (`repeat_on`) or does not allow remote control (`no_remote_control`).
 
 ## Requirements
 
-- Jellyfin 12.4. The "last song" rule depends on how 12.4 stores the queue.
+- Jellyfin 12.4. The queue rules depend on how 12.4 stores the queue.
 - A Jellyfin API key made by an admin (Dashboard, API Keys). Encore needs it to see all sessions and to send PlayLast. Enter it yourself in the environment file; never put it on a command line or in the repository.
 - The playing app must allow remote control, and repeat must be off.
 
@@ -53,7 +53,7 @@ Invalid settings are all reported at once (one JSON log line per bad variable) a
 | `ENCORE_DATA_DIR` | Writable folder for `encore.db` and `device-id` | `/data` |
 | `LOG_LEVEL` | Trace, Debug, Information, Warning, Error (Encore category) | `Information` |
 
-Fixed in v0.1, not configurable: a 60-minute dedupe window, a 20-second cooldown per session, at most 30 songs per session and 120 in total per hour, at most 60 songs per radio run, two fire attempts 15 seconds apart, a 10-second timeout per Jellyfin call, song lengths of 60 seconds to 12 minutes, and at most 8 Jellyfin calls per pick.
+Fixed in v0.1, not configurable: a 60-minute dedupe window, a 20-second cooldown per session, at most 30 songs per session and 120 in total per hour (re-sent songs count), at most 60 songs per radio run, two fire attempts 15 seconds apart, one re-send of songs the next queue report does not show, a 3-second delivery lag (plus the poll interval for poll reports) before a report can prove songs missing, a 10-second grace after a stop, a 10-second timeout per Jellyfin call, song lengths of 60 seconds to 12 minutes, and at most 8 Jellyfin calls per pick.
 
 ## Running in Docker
 
@@ -67,7 +67,7 @@ Fixed in v0.1, not configurable: a 60-minute dedupe window, a 20-second cooldown
 
 1. Start with `ENCORE_DRY_RUN=true` (the default).
 2. Play an album as an allow-listed user, through to its last song.
-3. Look for `queue.would_add` in the logs. The line lists the songs Encore would have added. Check that they are sensible.
+3. Look for `queue.would_add` in the logs: one line per album end, at the second-to-last song (the last song logs `already_queued` at Debug). The line lists the songs Encore would have added. Check that they are sensible.
 4. Set `ENCORE_DRY_RUN=false` and restart. Encore only queues songs from then on.
 
 ## Health
@@ -99,24 +99,26 @@ JSON lines on stdout. Set `LOG_LEVEL` to see more. The events an operator looks 
 | `allowlist.resolve_failed` | Warning | Jellyfin could not list users; retried with backoff |
 | `jellyfin.auth_failed` | Error | Jellyfin rejected the API key (401 or 403) |
 | `socket.closed`, `socket.reconnect_scheduled` | Warning, Info | The session socket dropped and is coming back |
-| `trigger.fired` | Info | A radio fire started (`Kind` is `start` or `topup`) |
-| `trigger.skipped` | Info | Radio did not start for a reason (see below). `not_last` and `not_allowed` are logged at Debug as `trigger.skipped_quiet` |
+| `trigger.fired` | Info | A radio fire started (`Kind` is `start`, `topup` or `resend`; `Rule` is `near_end`, `last_song` or `resend`) |
+| `trigger.skipped` | Info | Radio did not start for a reason (see below). `not_last`, `not_allowed` and `already_queued` are logged at Debug as `trigger.skipped_quiet` |
 | `trigger.gave_up` | Warning | Two attempts failed; no more tries for this song |
 | `queue.would_add` | Info | Dry run: the songs that would have been queued |
 | `queue.added` | Info | Songs sent with PlayLast |
 | `queue.add_failed` | Error | PlayLast failed; the reason and status are logged |
-| `queue.unconfirmed` | Warning | Songs were accepted but were not seen in the queue when the next song started |
+| `queue.unconfirmed` | Warning | Songs were accepted but were not in the queue the app reported at the next song or stop. `Resend` says what happens next: `pending` (sent again now), `armed` (sent again if a song starts within 10 s), `skipped_not_playing`, `skipped_user_songs`, `already_resent` |
+| `queue.resent` | Info | The missing songs were sent once more, appended to the end of the queue |
+| `queue.add_no_reply` | Warning | PlayLast got no answer; not retried, the next queue report decides |
 | `picks.planned`, `picks.none` | Info, Warning | Which songs were picked, or that none were found |
 | `worker.crashed` | Critical | A step failed; Encore keeps running |
 
-`trigger.skipped` reasons: `not_allowed`, `not_audio` (a video or episode), `no_remote_control`, `repeat_on`, `unknown_client`, `stale_queue`, `no_history`, `not_last`, `duplicate`, `rate_limited`, `run_cap`.
+`trigger.skipped` reasons: `not_allowed`, `not_audio` (a video or episode), `no_remote_control`, `repeat_on`, `unknown_client`, `stale_queue`, `no_history`, `not_last` (two or more songs still to come), `duplicate`, `rate_limited`, `run_cap`, `already_queued` (songs sent at the previous song have not shown up yet; the delivery check handles them).
 
 ## Troubleshooting
 
 - **Nothing happens.** Read the `trigger.skipped` reasons. `repeat_on` means repeat is on for that session. `no_remote_control` means the app does not allow remote control. `unknown_client` means the app is not Jellyfin Web or Finamp. `stale_queue` and `no_history` are normal for the first song after a restart or a song started from idle.
 - **`jellyfin.auth_failed`, or `/health` shows `unauthorized`.** The key was revoked or mistyped. Create a new key in Jellyfin and update the `.env` file.
 - **`allowlist.unresolved`.** A user name is mistyped, or the user does not exist. Use the user's exact name, or the user's id so that a rename does not break it. Each unresolved name is checked again every 5 minutes.
-- **Songs never show up.** `queue.unconfirmed` means Jellyfin accepted the command but the songs were not in the queue when the next song started. Check the app's own queue screen.
+- **Songs never show up.** `queue.unconfirmed` means Jellyfin accepted the command but the songs were not in the queue the app reported next; it is normally followed by `queue.resent`. Two `queue.unconfirmed` in a row for one queue end (the second with `already_resent`) mean the app is not taking commands, and Encore stops for that queue end. Check the app's own queue screen.
 - **Exit code 3.** The database is broken or was written by a newer build. Restore the previous image, or back up and remove `encore.db`.
 
 ## Data and reset

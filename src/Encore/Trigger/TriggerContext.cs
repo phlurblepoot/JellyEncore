@@ -31,7 +31,25 @@ public sealed record TriggerContext
 
     /// <summary>The session's current radio run, or null when there is none.</summary>
     public RunInfo? Run { get; init; }
+
+    /// <summary>T28: the session's sends still waiting for a delivery verdict (normally none or one).</summary>
+    public IReadOnlyList<PendingSend> PendingSends { get; init; } = [];
+
+    /// <summary>T28: when the snapshot was received (for <see cref="TriggerLimits.DeliveryLag"/>); defaults to <see cref="Now"/>.</summary>
+    public DateTimeOffset? SnapshotAt { get; init; }
+
+    /// <summary>T28: true when the snapshot came from a poll, not the socket.</summary>
+    public bool SnapshotFromPoll { get; init; }
+
+    /// <summary>ENCORE_POLL_SECONDS, added to the delivery lag for poll reports.</summary>
+    public int PollSeconds { get; init; } = 10;
 }
 
 /// <summary>What the trigger needs to know about the session's current radio run.</summary>
-public sealed record RunInfo(Guid? LastAddedItemId, int AddedCount);
+/// <param name="LastAddedItemId">The last song of the newest send of any kind.</param>
+/// <param name="AddedCount">Songs the run added, re-sends included (run cap).</param>
+/// <param name="AddedIds">T28: every song the run sent, for the Finamp near-end freshness right after a re-send.</param>
+public sealed record RunInfo(Guid? LastAddedItemId, int AddedCount, IReadOnlyCollection<Guid>? AddedIds = null)
+{
+    public bool Added(Guid id) => AddedIds?.Contains(id) == true;
+}

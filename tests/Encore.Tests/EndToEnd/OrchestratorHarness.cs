@@ -75,6 +75,10 @@ internal sealed class OrchestratorHarness : IDisposable
     public static SessionsSnapshot Snapshot(TimeProvider time, params SessionInfoDto[] sessions) =>
         new(time.GetUtcNow(), SnapshotSource.Socket, sessions);
 
+    /// <summary>Hands one snapshot of these sessions to the orchestrator, taken now.</summary>
+    public Task Send(Orchestrator orchestrator, params SessionInfoDto[] sessions) =>
+        orchestrator.HandleSnapshotAsync(Snapshot(Time, sessions));
+
     public void Dispose()
     {
         Store.Dispose();
@@ -108,4 +112,40 @@ internal static class Sessions
         PlaylistItemId = playlistItemId,
         PlayState = new PlayerStateInfo { RepeatMode = JellyfinRepeatMode.RepeatNone, PlaybackOrder = JellyfinPlaybackOrder.Default },
     };
+
+    public const string FinampId = "sess-finamp";
+
+    /// <summary>The album or playlist source id Finamp reports as the session's PlaylistItemId.</summary>
+    public static readonly Guid FinampSource = Catalog.G(777);
+
+    /// <summary>A jellyfin-web session on <paramref name="list"/>, playing entry <paramref name="index"/> (entries <c>playlistItem0..n</c>).</summary>
+    public static SessionInfoDto WebAt(Guid[] list, int index) =>
+        Web(Catalog.User, list[index], "playlistItem" + index, list.Select((id, i) => (id, "playlistItem" + i)));
+
+    /// <summary>The stop half of a web track change (or a real stop): no playing item, the full list the client reported.</summary>
+    public static SessionInfoDto WebStopped(Guid[] list) =>
+        WebAt(list.Length > 0 ? list : [Catalog.G(999)], 0) with
+        {
+            NowPlayingItem = null,
+            PlaylistItemId = null,
+            NowPlayingQueue = list.Select((id, i) => new QueueItem { Id = id, PlaylistItemId = "playlistItem" + i }).ToList(),
+        };
+
+    /// <summary>A Finamp session: <paramref name="upcoming"/> is the list after the current song, as the last stop reported it.</summary>
+    public static SessionInfoDto Finamp(Guid current, params Guid[] upcoming) => new()
+    {
+        Id = FinampId,
+        UserId = Catalog.User,
+        UserName = "nathan",
+        Client = "Finamp",
+        DeviceId = "phone-device",
+        SupportsRemoteControl = true,
+        NowPlayingItem = Catalog.Song(current, Catalog.SeedArtist, "Now playing"),
+        NowPlayingQueue = upcoming.Select(id => new QueueItem { Id = id, PlaylistItemId = "queue" }).ToList(),
+        PlaylistItemId = FinampSource.ToString("N"),
+        PlayState = new PlayerStateInfo { RepeatMode = JellyfinRepeatMode.RepeatNone, PlaybackOrder = JellyfinPlaybackOrder.Default },
+    };
+
+    /// <summary>Finamp's stop at a track change: no playing item, the upcoming list relative to the new song.</summary>
+    public static SessionInfoDto FinampStopped(params Guid[] upcoming) => Finamp(Catalog.G(999), upcoming) with { NowPlayingItem = null };
 }

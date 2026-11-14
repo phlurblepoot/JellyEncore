@@ -11,13 +11,35 @@ internal sealed class SessionRun(string runId, RadioPlan plan)
 
     public RadioPlan Plan { get; } = plan;
 
+    /// <summary>The last song of the newest send of any kind (a re-send puts its songs at the end of the queue).</summary>
     public Guid? LastAddedItemId { get; set; }
 
+    /// <summary>Songs added by the run, re-sends included (run cap).</summary>
     public int AddedCount { get; set; }
+
+    /// <summary>Every song the run sent (T28), for the Finamp near-end rule right after a re-send.</summary>
+    public HashSet<Guid> AddedIds { get; } = [];
 }
 
-/// <summary>Songs sent in the last fire, waiting for the delivery verdict (next song, a stop, or the session ending).</summary>
-internal sealed record PendingDelivery(long TriggerId, string RunId, IReadOnlyList<Guid> ItemIds);
+/// <summary>
+/// A send waiting for its delivery verdict (next song, a stop, or the session ending). The songs keep their pick
+/// source, so a re-send writes the same sources.
+/// </summary>
+/// <param name="DoneAt">When the PlayLast call returned or timed out (for the delivery lag).</param>
+/// <param name="IsResend">A re-send: if it is lost too, nothing is sent again.</param>
+/// <param name="MissingLoggedAt">Set when a stop judged it missing; a new song within the grace takes the re-send.</param>
+internal sealed record PendingDelivery(
+    long TriggerId,
+    string RunId,
+    IReadOnlyList<PickedItem> Items,
+    DateTimeOffset DoneAt,
+    bool IsResend,
+    DateTimeOffset? MissingLoggedAt = null)
+{
+    public IReadOnlyList<Guid> ItemIds { get; } = [.. Items.Select(i => i.Id)];
+
+    public PendingSend ToTrigger() => new(TriggerId, ItemIds, DoneAt, IsResend, MissingLoggedAt);
+}
 
 /// <summary>Everything the orchestrator keeps for one Jellyfin session. Owned by the loop, never shared.</summary>
 internal sealed class SessionTrack
@@ -42,8 +64,20 @@ internal sealed class SessionTrack
 
     public TriggerSession? LastSession { get; set; }
 
-    public PendingDelivery? Pending { get; set; }
+    /// <summary>When the last snapshot of the session was received, and whether it came from a poll (delivery lag).</summary>
+    public DateTimeOffset LastSnapshotAt { get; set; }
 
-    /// <summary>When the session was first seen stopped with an empty or missing queue report while a verdict was pending.</summary>
+    public bool LastSnapshotFromPoll { get; set; }
+
+    /// <summary>Sends waiting for a verdict, oldest first (normally none or one).</summary>
+    public List<PendingDelivery> Pending { get; } = [];
+
+    /// <summary>
+    /// The missing send(s) the current play instance re-sends (the trigger holds the ids in the instance's ResendIds).
+    /// Cleared when a new instance starts or the re-send went out.
+    /// </summary>
+    public PendingDelivery? Resend { get; set; }
+
+    /// <summary>When the session was first seen stopped while a verdict was pending (empty report, or a send judged at the stop).</summary>
     public DateTimeOffset? StoppedSince { get; set; }
 }
