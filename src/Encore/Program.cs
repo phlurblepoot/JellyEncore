@@ -1,7 +1,13 @@
 using System.Reflection;
 using Encore;
 using Encore.Config;
+using Encore.Health;
+using Encore.Jellyfin;
 using Encore.Logging;
+using Encore.Orchestration;
+using Encore.Picks;
+using Encore.Store;
+using Encore.Watch;
 
 // Container HEALTHCHECK entry point: the aspnet image has no curl, so the app probes itself.
 if (args.Contains("--healthcheck"))
@@ -23,6 +29,22 @@ if (config.Options is not { } options)
     return EncoreOptionsLoader.ExitCode;
 }
 
+// The store opens before the host, so a database that is broken or newer than this build stops the process with exit code 3.
+using var storeLoggerFactory = LoggerFactory.Create(b => b.AddJsonConsole(Encore.Logging.LogSetup.ConfigureJson));
+var storeLogger = storeLoggerFactory.CreateLogger("Encore.Startup");
+EncoreStore store;
+try
+{
+    store = EncoreStore.Open(Path.Combine(options.DataDir, "encore.db"), TimeProvider.System);
+    var pruned = store.Prune(TimeProvider.System.GetUtcNow());
+    storeLogger.StoreReady(store.Path, store.SchemaVersionOnDisk, pruned.Plays + pruned.AddedItems + pruned.Triggers);
+}
+catch (StoreException ex)
+{
+    storeLogger.StoreError("open", ex.Message);
+    return 3;
+}
+
 var builder = WebApplication.CreateBuilder(args);
 builder.Logging.ClearProviders();
 builder.Logging.AddJsonConsole(Encore.Logging.LogSetup.ConfigureJson);
@@ -30,12 +52,19 @@ Encore.Logging.LogSetup.ApplyFilters(builder.Logging, options.LogLevel);
 // Second layer of defence: HttpClient logging must never show the Authorization header.
 builder.Services.ConfigureHttpClientDefaults(b => b.RedactLoggedHeaders(name => string.Equals(name, "Authorization", StringComparison.OrdinalIgnoreCase)));
 builder.Services.AddSingleton(options);
-builder.Services.AddHostedService<EncoreWorker>();
+builder.Services.AddSingleton(store);
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddJellyfinClient(options);
+builder.Services.AddSessionWatcher(options);
+builder.Services.AddSingleton<IPicker, Picker>();
+builder.Services.AddSingleton<Orchestrator>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<Orchestrator>());
 
 var app = builder.Build();
 var version = typeof(Program).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "0.0.0";
 app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Encore.Startup").StartupConfig(options, version);
-app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
+app.Lifetime.ApplicationStopped.Register(() => store.Dispose());
+HealthEndpoint.Map(app, version);
 app.Run();
 return 0;
 
