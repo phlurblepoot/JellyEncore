@@ -1,6 +1,7 @@
 using System.Reflection;
 using Encore;
 using Encore.Config;
+using Encore.Fetch;
 using Encore.Health;
 using Encore.Jellyfin;
 using Encore.Logging;
@@ -45,6 +46,22 @@ catch (StoreException ex)
     return 3;
 }
 
+// The fetch store (dry run and live) is a second connection to the same file, opened after the main store migrated it.
+FetchStore? fetchStore = null;
+if (options.FetchMode != FetchMode.Off)
+{
+    try
+    {
+        fetchStore = FetchStore.Open(store.Path);
+    }
+    catch (StoreException ex)
+    {
+        storeLogger.StoreError("open_fetch", ex.Message);
+        store.Dispose();
+        return 3;
+    }
+}
+
 var builder = WebApplication.CreateBuilder(args);
 builder.Logging.ClearProviders();
 builder.Logging.AddJsonConsole(Encore.Logging.LogSetup.ConfigureJson);
@@ -56,6 +73,7 @@ builder.Services.AddSingleton(store);
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddJellyfinClient(options);
 builder.Services.AddSessionWatcher(options);
+builder.Services.AddFetch(options, fetchStore);
 builder.Services.AddSingleton<IPicker, Picker>();
 builder.Services.AddSingleton<Orchestrator>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<Orchestrator>());
@@ -69,7 +87,11 @@ foreach (var warning in config.Warnings)
     startupLogger.StartupConfigWarning(warning.Variable, warning.Message);
 }
 
-app.Lifetime.ApplicationStopped.Register(() => store.Dispose());
+app.Lifetime.ApplicationStopped.Register(() =>
+{
+    fetchStore?.Dispose();
+    store.Dispose();
+});
 HealthEndpoint.Map(app, version);
 app.Run();
 return 0;

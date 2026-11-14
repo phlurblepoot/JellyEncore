@@ -102,8 +102,8 @@ public sealed record ImporterSettings(
     string SlskdDownloadsDir,
     long FreeSpaceFloorBytes = ImporterSettings.DefaultFreeSpaceFloor)
 {
-    /// <summary>20 GB (decimal), FetchLimits.FreeSpaceFloor in the design.</summary>
-    public const long DefaultFreeSpaceFloor = 20_000_000_000;
+    /// <summary>The one free-space floor, <see cref="FetchLimits.FreeSpaceFloorBytes"/> (20 GB decimal).</summary>
+    public const long DefaultFreeSpaceFloor = FetchLimits.FreeSpaceFloorBytes;
 
     public static ImporterSettings From(EncoreOptions options) =>
         new(options.RadioDir, options.RadioJellyfinDir, options.SlskdDownloadsDir);

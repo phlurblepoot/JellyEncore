@@ -74,8 +74,10 @@ public sealed record FetchAttempt(
     double? ScoreEtaSeconds = null,
     int? DurationMs = null);
 
-/// <summary>A <c>fetched_files</c> row still in flight, read after a restart.</summary>
-public sealed record ActiveFetch(long Id, string JobId, string TrackKey, string State, string? Path, string? TransferId, string RunId);
+/// <summary>A <c>fetched_files</c> row still in flight, read after a restart. <see cref="Peer"/> and <see cref="JellyfinPath"/> are null until known.</summary>
+public sealed record ActiveFetch(
+    long Id, string JobId, string TrackKey, string State, string? Path, string? TransferId, string RunId,
+    string? Peer = null, string? JellyfinPath = null);
 
 /// <summary>
 /// The fetch worker's part of the database (design section 9 of v0.2): its own connection to the same file as
@@ -308,6 +310,25 @@ public sealed class FetchStore : IDisposable
         }
     }
 
+    /// <summary>The <c>requested_utc</c> of every row requested at or after <paramref name="since"/>, oldest first (seeds the hourly cap window).</summary>
+    public IReadOnlyList<DateTimeOffset> FetchTimesSince(DateTimeOffset since)
+    {
+        lock (_gate)
+        {
+            using var cmd = _db.CreateCommand();
+            cmd.CommandText = "SELECT requested_utc FROM fetched_files WHERE requested_utc >= $since ORDER BY requested_utc";
+            cmd.Parameters.AddWithValue("$since", EncoreStore.FormatUtc(since));
+            var times = new List<DateTimeOffset>();
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                times.Add(DateTimeOffset.Parse(reader.GetString(0), CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal));
+            }
+
+            return times;
+        }
+    }
+
     /// <summary>Rows in state downloading, importing or imported, oldest first: the work to settle after a restart.</summary>
     public IReadOnlyList<ActiveFetch> ActiveForRestart()
     {
@@ -315,7 +336,7 @@ public sealed class FetchStore : IDisposable
         {
             using var cmd = _db.CreateCommand();
             cmd.CommandText = """
-                SELECT id, job_id, track_key, state, path, transfer_id, run_id FROM fetched_files
+                SELECT id, job_id, track_key, state, path, transfer_id, run_id, peer, jellyfin_path FROM fetched_files
                 WHERE state IN ('downloading', 'importing', 'imported') ORDER BY id
                 """;
             var rows = new List<ActiveFetch>();
@@ -326,7 +347,9 @@ public sealed class FetchStore : IDisposable
                     reader.GetInt64(0), reader.GetString(1), reader.GetString(2), reader.GetString(3),
                     reader.IsDBNull(4) ? null : reader.GetString(4),
                     reader.IsDBNull(5) ? null : reader.GetString(5),
-                    reader.GetString(6)));
+                    reader.GetString(6),
+                    reader.IsDBNull(7) ? null : reader.GetString(7),
+                    reader.IsDBNull(8) ? null : reader.GetString(8)));
             }
 
             return rows;

@@ -30,7 +30,8 @@ public static class FetchLimits
     public const int MaxPassOvers = 1;
     public static readonly TimeSpan NegativeCache = TimeSpan.FromHours(24);
     public const int FetchesPerHour = 30;
-    public const long FreeSpaceFloorBytes = 20L * 1024 * 1024 * 1024;
+    /// <summary>20 GB in decimal units, as Unraid shows free space. The only free-space floor (the importer uses it too).</summary>
+    public const long FreeSpaceFloorBytes = 20_000_000_000;
     public static readonly TimeSpan ExternalLookupTimeout = TimeSpan.FromSeconds(10);
     public static readonly TimeSpan OwnedIndexRefresh = TimeSpan.FromMinutes(30);
     public const int OwnedIndexPageSize = 500;
