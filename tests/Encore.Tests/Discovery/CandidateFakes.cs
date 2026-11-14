@@ -106,6 +106,12 @@ internal sealed class FakeLibrary : IJellyfinClient
 
     public ConcurrentQueue<(Guid[] Ids, string Fields)> ByIdCalls { get; } = new();
 
+    public Task ReportMediaUpdatedAsync(IReadOnlyCollection<string> jellyfinPaths, CancellationToken ct = default) => throw new NotSupportedException();
+
+    public Task<IReadOnlyList<VirtualFolderInfo>> GetVirtualFoldersAsync(CancellationToken ct = default) => throw new NotSupportedException();
+
+    public Task<IReadOnlyList<BaseItemDto>> GetRecentAudioAsync(Guid parentId, int limit, CancellationToken ct = default) => throw new NotSupportedException();
+
     public Task<QueryResult<BaseItemDto>> GetAudioPageAsync(int startIndex, int limit, CancellationToken ct = default)
     {
         PageCalls.Enqueue((startIndex, limit));

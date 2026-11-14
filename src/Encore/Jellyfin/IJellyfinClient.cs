@@ -30,6 +30,21 @@ public interface IJellyfinClient
     /// <summary>GET /Items?ids=a,b&amp;fields=. Used for an artist's MusicBrainz id (fields=ProviderIds). No userId.</summary>
     Task<IReadOnlyList<BaseItemDto>> GetItemsByIdsAsync(IReadOnlyCollection<Guid> ids, string fields, CancellationToken ct = default);
 
+    /// <summary>
+    /// POST /Library/Media/Updated with {"Updates":[{"Path":"...","UpdateType":"Created"}]}, expects 204. Paths are as Jellyfin sees them.
+    /// Never retried (idempotent: the next ingest repeats it).
+    /// </summary>
+    Task ReportMediaUpdatedAsync(IReadOnlyCollection<string> jellyfinPaths, CancellationToken ct = default);
+
+    /// <summary>GET /Library/VirtualFolders. Needs an admin token (the API key is one).</summary>
+    Task<IReadOnlyList<VirtualFolderInfo>> GetVirtualFoldersAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// GET /Items?parentId=&amp;recursive=true&amp;includeItemTypes=Audio&amp;fields=Path,DateCreated&amp;sortBy=DateCreated&amp;sortOrder=Descending&amp;limit=&amp;enableTotalRecordCount=false.
+    /// The newest songs in one library, with their paths.
+    /// </summary>
+    Task<IReadOnlyList<BaseItemDto>> GetRecentAudioAsync(Guid parentId, int limit, CancellationToken ct = default);
+
     /// <summary>POST /Sessions/{sessionId}/Playing with playCommand=PlayLast and itemIds. Expects 204.</summary>
     Task PlayLastAsync(string sessionId, IReadOnlyCollection<Guid> itemIds, CancellationToken ct = default);
 }

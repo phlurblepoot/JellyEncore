@@ -60,6 +60,87 @@ internal sealed class FakeJellyfin : IJellyfinClient
     public Task<IReadOnlyList<BaseItemDto>> GetItemsByIdsAsync(IReadOnlyCollection<Guid> ids, string fields, CancellationToken ct = default) =>
         Task.FromResult<IReadOnlyList<BaseItemDto>>(ids.Where(ItemsById.ContainsKey).Select(id => ItemsById[id]).ToList());
 
+    // ---- Jellyfin ingest (T48) -------------------------------------------------------------------
+
+    /// <summary>The clock that decides when a reported file appears. Tests pass a manual clock.</summary>
+    public TimeProvider Clock { get; set; } = TimeProvider.System;
+
+    /// <summary>How long after Media/Updated a reported file shows up in the recent-audio list. Null = it never does.</summary>
+    public TimeSpan? IngestDelay { get; set; } = TimeSpan.Zero;
+
+    /// <summary>What GET /Library/VirtualFolders returns.</summary>
+    public List<VirtualFolderInfo> VirtualFolders { get; set; } = [];
+
+    /// <summary>Every path Encore reported through Media/Updated, in order.</summary>
+    public ConcurrentQueue<string> MediaUpdatedPaths { get; } = new();
+
+    /// <summary>Every GetRecentAudio call: the library and the limit.</summary>
+    public ConcurrentQueue<(Guid ParentId, int Limit)> RecentCalls { get; } = new();
+
+    /// <summary>The next recent-audio calls throw these, one each, before answering normally.</summary>
+    public ConcurrentQueue<Exception> RecentFailures { get; } = new();
+
+    /// <summary>Set to make Media/Updated throw.</summary>
+    public Exception? MediaUpdatedFailure { get; set; }
+
+    /// <summary>Items the recent-audio list always holds (older songs, or one with a similar path).</summary>
+    public List<BaseItemDto> RecentExtra { get; } = [];
+
+    private readonly List<(BaseItemDto Item, DateTimeOffset Due)> _reported = [];
+
+    public Task ReportMediaUpdatedAsync(IReadOnlyCollection<string> jellyfinPaths, CancellationToken ct = default)
+    {
+        if (MediaUpdatedFailure is { } failure)
+        {
+            throw failure;
+        }
+
+        foreach (var path in jellyfinPaths)
+        {
+            MediaUpdatedPaths.Enqueue(path);
+            if (IngestDelay is { } delay)
+            {
+                var item = new BaseItemDto { Id = Guid.NewGuid(), Type = "Audio", Name = System.IO.Path.GetFileNameWithoutExtension(path), Path = path };
+                lock (_reported)
+                {
+                    _reported.Add((item, Clock.GetUtcNow() + delay));
+                }
+            }
+        }
+
+        return Task.CompletedTask;
+    }
+
+    public Task<IReadOnlyList<VirtualFolderInfo>> GetVirtualFoldersAsync(CancellationToken ct = default) =>
+        Task.FromResult<IReadOnlyList<VirtualFolderInfo>>(VirtualFolders.ToList());
+
+    public Task<IReadOnlyList<BaseItemDto>> GetRecentAudioAsync(Guid parentId, int limit, CancellationToken ct = default)
+    {
+        RecentCalls.Enqueue((parentId, limit));
+        if (RecentFailures.TryDequeue(out var failure))
+        {
+            throw failure;
+        }
+
+        var now = Clock.GetUtcNow();
+        List<BaseItemDto> visible;
+        lock (_reported)
+        {
+            visible = _reported.Where(r => r.Due <= now).OrderByDescending(r => r.Due).Select(r => r.Item).Concat(RecentExtra).Take(limit).ToList();
+        }
+
+        return Task.FromResult<IReadOnlyList<BaseItemDto>>(visible);
+    }
+
+    /// <summary>The item id the fake gave to a reported path (null when the path was never reported).</summary>
+    public Guid? ItemIdOf(string path)
+    {
+        lock (_reported)
+        {
+            return _reported.FirstOrDefault(r => r.Item.Path == path).Item?.Id;
+        }
+    }
+
     public Task<QueryResult<BaseItemDto>> GetInstantMixAsync(Guid songId, Guid userId, int limit = 50, CancellationToken ct = default) =>
         Picks.GetInstantMixAsync(songId, userId, limit, ct);
 }

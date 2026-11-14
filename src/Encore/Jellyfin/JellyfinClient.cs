@@ -120,6 +120,46 @@ public sealed class JellyfinClient : IJellyfinClient
         return result.Items;
     }
 
+    public async Task ReportMediaUpdatedAsync(IReadOnlyCollection<string> jellyfinPaths, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(jellyfinPaths);
+        if (jellyfinPaths.Count == 0)
+        {
+            throw new ArgumentException("at least one path is required", nameof(jellyfinPaths));
+        }
+
+        var body = JsonSerializer.Serialize(new
+        {
+            Updates = jellyfinPaths.Select(p => new { Path = p, UpdateType = "Created" }).ToArray(),
+        }, MediaUpdatedJson);
+
+        // No retries: the call is idempotent and the next ingest repeats it.
+        using var response = await SendAsync(
+            HttpMethod.Post, "Library/Media/Updated", "ReportMediaUpdated", maxRetries: 0, _ => false, ct,
+            () => new StringContent(body, System.Text.Encoding.UTF8, "application/json")).ConfigureAwait(false);
+    }
+
+    public async Task<IReadOnlyList<VirtualFolderInfo>> GetVirtualFoldersAsync(CancellationToken ct = default) =>
+        await GetAsync<List<VirtualFolderInfo>>("Library/VirtualFolders", "GetVirtualFolders", ct).ConfigureAwait(false);
+
+    public async Task<IReadOnlyList<BaseItemDto>> GetRecentAudioAsync(Guid parentId, int limit, CancellationToken ct = default)
+    {
+        RequirePositive(limit);
+        var query = Query(
+            ("parentId", Id(parentId)),
+            ("recursive", "true"),
+            ("includeItemTypes", "Audio"),
+            ("fields", "Path,DateCreated"),
+            ("sortBy", "DateCreated"),
+            ("sortOrder", "Descending"),
+            ("limit", limit.ToString(CultureInfo.InvariantCulture)),
+            ("enableTotalRecordCount", "false"));
+        var result = await GetAsync<QueryResult<BaseItemDto>>($"Items?{query}", "GetRecentAudio", ct).ConfigureAwait(false);
+        return result.Items;
+    }
+
+    private static readonly JsonSerializerOptions MediaUpdatedJson = new() { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
+
     public async Task PlayLastAsync(string sessionId, IReadOnlyCollection<Guid> itemIds, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
@@ -160,14 +200,14 @@ public sealed class JellyfinClient : IJellyfinClient
 
     /// <summary>Sends one call with its retry rule. The returned response is successful; the caller disposes it.</summary>
     private async Task<HttpResponseMessage> SendAsync(
-        HttpMethod method, string path, string operation, int maxRetries, Func<int, bool> isRetryable, CancellationToken ct)
+        HttpMethod method, string path, string operation, int maxRetries, Func<int, bool> isRetryable, CancellationToken ct, Func<HttpContent>? content = null)
     {
         for (var attempt = 0; ; attempt++)
         {
             HttpResponseMessage response;
             try
             {
-                using var request = new HttpRequestMessage(method, path);
+                using var request = new HttpRequestMessage(method, path) { Content = content?.Invoke() };
                 response = await _http.SendAsync(request, ct).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)

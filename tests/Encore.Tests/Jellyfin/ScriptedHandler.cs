@@ -5,7 +5,7 @@ using Encore.Jellyfin;
 namespace Encore.Tests.Jellyfin;
 
 /// <summary>What the client sent, captured when the request reached the bottom of the handler chain.</summary>
-internal sealed record SentRequest(string Method, string PathAndQuery, string? Authorization, IReadOnlyList<string> HeaderNames);
+internal sealed record SentRequest(string Method, string PathAndQuery, string? Authorization, IReadOnlyList<string> HeaderNames, string? Body = null, string? ContentType = null);
 
 /// <summary>Fake Jellyfin: plays back one scripted reply per request and records every request.</summary>
 internal sealed class ScriptedHandler : HttpMessageHandler
@@ -40,7 +40,9 @@ internal sealed class ScriptedHandler : HttpMessageHandler
             request.Method.Method,
             request.RequestUri!.PathAndQuery,
             request.Headers.Contains("Authorization") ? string.Join("|", request.Headers.GetValues("Authorization")) : null,
-            request.Headers.Select(h => h.Key).ToList()));
+            request.Headers.Select(h => h.Key).ToList(),
+            request.Content?.ReadAsStringAsync(cancellationToken).GetAwaiter().GetResult(),
+            request.Content?.Headers.ContentType?.ToString()));
 
         if (_script.Count == 0)
         {

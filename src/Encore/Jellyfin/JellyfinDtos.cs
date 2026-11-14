@@ -190,3 +190,17 @@ internal static class JellyfinJson
         return options;
     }
 }
+
+/// <summary>One library from GET /Library/VirtualFolders. <see cref="Locations"/> are paths inside the Jellyfin container.</summary>
+public sealed record VirtualFolderInfo
+{
+    public string? Name { get; init; }
+
+    public IReadOnlyList<string>? Locations { get; init; }
+
+    /// <summary>Lowercase, e.g. "music"; null for a mixed library.</summary>
+    public string? CollectionType { get; init; }
+
+    /// <summary>The library's item id, used as parentId in /Items.</summary>
+    public Guid ItemId { get; init; }
+}
