@@ -42,6 +42,9 @@ public sealed record OrchestratorTiming
     /// </summary>
     public TimeSpan StoppedVerdictGrace { get; init; } = TimeSpan.FromSeconds(10);
 
+    /// <summary>Cut-off of the outside suggestion lookup inside a fire (fetch mode dry_run and live); within <see cref="PickTimeout"/>.</summary>
+    public TimeSpan ExternalLookupTimeout { get; init; } = Encore.Fetch.FetchLimits.ExternalLookupTimeout;
+
     /// <summary>How many earlier songs of the session are offered to the picker as secondary seeds.</summary>
     public int HistoryLimit { get; init; } = 20;
 }

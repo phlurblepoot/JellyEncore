@@ -16,6 +16,22 @@ public enum PickSource
 
     /// <summary>Another song by the seed artist (last resort).</summary>
     SeedArtist,
+
+    /// <summary>v0.2: Deezer artist radio of the seed artist (wire <c>deezer_radio+&lt;copy&gt;</c>).</summary>
+    DeezerRadio,
+
+    /// <summary>v0.2: top songs of a Deezer related artist (wire <c>deezer_related+&lt;copy&gt;</c>).</summary>
+    DeezerRelated,
+
+    /// <summary>v0.2: top songs of a ListenBrainz similar artist (wire <c>lb_similar+&lt;copy&gt;</c>).</summary>
+    ListenBrainzSimilar,
+}
+
+/// <summary>Which copy of a song is sent: the one the server already had, or one fetched from Soulseek (v0.2 design 4.5).</summary>
+public enum PickCopy
+{
+    Server,
+    Soulseek,
 }
 
 public static class PickSourceNames
@@ -27,14 +43,33 @@ public static class PickSourceNames
         PickSource.SimilarSong => "similar_song",
         PickSource.InstantMix => "instant_mix",
         PickSource.SeedArtist => "seed_artist",
+        PickSource.DeezerRadio => "deezer_radio",
+        PickSource.DeezerRelated => "deezer_related",
+        PickSource.ListenBrainzSimilar => "lb_similar",
         _ => "unknown",
     };
+
+    /// <summary>True for the v0.2 outside sources, whose stored name carries the copy (<c>&lt;origin&gt;+&lt;copy&gt;</c>).</summary>
+    public static bool IsExternal(this PickSource source) =>
+        source is PickSource.DeezerRadio or PickSource.DeezerRelated or PickSource.ListenBrainzSimilar;
+
+    /// <summary>The wire name of a copy: <c>server</c> or <c>soulseek</c>.</summary>
+    public static string ToWire(this PickCopy copy) => copy == PickCopy.Soulseek ? "soulseek" : "server";
 }
 
-/// <summary>One planned song. <see cref="ArtistId"/> is the first track artist, else the first album artist.</summary>
-public sealed record PickedItem(Guid Id, string? Name, Guid? ArtistId, string? ArtistName, PickSource Source)
+/// <summary>
+/// One planned song. <see cref="ArtistId"/> is the first track artist, else the first album artist. <see cref="Copy"/>
+/// says whether the server copy is sent or one fetched from Soulseek (v0.1 picks are always the server copy).
+/// </summary>
+public sealed record PickedItem(Guid Id, string? Name, Guid? ArtistId, string? ArtistName, PickSource Source, PickCopy Copy = PickCopy.Server)
 {
-    public override string ToString() => $"{Id:N} {ArtistName ?? "?"} - {Name ?? "?"} [{Source.ToWire()}]";
+    /// <summary>
+    /// The stored name (<c>triggers.sources</c>, <c>added_items.source</c>): the v0.1 names for the owned chain (always the
+    /// server copy), <c>&lt;origin&gt;+server</c> or <c>&lt;origin&gt;+soulseek</c> for outside suggestions.
+    /// </summary>
+    public string WireSource() => Source.IsExternal() ? $"{Source.ToWire()}+{Copy.ToWire()}" : Source.ToWire();
+
+    public override string ToString() => $"{Id:N} {ArtistName ?? "?"} - {Name ?? "?"} [{WireSource()}]";
 }
 
 /// <summary>A song played or added earlier in this session, used for secondary seeds. Newest first in <see cref="PickRequest.SessionHistory"/>.</summary>

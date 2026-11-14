@@ -1,5 +1,7 @@
 using System.Threading.Channels;
 using Encore.Config;
+using Encore.Discovery;
+using Encore.Fetch;
 using Encore.Jellyfin;
 using Encore.Orchestration;
 using Encore.Picks;
@@ -54,6 +56,13 @@ internal sealed class OrchestratorHarness : IDisposable
 
     public OrchestratorTiming Timing { get; set; } = new() { Tick = TimeSpan.FromMilliseconds(50) };
 
+    /// <summary>The fetch side (null: mode off, the null object). Set with <see cref="Candidates"/> and <see cref="Owned"/> for v0.2 runs.</summary>
+    public IFetchRequests? Fetch { get; set; }
+
+    public ICandidateSource? Candidates { get; set; }
+
+    public IOwnedIndex? Owned { get; set; }
+
     /// <summary>A new orchestrator on the current store with an empty memory, as after a process restart.</summary>
     public Orchestrator CreateOrchestrator() => new(
         Jellyfin,
@@ -63,7 +72,10 @@ internal sealed class OrchestratorHarness : IDisposable
         Channel.Reader,
         Time,
         Log,
-        Timing);
+        Timing,
+        Fetch,
+        Candidates,
+        Owned);
 
     /// <summary>Closes and reopens the store file, as a restart does.</summary>
     public void RestartStore()

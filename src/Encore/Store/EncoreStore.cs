@@ -249,7 +249,7 @@ public sealed class EncoreStore : IDisposable
                 added.Parameters.AddWithValue("$run", record.RunId);
                 added.Parameters.AddWithValue("$item", Id(item.Id));
                 added.Parameters.AddWithValue("$pos", pos);
-                added.Parameters.AddWithValue("$source", item.Source.ToWire());
+                added.Parameters.AddWithValue("$source", item.WireSource());
                 added.Parameters.AddWithValue("$at", at);
                 added.ExecuteNonQuery();
 
@@ -476,7 +476,7 @@ public sealed class EncoreStore : IDisposable
         cmd.Parameters.AddWithValue("$key", record.DedupeKey);
         cmd.Parameters.AddWithValue("$outcome", record.Outcome);
         cmd.Parameters.AddWithValue("$ids", items.Count == 0 ? DBNull.Value : string.Join(',', items.Select(i => Id(i.Id))));
-        cmd.Parameters.AddWithValue("$sources", items.Count == 0 ? DBNull.Value : string.Join(',', items.Select(i => i.Source.ToWire())));
+        cmd.Parameters.AddWithValue("$sources", items.Count == 0 ? DBNull.Value : string.Join(',', items.Select(i => i.WireSource())));
         cmd.Parameters.AddWithValue("$status", (object?)record.HttpStatus ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$error", (object?)record.Error ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$duration", record.DurationMs);

@@ -5,10 +5,45 @@ namespace Encore.Picks;
 /// <summary>What one fire hands out.</summary>
 /// <param name="Batch">The songs to send now, in order. Empty means <c>no_picks</c>.</param>
 /// <param name="Pick">The picker run that refilled the plan, or null when the plan was already full.</param>
-/// <param name="Remaining">The plan left after the hand-out.</param>
-public sealed record PlanHandout(IReadOnlyList<PickedItem> Batch, PickResult? Pick, IReadOnlyList<PickedItem> Remaining)
+/// <param name="Remaining">The plan left after the hand-out. A <see cref="PoolPlan"/> lists a fetch that is not ready yet with <see cref="Guid.Empty"/> as its id.</param>
+/// <param name="PassedOver">Fetched picks passed over at this hand-out (always 0 for <see cref="RadioPlan"/>).</param>
+/// <param name="Skipped">Fetched picks skipped at this hand-out: late or failed (always 0 for <see cref="RadioPlan"/>).</param>
+public sealed record PlanHandout(IReadOnlyList<PickedItem> Batch, PickResult? Pick, IReadOnlyList<PickedItem> Remaining, int PassedOver = 0, int Skipped = 0)
 {
     public bool IsEmpty => Batch.Count == 0;
+}
+
+/// <summary>The input of one hand-out.</summary>
+/// <param name="Exclusions">From <see cref="RecentExclusions.Build"/>: queue, seed and recent window. The plan adds its own items.</param>
+/// <param name="RunId">The run the plan belongs to (fetch pick ids and run end).</param>
+public sealed record PlanContext(
+    IPicker Picker,
+    Guid UserId,
+    BaseItemDto Seed,
+    IReadOnlyList<HistorySong> SessionHistory,
+    IReadOnlySet<Guid> Exclusions,
+    string RunId,
+    string SessionId,
+    DateTimeOffset Now);
+
+/// <summary>
+/// The look-ahead plan of one radio run: <see cref="RadioPlan"/> (v0.1, fetch mode off and dry run) or
+/// <see cref="PoolPlan"/> (fetch mode live). Not thread-safe: owned by the orchestrator loop.
+/// </summary>
+public interface IRadioPlan
+{
+    int Lookahead { get; }
+
+    int Batch { get; }
+
+    /// <summary>Every song this plan has handed out.</summary>
+    IReadOnlyCollection<Guid> HandedOut { get; }
+
+    /// <summary>Re-checks, refills and hands out one batch.</summary>
+    Task<PlanHandout> NextBatchAsync(PlanContext context, CancellationToken ct = default);
+
+    /// <summary>Takes a batch back after a send that clearly failed, so the retry sends the same songs.</summary>
+    void PutBack(IReadOnlyList<PickedItem> batch);
 }
 
 /// <summary>
@@ -19,7 +54,7 @@ public sealed record PlanHandout(IReadOnlyList<PickedItem> Batch, PickResult? Pi
 /// Songs handed out by this plan are never planned again, even in dry run where nothing is stored.
 /// Not thread-safe: owned by the orchestrator loop.
 /// </summary>
-public sealed class RadioPlan
+public sealed class RadioPlan : IRadioPlan
 {
     private readonly List<PickedItem> _items = [];
     private readonly HashSet<Guid> _handedOut = [];
@@ -56,6 +91,12 @@ public sealed class RadioPlan
         }
 
         _items.InsertRange(0, batch.Where(b => _items.All(i => i.Id != b.Id)));
+    }
+
+    public Task<PlanHandout> NextBatchAsync(PlanContext context, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        return NextBatchAsync(context.Picker, context.UserId, context.Seed, context.SessionHistory, context.Exclusions, ct);
     }
 
     /// <summary>

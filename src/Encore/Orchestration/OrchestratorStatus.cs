@@ -54,6 +54,12 @@ public sealed record OrchestratorStatus
 
     public DateTimeOffset? LastSentUtc { get; init; }
 
+    /// <summary>Fetched picks passed over at a hand-out because their fetch was not ready (fetch mode live).</summary>
+    public int PassedOver { get; init; }
+
+    /// <summary>Fetched picks skipped at a hand-out: still not ready after one pass-over, or failed (fetch mode live).</summary>
+    public int Skipped { get; init; }
+
     /// <summary>False after the last store operation threw.</summary>
     public bool StoreOk { get; init; } = true;
 }

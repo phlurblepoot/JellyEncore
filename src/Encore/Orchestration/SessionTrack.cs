@@ -1,3 +1,4 @@
+using Encore.Discovery;
 using Encore.Jellyfin;
 using Encore.Picks;
 using Encore.Trigger;
@@ -5,11 +6,21 @@ using Encore.Trigger;
 namespace Encore.Orchestration;
 
 /// <summary>The radio run of one session: its id, its plan and the songs it has added so far.</summary>
-internal sealed class SessionRun(string runId, RadioPlan plan)
+internal sealed class SessionRun(string runId, IRadioPlan plan)
 {
     public string RunId { get; } = runId;
 
-    public RadioPlan Plan { get; } = plan;
+    /// <summary>The v0.1 <see cref="RadioPlan"/>, or the <see cref="PoolPlan"/> when fetch mode is live.</summary>
+    public IRadioPlan Plan { get; } = plan;
+
+    /// <summary>True once the fetch side was told the run ended (replaced, run cap, session gone, shutdown).</summary>
+    public bool Ended { get; set; }
+
+    /// <summary>Fetch mode dry_run: shadow plans made so far (their pick ids are <c>{runId}:dry{n}:{m}</c>).</summary>
+    public int ShadowFires { get; set; }
+
+    /// <summary>Fetch mode dry_run: keys already asked for in this run, so a shadow plan does not search them again.</summary>
+    public HashSet<TrackKey> ShadowRequested { get; } = [];
 
     /// <summary>The last song of the newest send of any kind (a re-send puts its songs at the end of the queue).</summary>
     public Guid? LastAddedItemId { get; set; }

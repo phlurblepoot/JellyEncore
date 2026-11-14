@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Threading.Channels;
 using Encore.Config;
+using Encore.Discovery;
+using Encore.Fetch;
 using Encore.Jellyfin;
 using Encore.Logging;
 using Encore.Picks;
@@ -30,6 +32,10 @@ public sealed class Orchestrator : BackgroundService
     private readonly TimeProvider _time;
     private readonly ILogger<Orchestrator> _log;
     private readonly OrchestratorTiming _timing;
+    private readonly IFetchRequests _fetch;
+    private readonly ICandidateSource? _candidates;
+    private readonly IOwnedIndex? _owned;
+    private readonly IntervalGate _indexNotReady = new(TimeSpan.FromMinutes(1));
     private readonly Dictionary<string, SessionTrack> _sessions = new(StringComparer.Ordinal);
     private IReadOnlySet<Guid> _allowed = new HashSet<Guid>();
     private DateTimeOffset _nextAllowListAt;
@@ -45,7 +51,10 @@ public sealed class Orchestrator : BackgroundService
         ChannelReader<SessionsSnapshot> snapshots,
         TimeProvider time,
         ILogger<Orchestrator> log,
-        OrchestratorTiming? timing = null)
+        OrchestratorTiming? timing = null,
+        IFetchRequests? fetch = null,
+        ICandidateSource? candidates = null,
+        IOwnedIndex? owned = null)
     {
         _jellyfin = jellyfin ?? throw new ArgumentNullException(nameof(jellyfin));
         _picker = picker ?? throw new ArgumentNullException(nameof(picker));
@@ -55,6 +64,9 @@ public sealed class Orchestrator : BackgroundService
         _time = time ?? throw new ArgumentNullException(nameof(time));
         _log = log ?? throw new ArgumentNullException(nameof(log));
         _timing = timing ?? new OrchestratorTiming();
+        _fetch = fetch ?? NullFetchRequests.Instance;
+        _candidates = candidates;
+        _owned = owned;
 
         var now = _time.GetUtcNow();
         _nextAllowListAt = now;
@@ -107,6 +119,13 @@ public sealed class Orchestrator : BackgroundService
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
             // Normal shutdown.
+        }
+        finally
+        {
+            foreach (var track in _sessions.Values)
+            {
+                EndRun(track, "shutdown");
+            }
         }
     }
 
@@ -251,6 +270,7 @@ public sealed class Orchestrator : BackgroundService
             var track = _sessions[id];
             if (now - track.LastSeen > _timing.SessionForgetAfter)
             {
+                EndRun(track, "session_gone");
                 _sessions.Remove(id);
             }
         }
@@ -321,6 +341,11 @@ public sealed class Orchestrator : BackgroundService
             {
                 LogSkip(session, skip.Reason);
             }
+
+            if (skip.Reason == SkipReason.RunCap)
+            {
+                EndRun(track, "run_cap");
+            }
         }
         else if (outcome.Decision is TriggerDecision.Fire fire)
         {
@@ -364,7 +389,7 @@ public sealed class Orchestrator : BackgroundService
             return null;
         }
 
-        var run = new SessionRun(stored.RunId, new RadioPlan(_options.Lookahead, _options.Batch))
+        var run = new SessionRun(stored.RunId, NewPlan())
         {
             LastAddedItemId = stored.LastAddedItemId,
             AddedCount = stored.AddedCount,
@@ -588,7 +613,13 @@ public sealed class Orchestrator : BackgroundService
         // A retry (attempt 2) keeps the run, so the plan's put-back songs are sent again.
         var run = (fire.Kind == FireKind.TopUp || fire.Attempt > 1) && track.Run is { } current
             ? current
-            : new SessionRun(Guid.NewGuid().ToString("N"), new RadioPlan(_options.Lookahead, _options.Batch));
+            : new SessionRun(Guid.NewGuid().ToString("N"), NewPlan());
+        if (!ReferenceEquals(track.Run, run))
+        {
+            // A new start ends the old run: its fetches still queued or searching are cancelled (v0.2 design section 10).
+            EndRun(track, "replaced");
+        }
+
         track.Run = run;
 
         OperationsLog.TriggerFired(_log, fire.Kind.ToWire(), fire.Rule.ToWire(), session.Id, fire.Model.ToWire(), item.Id, item.Name, run.RunId, fire.DedupeKey);
@@ -605,15 +636,26 @@ public sealed class Orchestrator : BackgroundService
             using (var pickTimeout = new CancellationTokenSource(_timing.PickTimeout, _time))
             using (var pickCts = CancellationTokenSource.CreateLinkedTokenSource(ct, pickTimeout.Token))
             {
+                var context = new PlanContext(_picker, userId, item, history, exclusions, run.RunId, session.Id, now);
+                var shadow = ShadowAsync(run, context, pickCts.Token);
                 try
                 {
-                    handout = await run.Plan.NextBatchAsync(_picker, userId, item, history, exclusions, pickCts.Token).ConfigureAwait(false);
+                    handout = await run.Plan.NextBatchAsync(context, pickCts.Token).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (!ct.IsCancellationRequested)
                 {
                     // Counts as a failed fire (retried once), and keeps the loop's heartbeat inside the health window.
                     throw new TimeoutException($"picking songs took longer than {_timing.PickTimeout.TotalSeconds:0} s");
                 }
+                finally
+                {
+                    await shadow.ConfigureAwait(false);
+                }
+            }
+
+            if (handout.PassedOver > 0 || handout.Skipped > 0)
+            {
+                Update(s => s with { PassedOver = s.PassedOver + handout.PassedOver, Skipped = s.Skipped + handout.Skipped });
             }
 
             if (handout.IsEmpty)
@@ -696,7 +738,7 @@ public sealed class Orchestrator : BackgroundService
             .Select(id => original.Items.FirstOrDefault(i => i.Id == id))
             .OfType<PickedItem>()
             .ToList();
-        var run = track.Run ??= new SessionRun(original.RunId, new RadioPlan(_options.Lookahead, _options.Batch));
+        var run = track.Run ??= new SessionRun(original.RunId, NewPlan());
         OperationsLog.TriggerFired(_log, fire.Kind.ToWire(), fire.Rule.ToWire(), session.Id, fire.Model.ToWire(), item.Id, item.Name, run.RunId, fire.DedupeKey);
         var listed = string.Join("; ", items);
 
@@ -849,6 +891,61 @@ public sealed class Orchestrator : BackgroundService
         catch (Exception ex)
         {
             OperationsLog.WorkerCrashed(_log, component, Truncate(ex.Message));
+        }
+    }
+
+    /// <summary>
+    /// The plan of a new run: the one pick pool when fetch mode is live (v0.2 design section 4), else the v0.1 plan
+    /// (mode off, and dry_run, where the v0.1 plan decides what is queued).
+    /// </summary>
+    private IRadioPlan NewPlan() =>
+        _options.FetchMode == FetchMode.Live && _candidates is not null && _owned is not null
+            ? new PoolPlan(_options.Lookahead, _options.Batch, _fetch, _candidates, _owned, _log, _indexNotReady, _timing.ExternalLookupTimeout)
+            : new RadioPlan(_options.Lookahead, _options.Batch);
+
+    /// <summary>
+    /// Fetch mode dry_run (v0.2 design section 4.4): beside the v0.1 plan, a throw-away pool from the outside suggestions
+    /// is logged and its unowned picks get dry-run requests (search and score only). It never changes what is queued,
+    /// and never fails the fire. Keys asked for once in a run are not asked again.
+    /// </summary>
+    private async Task ShadowAsync(SessionRun run, PlanContext context, CancellationToken ct)
+    {
+        if (_options.FetchMode != FetchMode.DryRun || _candidates is null || _owned is null)
+        {
+            return;
+        }
+
+        var planned = new HashSet<Guid>(run.Plan.HandedOut);
+        if (run.Plan is RadioPlan radio)
+        {
+            planned.UnionWith(radio.Items.Select(i => i.Id));
+        }
+
+        try
+        {
+            run.ShadowFires++;
+            var shadow = new PoolPlan(_options.Lookahead, _options.Batch, _fetch, _candidates, _owned, _log, _indexNotReady,
+                _timing.ExternalLookupTimeout, pickIdPrefix: $"{run.RunId}:dry{run.ShadowFires}");
+            var requested = await shadow.PlanShadowAsync(context, planned, run.ShadowRequested, ct).ConfigureAwait(false);
+            run.ShadowRequested.UnionWith(requested);
+        }
+        catch (OperationCanceledException)
+        {
+            // The fire was cancelled or timed out; the v0.1 plan reports that.
+        }
+        catch (Exception ex)
+        {
+            PoolLog.PoolExternalFailed(_log, context.Seed.Id, Truncate(ex.Message));
+        }
+    }
+
+    /// <summary>Ends the session's run on the fetch side (once): its queued and searching fetches are cancelled.</summary>
+    private void EndRun(SessionTrack track, string reason)
+    {
+        if (track.Run is { Ended: false } run)
+        {
+            run.Ended = true;
+            _fetch.EndRun(run.RunId, reason);
         }
     }
 
