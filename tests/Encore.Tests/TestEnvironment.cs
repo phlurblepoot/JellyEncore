@@ -5,6 +5,8 @@ namespace Encore.Tests;
 internal static class TestEnvironment
 {
     // Program validates the environment at start, so tests that boot the host need valid values.
+    // A test that changes these (or any ENCORE_* variable) must join ProcessEnvironmentCollection,
+    // or a host booting in parallel can read a half-written environment and exit.
     [ModuleInitializer]
     internal static void Init()
     {

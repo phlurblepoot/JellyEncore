@@ -5,6 +5,8 @@ using Microsoft.Extensions.Logging;
 namespace Encore.Tests.Config;
 
 /// <summary>v0.2 fetch settings (design section 11, cases CF01-CF16).</summary>
+/// <remarks>CF15 sets process environment variables, so the class runs outside the parallel collections.</remarks>
+[Collection(ProcessEnvironmentCollection.Name)]
 public sealed class ConfigFetchTests : IDisposable
 {
     private const string SlskdKey = "SLSKDSECRET0123456789xyz";
