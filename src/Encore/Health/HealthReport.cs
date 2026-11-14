@@ -1,4 +1,5 @@
 using Encore.Config;
+using Encore.Fetch;
 using Encore.Orchestration;
 using Encore.Watch;
 
@@ -17,7 +18,10 @@ public sealed record HealthReport(
     HealthSessions Sessions,
     HealthTriggers Triggers,
     HealthPlayLast PlayLast,
-    HealthStore Store);
+    HealthStore Store,
+    IReadOnlyList<string> Warnings,
+    HealthSlskd Slskd,
+    HealthFetch Fetch);
 
 public sealed record HealthJellyfin(string Url, DateTimeOffset? LastOkUtc, string? LastError);
 
@@ -40,6 +44,51 @@ public sealed record HealthPlayLast(int ItemsSent, int Unconfirmed, DateTimeOffs
 
 public sealed record HealthStore(bool Ok, string Path, int SchemaVersion);
 
+/// <summary>The slskd connection (v0.2 design section 12). Mode off: Configured false, the rest null or 0. Never holds the key.</summary>
+public sealed record HealthSlskd(
+    bool Configured,
+    string? Url,
+    bool? Reachable,
+    bool? LoggedIn,
+    DateTimeOffset? LastOkUtc,
+    string? LastError,
+    int SearchesInWindow,
+    string? SearchLimit);
+
+public sealed record HealthOwnedIndex(bool Loaded, int Items, DateTimeOffset? RefreshedUtc);
+
+public sealed record HealthFetch(
+    string Mode,
+    bool Available,
+    string? UnavailableReason,
+    HealthOwnedIndex OwnedIndex,
+    int Queued,
+    int InFlight,
+    int Ingesting,
+    int Ready,
+    int Failed,
+    int Cancelled,
+    int PassedOver,
+    int Skipped,
+    int WouldDownload,
+    int LastHour,
+    int HourlyCap,
+    bool? RadioDirInLibrary,
+    string? RadioLibrary,
+    long? FreeBytes,
+    int SourceLeftBehind,
+    DateTimeOffset? LastReadyUtc,
+    string? LastError);
+
+/// <summary>The fetch side as the health endpoint reads it. A null value in <see cref="HealthInput"/> means mode off.</summary>
+public sealed record FetchHealthInput(
+    FetchStatus Status,
+    int SearchesInWindow,
+    bool OwnedLoaded,
+    int OwnedItems,
+    DateTimeOffset? OwnedRefreshedUtc,
+    DateTimeOffset? DeezerLastFailureUtc);
+
 /// <summary>Everything the health report is computed from. Built per request from immutable snapshots.</summary>
 public sealed record HealthInput(
     EncoreOptions Options,
@@ -48,7 +97,8 @@ public sealed record HealthInput(
     WatcherStatus Watcher,
     OrchestratorStatus Orchestrator,
     string StorePath,
-    int StoreSchemaVersion);
+    int StoreSchemaVersion,
+    FetchHealthInput? Fetch = null);
 
 public static class HealthEvaluator
 {
@@ -84,6 +134,8 @@ public static class HealthEvaluator
 
         var status = stale ? "stopped" : starting ? "starting" : ok ? "ok" : "degraded";
 
+        var warnings = Warn(input);
+
         var report = new HealthReport(
             Status: status,
             Version: input.Version,
@@ -96,8 +148,108 @@ public static class HealthEvaluator
             Sessions: new HealthSessions(o.SessionsTracked, o.AllowListedPlaying),
             Triggers: new HealthTriggers(o.Fired, o.Sent, o.DryRun, o.NoPicks, o.Failed, o.LastFireUtc, o.LastOutcome),
             PlayLast: new HealthPlayLast(o.ItemsSent, o.Unconfirmed, o.LastSentUtc),
-            Store: new HealthStore(o.StoreOk, input.StorePath, input.StoreSchemaVersion));
+            Store: new HealthStore(o.StoreOk, input.StorePath, input.StoreSchemaVersion),
+            Warnings: warnings,
+            Slskd: SlskdSection(input),
+            Fetch: FetchSection(input));
 
         return (stale ? 503 : 200, report);
     }
+
+    /// <summary>The owned index counts as missing when it is still not loaded this long after start.</summary>
+    public static readonly TimeSpan OwnedIndexGrace = TimeSpan.FromMinutes(5);
+
+    /// <summary>A Deezer error this recent shows as a warning.</summary>
+    public static readonly TimeSpan DeezerRecent = TimeSpan.FromMinutes(10);
+
+    /// <summary>
+    /// Fetch problems never change the status (only these strings): owned radio still works without them.
+    /// Nothing is reported in mode off.
+    /// </summary>
+    private static List<string> Warn(HealthInput input)
+    {
+        var warnings = new List<string>();
+        if (input.Fetch is not { } f || f.Status.Mode == FetchMode.Off)
+        {
+            return warnings;
+        }
+
+        var s = f.Status;
+        if (s.SlskdReachable == false)
+        {
+            warnings.Add("slskd: unreachable");
+        }
+        else if (s.SlskdLoggedIn == false)
+        {
+            warnings.Add("slskd: not logged in");
+        }
+
+        if (s.RadioDirInLibrary == false)
+        {
+            warnings.Add("music-radio is not in a Jellyfin music library");
+        }
+
+        if (s.FreeBytes is { } free && free < FetchLimits.FreeSpaceFloorBytes)
+        {
+            warnings.Add("music-radio free space below 20 GB");
+        }
+
+        if (!f.OwnedLoaded && input.Now - input.Orchestrator.StartedUtc > OwnedIndexGrace)
+        {
+            warnings.Add("owned index not loaded");
+        }
+
+        if (s.SourceLeftBehind > 0)
+        {
+            warnings.Add($"slskd copies left behind: {s.SourceLeftBehind}");
+        }
+
+        if (f.DeezerLastFailureUtc is { } failed && input.Now - failed < DeezerRecent)
+        {
+            warnings.Add("deezer: failing");
+        }
+
+        return warnings;
+    }
+
+    private static HealthSlskd SlskdSection(HealthInput input)
+    {
+        if (input.Fetch is not { } f || f.Status.Mode == FetchMode.Off)
+        {
+            return new HealthSlskd(false, null, null, null, null, null, 0, null);
+        }
+
+        var s = f.Status;
+        var url = input.Options.SlskdUrl?.GetLeftPart(UriPartial.Path).TrimEnd('/');
+        return new HealthSlskd(
+            input.Options.SlskdUrl is not null && input.Options.SlskdApiKey is not null,
+            url, s.SlskdReachable, s.SlskdLoggedIn, s.SlskdLastOkUtc, s.SlskdLastError,
+            f.SearchesInWindow, input.Options.SearchLimit.ToString());
+    }
+
+    private static HealthFetch FetchSection(HealthInput input)
+    {
+        var o = input.Orchestrator;
+        if (input.Fetch is not { } f)
+        {
+            var off = FetchStatus.Off;
+            return new HealthFetch(
+                "off", false, AvailabilityReasons.Off, new HealthOwnedIndex(false, 0, null), 0, 0, 0, 0, 0, 0, o.PassedOver, o.Skipped,
+                0, 0, off.HourlyCap, null, null, null, 0, null, null);
+        }
+
+        var s = f.Status;
+        return new HealthFetch(
+            ModeName(s.Mode), s.Available, s.UnavailableReason, new HealthOwnedIndex(f.OwnedLoaded, f.OwnedItems, f.OwnedRefreshedUtc),
+            s.Queued, s.InFlight, s.Ingesting, s.Ready, s.Failed, s.Cancelled, o.PassedOver, o.Skipped,
+            s.WouldDownload, s.LastHour, s.HourlyCap, s.RadioDirInLibrary, s.RadioLibrary, s.FreeBytes,
+            s.SourceLeftBehind, s.LastReadyUtc, s.LastError);
+    }
+
+    private static string ModeName(FetchMode mode) => mode switch
+    {
+        FetchMode.DryRun => "dry_run",
+        FetchMode.Live => "live",
+        _ => "off",
+    };
 }

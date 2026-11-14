@@ -144,6 +144,19 @@ public sealed class DeezerClient(HttpClient http, DiscoveryRuntime runtime, ILog
     /// <summary>One Deezer call with the limiter, the error-in-200 rules and the single retries. Null means not found.</summary>
     private async Task<JsonDocument?> GetAsync(string endpoint, string pathAndQuery, CancellationToken ct)
     {
+        try
+        {
+            return await GetCoreAsync(endpoint, pathAndQuery, ct).ConfigureAwait(false);
+        }
+        catch (DeezerException)
+        {
+            runtime.NoteDeezerFailure();
+            throw;
+        }
+    }
+
+    private async Task<JsonDocument?> GetCoreAsync(string endpoint, string pathAndQuery, CancellationToken ct)
+    {
         var options = runtime.Options;
         var quotaRetried = false;
         var serverRetried = false;

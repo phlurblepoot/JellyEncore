@@ -1,5 +1,8 @@
 using Encore.Config;
+using Encore.Discovery;
+using Encore.Fetch;
 using Encore.Orchestration;
+using Encore.Slskd;
 using Encore.Store;
 using Encore.Watch;
 
@@ -16,7 +19,8 @@ public static class HealthEndpoint
             SessionWatcher watcher,
             Orchestrator orchestrator,
             EncoreStore store,
-            TimeProvider time) =>
+            TimeProvider time,
+            IServiceProvider services) =>
         {
             var (code, report) = HealthEvaluator.Evaluate(new HealthInput(
                 options,
@@ -25,8 +29,28 @@ public static class HealthEndpoint
                 watcher.Status,
                 orchestrator.Status,
                 store.Path,
-                store.SchemaVersionOnDisk));
+                store.SchemaVersionOnDisk,
+                FetchInput(services)));
             return Results.Json(report, statusCode: code);
         });
+    }
+
+    /// <summary>Null in mode off, where none of the fetch services exist.</summary>
+    private static FetchHealthInput? FetchInput(IServiceProvider services)
+    {
+        var requests = services.GetService<IFetchRequests>();
+        if (requests is null || requests is NullFetchRequests)
+        {
+            return null;
+        }
+
+        var owned = services.GetService<IOwnedIndex>();
+        return new FetchHealthInput(
+            requests.Status,
+            services.GetService<SearchBudget>()?.SearchesInWindow ?? 0,
+            owned?.IsLoaded ?? false,
+            owned?.Count ?? 0,
+            owned?.RefreshedUtc,
+            services.GetService<DiscoveryRuntime>()?.DeezerLastFailureUtc);
     }
 }

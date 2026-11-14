@@ -252,6 +252,20 @@ public sealed class DiscoveryRuntime
 
     public TtlCache Cache { get; }
 
+    private long _deezerFailedTicks;
+
+    /// <summary>When the last Deezer call failed (for /health), or null when none has.</summary>
+    public DateTimeOffset? DeezerLastFailureUtc
+    {
+        get
+        {
+            var ticks = Interlocked.Read(ref _deezerFailedTicks);
+            return ticks == 0 ? null : new DateTimeOffset(ticks, TimeSpan.Zero);
+        }
+    }
+
+    public void NoteDeezerFailure() => Interlocked.Exchange(ref _deezerFailedTicks, Time.GetUtcNow().UtcTicks);
+
     public bool ListenBrainzSkipped => Time.GetUtcNow().UtcTicks < Interlocked.Read(ref _lbSkipUntilTicks);
 
     public void SkipListenBrainz(TimeSpan duration) =>
