@@ -139,6 +139,9 @@ public sealed class JellyfinClient : IJellyfinClient
             () => new StringContent(body, System.Text.Encoding.UTF8, "application/json")).ConfigureAwait(false);
     }
 
+    public Task<PublicSystemInfo> GetPublicSystemInfoAsync(CancellationToken ct = default) =>
+        GetAsync<PublicSystemInfo>("System/Info/Public", "GetPublicSystemInfo", ct);
+
     public async Task<IReadOnlyList<VirtualFolderInfo>> GetVirtualFoldersAsync(CancellationToken ct = default) =>
         await GetAsync<List<VirtualFolderInfo>>("Library/VirtualFolders", "GetVirtualFolders", ct).ConfigureAwait(false);
 

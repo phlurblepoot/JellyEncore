@@ -7,6 +7,7 @@ using Encore.Jellyfin;
 using Encore.Logging;
 using Encore.Orchestration;
 using Encore.Picks;
+using Encore.Requests.Api;
 using Encore.Store;
 using Encore.Watch;
 
@@ -62,6 +63,23 @@ if (options.FetchMode != FetchMode.Off)
     }
 }
 
+// The request store (v0.3, only with ENCORE_REQUESTS=on) is another connection to the same file.
+RequestStore? requestStore = null;
+if (options.RequestsEnabled)
+{
+    try
+    {
+        requestStore = RequestStore.Open(store.Path);
+    }
+    catch (StoreException ex)
+    {
+        storeLogger.StoreError("open_requests", ex.Message);
+        fetchStore?.Dispose();
+        store.Dispose();
+        return 3;
+    }
+}
+
 // Live mode: the radio dir gets its soulseek folder now, so Jellyfin never scans an empty music-radio.
 if (options.FetchMode == FetchMode.Live)
 {
@@ -91,11 +109,17 @@ builder.Services.AddJellyfinClient(options);
 builder.Services.AddSessionWatcher(options);
 builder.Services.AddFetch(options, fetchStore);
 builder.Services.AddSingleton<IPicker, Picker>();
+var version = typeof(Program).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "0.0.0";
+if (requestStore is not null)
+{
+    // ENCORE_REQUESTS=off registers nothing of v0.3 (design invariant 1).
+    builder.Services.AddRequestsApi(options, requestStore, version);
+}
+
 builder.Services.AddSingleton<Orchestrator>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<Orchestrator>());
 
 var app = builder.Build();
-var version = typeof(Program).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "0.0.0";
 var startupLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Encore.Startup");
 startupLogger.StartupConfig(options, version);
 foreach (var warning in config.Warnings)
@@ -105,9 +129,16 @@ foreach (var warning in config.Warnings)
 
 app.Lifetime.ApplicationStopped.Register(() =>
 {
+    requestStore?.Dispose();
     fetchStore?.Dispose();
     store.Dispose();
 });
+if (requestStore is not null)
+{
+    app.UseRequestsApi(options);
+    app.MapRequestsApi();
+}
+
 HealthEndpoint.Map(app, version);
 app.Run();
 return 0;

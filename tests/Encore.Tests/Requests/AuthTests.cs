@@ -87,6 +87,18 @@ internal sealed class UsersClient : IJellyfinClient
 
     public Task ReportMediaUpdatedAsync(IReadOnlyCollection<string> jellyfinPaths, CancellationToken ct = default) => throw new NotSupportedException();
 
+    public PublicSystemInfo PublicInfo { get; set; } = new() { Id = "serverid1234567890", ServerName = "Fake", Version = "10.11.0" };
+
+    public bool PublicInfoDown { get; set; }
+
+    public int PublicInfoCalls { get; private set; }
+
+    public Task<PublicSystemInfo> GetPublicSystemInfoAsync(CancellationToken ct = default)
+    {
+        PublicInfoCalls++;
+        return PublicInfoDown ? throw new JellyfinRequestException("GetPublicSystemInfo", 503) : Task.FromResult(PublicInfo);
+    }
+
     public Task<IReadOnlyList<VirtualFolderInfo>> GetVirtualFoldersAsync(CancellationToken ct = default) => throw new NotSupportedException();
 
     public Task<IReadOnlyList<string>> GetPhysicalPathsAsync(CancellationToken ct = default) => throw new NotSupportedException();

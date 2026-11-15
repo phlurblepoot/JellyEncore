@@ -36,6 +36,9 @@ public interface IJellyfinClient
     /// </summary>
     Task ReportMediaUpdatedAsync(IReadOnlyCollection<string> jellyfinPaths, CancellationToken ct = default);
 
+    /// <summary>GET /System/Info/Public (anonymous): the server id, name and version. The id feeds the "Open in Jellyfin" link.</summary>
+    Task<PublicSystemInfo> GetPublicSystemInfoAsync(CancellationToken ct = default);
+
     /// <summary>GET /Library/VirtualFolders. Needs an admin token (the API key is one).</summary>
     Task<IReadOnlyList<VirtualFolderInfo>> GetVirtualFoldersAsync(CancellationToken ct = default);
 

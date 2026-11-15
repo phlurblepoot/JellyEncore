@@ -207,3 +207,13 @@ public sealed record VirtualFolderInfo
     /// <summary>The library's item id, used as parentId in /Items.</summary>
     public Guid ItemId { get; init; }
 }
+
+/// <summary>GET /System/Info/Public: what Jellyfin tells anyone. <see cref="Id"/> is the server id (the "serverId" of a details link).</summary>
+public sealed record PublicSystemInfo
+{
+    public string? Id { get; init; }
+
+    public string? ServerName { get; init; }
+
+    public string? Version { get; init; }
+}

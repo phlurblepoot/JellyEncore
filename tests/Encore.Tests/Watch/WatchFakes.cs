@@ -112,6 +112,8 @@ internal sealed class FakeJellyfinClient : IJellyfinClient
 
     public Task ReportMediaUpdatedAsync(IReadOnlyCollection<string> jellyfinPaths, CancellationToken ct = default) => throw new NotSupportedException();
 
+    public Task<PublicSystemInfo> GetPublicSystemInfoAsync(CancellationToken ct = default) => throw new NotSupportedException();
+
     public Task<IReadOnlyList<VirtualFolderInfo>> GetVirtualFoldersAsync(CancellationToken ct = default) => throw new NotSupportedException();
 
     public Task<IReadOnlyList<string>> GetPhysicalPathsAsync(CancellationToken ct = default) => throw new NotSupportedException();

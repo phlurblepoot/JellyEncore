@@ -13,6 +13,15 @@ public static class RequestLimits
     public static readonly TimeSpan JellyfinTimeout = TimeSpan.FromSeconds(10);
     public static readonly TimeSpan UserRefresh = TimeSpan.FromMinutes(10);
 
+    /// <summary>Wait before the next try at reading the Jellyfin server id (GET /System/Info/Public) after a failure.</summary>
+    public static readonly TimeSpan ServerInfoRetry = TimeSpan.FromMinutes(1);
+
+    /// <summary>The page asks Jellyfin "is Quick Connect on?" at most this often; the answer is cached.</summary>
+    public static readonly TimeSpan QuickConnectStatusTtl = TimeSpan.FromSeconds(30);
+
+    /// <summary>Largest JSON body the auth routes read.</summary>
+    public const int ApiBodyMaxBytes = 16 * 1024;
+
     public const int LoginFailuresPerIp = 5;
     public static readonly TimeSpan LoginIpWindow = TimeSpan.FromMinutes(15);
     public static readonly TimeSpan LoginIpBlock = TimeSpan.FromMinutes(15);
