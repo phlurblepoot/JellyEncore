@@ -69,8 +69,24 @@ public class SearchBudgetTests
         }
 
         await Task.WhenAll(tasks);
-        Assert.Equal([0, 1, 2, 3], done.OrderBy(d => d.Ms).Select(d => d.Id).ToArray());
-        Assert.True(done.Max(d => d.Ms) >= 200, "the fourth search should wait about 3 gaps (240 ms)");
+
+        // Caller k got slot k, 80 ms after slot k-1, and did not go before it. The slots are judged by their earliest
+        // time, not by the order the timers happened to fire in: on a busy runner two late timers can finish in any order.
+        // (20 ms of slack: the timer and the stopwatch tick at different resolutions.)
+        var ms = done.OrderBy(d => d.Id).Select(d => d.Ms).ToArray();
+        Assert.Equal(4, ms.Length);
+        for (var k = 1; k < 4; k++)
+        {
+            Assert.True(ms[k] >= (k * 80) - 20, $"search {k} finished at {ms[k]} ms, before its slot at about {k * 80} ms");
+        }
+
+        // In order: no caller finished clearly (half a gap) after a later one, as it would with swapped slots.
+        for (var k = 1; k < 4; k++)
+        {
+            Assert.True(ms[k - 1] <= ms[k] + 40, $"search {k - 1} finished at {ms[k - 1]} ms, after search {k} at {ms[k]} ms");
+        }
+
+        Assert.True(ms[3] >= 200, "the fourth search should wait about 3 gaps (240 ms)");
     }
 
     [Fact]
@@ -81,7 +97,7 @@ public class SearchBudgetTests
         Assert.True(await budget.TryAcquireAsync(DateTimeOffset.UtcNow.AddSeconds(1), default));
         var watch = System.Diagnostics.Stopwatch.StartNew();
         Assert.False(await budget.TryAcquireAsync(DateTimeOffset.UtcNow.AddSeconds(60), default));
-        Assert.True(watch.ElapsedMilliseconds < 500);
+        Assert.True(watch.ElapsedMilliseconds < 5_000, $"took {watch.ElapsedMilliseconds} ms; waiting for the slot would take an hour");
         Assert.Equal(2, budget.SearchesInWindow);
     }
 

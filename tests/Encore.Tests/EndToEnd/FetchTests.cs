@@ -691,7 +691,10 @@ public class FetchTests
         }, waitAvailable: false);
         try
         {
-            await Wait.Until(() => w.Coordinator.Status.SlskdReachable == false, "the slskd check failed");
+            // The whole first round of checks, not just the slskd one: the free-space reading comes after it, and health
+            // read before it would also warn "free space unknown" (a slow CI runner hit that).
+            await Wait.Until(() => w.Coordinator.Status is { SlskdReachable: false, RadioDirInLibrary: not null, FreeBytes: not null },
+                "the slskd check failed and the library and free-space checks ran");
 
             var start = await l.StartAsync();
             var first = await l.TopUpAsync();

@@ -483,7 +483,9 @@ public class FetchWorkerTests
         const int picks = 12;
         using var stop = new CancellationTokenSource();
         var problems = new ConcurrentQueue<string>();
-        var readers = Enumerable.Range(0, 4).Select(_ => Task.Run(() =>
+        // Readers spin on their own threads, not on thread-pool threads: four busy pool threads starve the worker under
+        // test (and every test running beside it) on a small CI runner until the pool grows.
+        var readers = Enumerable.Range(0, 4).Select(_ => Task.Factory.StartNew(() =>
         {
             var last = new int[picks];
             while (!stop.IsCancellationRequested)
@@ -505,8 +507,10 @@ public class FetchWorkerTests
 
                     last[i] = rank;
                 }
+
+                Thread.Yield();
             }
-        })).ToArray();
+        }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default)).ToArray();
 
         for (var i = 0; i < picks; i++)
         {
