@@ -526,6 +526,11 @@ public sealed class FetchWorker : BackgroundService
                 if (row.Path is { } path && File.Exists(path) && jellyfinPath is not null)
                 {
                     reingested++;
+                    if (TrackKey.TryParse(row.TrackKey, out var pendingKey))
+                    {
+                        _coordinator.NoteImportedPending(pendingKey);
+                    }
+
                     Track(ReingestAsync(row, jellyfinPath, stopping));
                 }
                 else
@@ -568,6 +573,10 @@ public sealed class FetchWorker : BackgroundService
             {
                 await AddOwnedAsync(itemId, jellyfinPath, null, stopping).ConfigureAwait(false);
                 _store.UpdateFetched(row.Id, FetchState.Ready, new FetchedUpdate(JellyfinItemId: itemId.ToString("N"), ReadyUtc: _time.GetUtcNow()));
+                if (TrackKey.TryParse(row.TrackKey, out var readyKey))
+                {
+                    _coordinator.ClearImportedPending(readyKey);
+                }
             }
         }
         catch (OperationCanceledException) when (stopping.IsCancellationRequested)

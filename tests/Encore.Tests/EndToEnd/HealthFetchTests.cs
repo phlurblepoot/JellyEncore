@@ -98,6 +98,15 @@ public class HealthFetchTests
     }
 
     [Fact]
+    public void HE05b_Unreadable_free_space_is_a_warning_after_the_start_grace()
+    {
+        var (_, report) = Eval(Options(FetchMode.Live), Loop(), Input(Healthy() with { FreeBytes = null }));
+
+        Assert.Equal("ok", report.Status);
+        Assert.Equal(["music-radio free space unknown (disk guard off)"], report.Warnings);
+    }
+
+    [Fact]
     public void HE05_Free_space_below_the_floor_is_a_warning()
     {
         var (_, report) = Eval(Options(FetchMode.Live), Loop(), Input(Healthy() with { FreeBytes = 19_000_000_000 }));

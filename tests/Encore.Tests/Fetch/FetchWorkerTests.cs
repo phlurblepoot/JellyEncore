@@ -316,6 +316,64 @@ public class FetchWorkerTests
     }
 
     [Fact]
+    public async Task FW07b_a_job_cancelled_while_searching_that_goes_on_downloading_is_joined_not_duplicated()
+    {
+        await using var h = new WorkerHarness();
+        var enqueue = new TaskCompletionSource();
+        var hold = new TaskCompletionSource();
+        h.Fetcher.Behavior = async c =>
+        {
+            await enqueue.Task;   // the enqueue call is not interrupted by the soft cancel
+            return await FakeFetcher.DownloadAsync(c, downloading: hold.Task);
+        };
+        await h.StartAsync();
+
+        Assert.True(h.Request("a1", "Radiohead", "Reckoner"));
+        await h.Until("a1", r => r is FetchReadiness.Pending { Stage: FetchStage.Searching }, "searching");
+        h.Coordinator.Abandon("a1", "skipped");
+        enqueue.SetResult();
+        await h.Until("a1", r => r is FetchReadiness.Pending { Stage: FetchStage.Downloading }, "downloading");
+
+        Assert.True(h.Request("b1", "Radiohead", "Reckoner", "run2"));
+
+        Assert.Single(h.Fetcher.Calls);
+        Assert.Contains(h.CoordinatorLog.Named("fetch.requested"), e => Equals(e.Fields["PickId"], "b1") && Equals(e.Fields["Joined"], true));
+        hold.SetResult();
+    }
+
+    [Fact]
+    public async Task FW08b_a_song_whose_ingest_timed_out_is_not_fetched_again()
+    {
+        await using var h = new WorkerHarness();
+        h.Ingest.Behavior = (_, _, _) => Task.FromResult(new IngestResult(IngestOutcome.Timeout, null, FetchLimits.IngestWait));
+        await h.StartAsync();
+
+        Assert.True(h.Request("t", "Artist", "Timeout"));
+        await h.Until("t", IsFailed, "t failed");
+
+        Assert.False(h.Request("again", "Artist", "Timeout"));
+        Assert.Single(h.Fetcher.Calls);
+        Assert.Single(h.Rows());
+    }
+
+    [Fact]
+    public async Task FW11b_an_imported_row_after_a_restart_blocks_a_new_job_for_its_song()
+    {
+        await using var h = new WorkerHarness();
+        var present = Path.Combine(h.RadioDir, "soulseek", "A", "T2.mp3");
+        Directory.CreateDirectory(Path.GetDirectoryName(present)!);
+        File.WriteAllText(present, "audio");
+        var id = h.Store.InsertFetched(new NewFetchedFile("jobok", "a|t2", "A", "T2", "deezer_radio", "soulseek", "r", "s", Guid.Empty,
+            DateTimeOffset.UtcNow - TimeSpan.FromHours(3)));
+        h.Store.UpdateFetched(id, FetchState.Imported, new FetchedUpdate(Path: present));
+        h.Ingest.Behavior = (_, _, _) => Task.FromResult(new IngestResult(IngestOutcome.Timeout, null, FetchLimits.IngestWait));
+        await h.StartAsync();
+
+        Assert.False(h.Request("p", "A", "T2"));
+        Assert.Empty(h.Fetcher.Calls);
+    }
+
+    [Fact]
     public async Task FW11_restart_settles_downloading_and_imported_rows_and_cleans_up()
     {
         await using var h = new WorkerHarness();

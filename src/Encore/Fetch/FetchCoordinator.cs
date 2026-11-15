@@ -110,6 +110,8 @@ public sealed class FetchCoordinator : IFetchRequests
     private readonly ConcurrentDictionary<string, PickRef> _picks = new(StringComparer.Ordinal);
     private readonly Dictionary<TrackKey, FetchJob> _live = [];
     private readonly HashSet<FetchJob> _active = [];
+    /// <summary>Songs whose file is in music-radio but not yet seen by Jellyfin (ingest timed out): never fetched again.</summary>
+    private readonly HashSet<TrackKey> _importedPending = [];
     private readonly Channel<FetchJob> _queue = Channel.CreateUnbounded<FetchJob>(new UnboundedChannelOptions { SingleReader = true });
     private readonly Queue<DateTimeOffset> _window = new();
     private readonly IOwnedIndex _owned;
@@ -187,6 +189,12 @@ public sealed class FetchCoordinator : IFetchRequests
 
                 var reason = ReasonLocked(now);
                 NoteAvailabilityLocked(reason);
+
+                // The file is already in music-radio, waiting for Jellyfin: a second download would duplicate it.
+                if (_importedPending.Contains(request.Candidate.Key))
+                {
+                    return false;
+                }
 
                 // Joining a live job adds no download, so only the hourly cap does not stop it.
                 if (_live.TryGetValue(request.Candidate.Key, out var live) && !live.IsTerminal
@@ -465,7 +473,31 @@ public sealed class FetchCoordinator : IFetchRequests
             if (!job.IsTerminal)
             {
                 SetStageLocked(job, FetchStage.Downloading);
+
+                // Cancelled while searching, but the enqueue went through: the download goes on, so later requests
+                // for the song join this job instead of starting a second download.
+                if (job.CancelReason is not null && !_live.ContainsKey(job.Key))
+                {
+                    _live[job.Key] = job;
+                }
             }
+        }
+    }
+
+    /// <summary>The song's file is in music-radio and Jellyfin has not reported it yet: no new job for it until it is owned.</summary>
+    internal void NoteImportedPending(TrackKey key)
+    {
+        lock (_gate)
+        {
+            _importedPending.Add(key);
+        }
+    }
+
+    internal void ClearImportedPending(TrackKey key)
+    {
+        lock (_gate)
+        {
+            _importedPending.Remove(key);
         }
     }
 
@@ -491,6 +523,7 @@ public sealed class FetchCoordinator : IFetchRequests
 
             var now = _time.GetUtcNow();
             job.Readiness = new FetchReadiness.Ready(itemId);
+            _importedPending.Remove(job.Key);
             EndLocked(job, now);
             _ready++;
             _lastReady = now;
@@ -514,6 +547,10 @@ public sealed class FetchCoordinator : IFetchRequests
             if (!job.IsTerminal)
             {
                 FinishFailedLocked(job, reason);
+                if (reason == FetchReasons.IngestTimeout)
+                {
+                    _importedPending.Add(job.Key);
+                }
             }
 
             return reason;

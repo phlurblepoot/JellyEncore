@@ -194,7 +194,12 @@ public static class HealthEvaluator
             warnings.Add("music-radio free space below 20 GB");
         }
 
-        if (!f.OwnedLoaded && input.Now - input.Orchestrator.StartedUtc > OwnedIndexGrace)
+        else if (s.FreeBytes is null && input.Now - input.Orchestrator.StartedUtc > OwnedIndexGrace)
+        {
+            warnings.Add("music-radio free space unknown (disk guard off)");
+        }
+
+        if (!f.OwnedLoaded &&input.Now - input.Orchestrator.StartedUtc > OwnedIndexGrace)
         {
             warnings.Add("owned index not loaded");
         }
