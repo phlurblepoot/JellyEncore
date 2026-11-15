@@ -63,8 +63,9 @@ public sealed record TriggerContext
 /// <summary>What the trigger needs to know about the session's current radio run.</summary>
 /// <param name="LastAddedItemId">The last song of the newest send of any kind.</param>
 /// <param name="AddedCount">Songs the run added, re-sends included (run cap).</param>
-/// <param name="AddedIds">T28: every song the run sent, for the Finamp near-end freshness right after a re-send.</param>
+/// <param name="AddedIds">T28: every song the run sent (near-end freshness after a re-send; T77: the order-independent fire kind and fallback (b)).</param>
 public sealed record RunInfo(Guid? LastAddedItemId, int AddedCount, IReadOnlyCollection<Guid>? AddedIds = null)
 {
-    public bool Added(Guid id) => AddedIds?.Contains(id) == true;
+    /// <summary>True when the run sent this song (the last added song always counts, even without <see cref="AddedIds"/>).</summary>
+    public bool Added(Guid id) => AddedIds?.Contains(id) == true || LastAddedItemId == id;
 }

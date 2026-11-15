@@ -116,7 +116,6 @@ public static class TriggerEngine
         }
 
         // 8-9. Fresh queue and the position rules (near-end, last-song fallback).
-        var lastAdded = context.Run?.LastAddedItemId;
         FireRule rule;
         if (model == QueueModel.Full)
         {
@@ -130,7 +129,7 @@ public static class TriggerEngine
         }
         else
         {
-            var (passed, reason) = UpcomingRule(instance.EntryQueue, tracked.PrevEntryQueue, item.Id, lastAdded, context.Run);
+            var (passed, reason) = UpcomingRule(instance.EntryQueue, tracked.PrevEntryQueue, item.Id, context.Run);
             if (reason is { } failed)
             {
                 return Skip(tracked, failed, model, started);
@@ -160,9 +159,9 @@ public static class TriggerEngine
             return Skip(tracked, SkipReason.Duplicate, model, started);
         }
 
-        // 12. The fire kind: topup when the song that plays last is the last one Encore added; otherwise start.
-        var final = instance.EntryQueue.Count > 0 ? instance.EntryQueue[^1].Id : item.Id;
-        var kind = lastAdded is { } added && added == final ? FireKind.TopUp : FireKind.Start;
+        // 12. The fire kind (T77): topup when every song still to come (or, with none, the current song) is one the
+        // run added, in any order; otherwise start. Finamp may play a PlayLast batch in reverse (sent [A,B], plays B, A).
+        var kind = ContinuesRun(session, instance, model, context.Run) ? FireKind.TopUp : FireKind.Start;
 
         // 13. Rate limits for every fire; the run cap only for a fire that continues the run (a start gets a fresh cap).
         if (Limited(context, context.Batch, kind == FireKind.TopUp) is { } limited)
@@ -324,7 +323,6 @@ public static class TriggerEngine
         IReadOnlyList<QueueEntry> entry,
         IReadOnlyList<QueueEntry>? prev,
         Guid current,
-        Guid? lastAdded,
         RunInfo? run)
     {
         // Two or more songs still to come: a fresh report, not near the end.
@@ -353,8 +351,9 @@ public static class TriggerEngine
             return (FireRule.LastSong, null);
         }
 
-        // Fallback (b), the top-up clause: this is the last song Encore added (needed for ENCORE_BATCH=1).
-        if (lastAdded is { } added && added == current)
+        // Fallback (b), the top-up clause: this is a song the run added (needed for ENCORE_BATCH=1). Any of the run's
+        // songs, not only the last one sent: Finamp may play a batch in reverse, so the first song sent plays last (T77).
+        if (run?.Added(current) == true)
         {
             return (FireRule.LastSong, null);
         }
@@ -427,6 +426,36 @@ public static class TriggerEngine
         for (var i = 1; i < current.EntryQueue.Count; i++)
         {
             if (session.NowPlayingQueue[i - 1].Id != current.EntryQueue[i].Id)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Guard 12 (T77): the songs still to come after the current one are all songs the run added, or, when none are
+    /// left, the current song is. Order does not matter, so a batch played in reverse still continues its run; a song
+    /// the user queued anywhere in that tail makes it a start.
+    /// </summary>
+    private static bool ContinuesRun(TriggerSession session, PlayInstance instance, QueueModel model, RunInfo? run)
+    {
+        if (run is null)
+        {
+            return false;
+        }
+
+        var queue = instance.EntryQueue;
+        var after = SongsAfter(session, instance, model);
+        if (after <= 0)
+        {
+            return run.Added(instance.ItemId);
+        }
+
+        for (var i = queue.Count - after; i < queue.Count; i++)
+        {
+            if (!run.Added(queue[i].Id))
             {
                 return false;
             }

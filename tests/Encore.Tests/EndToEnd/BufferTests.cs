@@ -502,4 +502,47 @@ public class BufferTests
         Assert.Contains(h.Log.Named("trigger.skipped_quiet"), e => e.Fields["Reason"] as string == "queue_first");
         Assert.Empty(h.Log.Named("queue.unconfirmed"));
     }
+
+    [Fact]
+    public async Task E16_Finamp_reverse_order_batches_top_up_in_the_same_run()
+    {
+        // T77 (live 2026-11-15 14:26-14:35Z): Finamp plays a PlayLast batch in reverse (sent [A,B], plays B then A).
+        // The near-end report at B lists [A]; it must be a top-up of the same run, batch after batch.
+        var (h, o) = await CreateAsync();
+        using var _ = h;
+        Guid N3 = Catalog.G(540), N2 = Catalog.G(541), N1 = Catalog.G(542), N = Catalog.G(543);
+
+        async Task Change(Guid old, Guid next, params Guid[] upcoming)
+        {
+            h.Time.Advance(TimeSpan.FromSeconds(200));
+            await h.Send(o, Sessions.FinampStopped(upcoming));
+            await h.Send(o, Sessions.Finamp(old, upcoming));
+            await h.Send(o, Sessions.Finamp(next, upcoming));
+        }
+
+        await h.Send(o, Sessions.Finamp(N3, N2, N1, N));
+        await Change(N3, N2, N1, N);
+        await Change(N2, N1, N);
+        var first = Assert.Single(h.Jellyfin.PlayLasts).ItemIds;
+        Assert.Equal("start", h.Log.Named("trigger.fired").Last().Fields["Kind"]);
+
+        // The batch shows reversed: the last album song, then B, then A.
+        await Change(N1, N, first[1], first[0]);
+        Assert.Single(h.Jellyfin.PlayLasts);
+        await Change(N, first[1], first[0]);
+        Assert.Equal(2, h.Jellyfin.PlayLasts.Count);
+        var second = h.Jellyfin.PlayLasts.Last().ItemIds;
+
+        // The second batch plays reversed too.
+        await Change(first[1], first[0], second[1], second[0]);
+        Assert.Equal(2, h.Jellyfin.PlayLasts.Count);
+        await Change(first[0], second[1], second[0]);
+        Assert.Equal(3, h.Jellyfin.PlayLasts.Count);
+
+        var fired = h.Log.Named("trigger.fired").ToList();
+        Assert.Equal(["start", "topup", "topup"], fired.Select(e => e.Fields["Kind"] as string));
+        Assert.Single(fired.Select(e => e.Fields["RunId"]).Distinct());
+        Assert.Empty(second.Intersect(first));
+        Assert.Empty(h.Log.Named("queue.unconfirmed"));
+    }
 }
