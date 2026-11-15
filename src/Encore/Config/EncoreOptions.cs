@@ -44,6 +44,44 @@ public sealed record EncoreOptions
 
     public int FetchConcurrency { get; init; } = 2;
 
+    /// <summary>ENCORE_REQUESTS: song and album requests (v0.3).</summary>
+    public bool RequestsEnabled { get; init; }
+
+    /// <summary>ENCORE_REQUEST_USERS: Jellyfin names or ids allowed to request besides admins. Empty = admins only.</summary>
+    public IReadOnlyList<string> RequestUsers { get; init; } = [];
+
+    /// <summary>ENCORE_REQUEST_USERS was "*": every account may request.</summary>
+    public bool RequestUsersAll { get; init; }
+
+    public int RequestSongsPerDay { get; init; } = 25;
+
+    public int RequestAlbumsPerDay { get; init; } = 2;
+
+    /// <summary>Exact origins (scheme://host[:port], lower case) allowed to call the API cross-origin. Empty = no CORS.</summary>
+    public IReadOnlyList<string> RequestOrigins { get; init; } = [];
+
+    /// <summary>Encore as browsers reach it, no trailing slash; its path equals <see cref="PathBase"/>.</summary>
+    public Uri? PublicUrl { get; init; }
+
+    /// <summary>"" or "/segment[/segment]", no trailing slash.</summary>
+    public string PathBase { get; init; } = "";
+
+    /// <summary>Networks whose X-Forwarded-* headers are honoured. Empty = forwarded headers ignored.</summary>
+    public IReadOnlyList<System.Net.IPNetwork> TrustedProxies { get; init; } = [];
+
+    /// <summary>Jellyfin as browsers reach it, no trailing slash.</summary>
+    public Uri? JellyfinPublicUrl { get; init; }
+
+    /// <summary>Lidarr base URL without a trailing slash; null = album requests off.</summary>
+    public Uri? LidarrUrl { get; init; }
+
+    /// <summary>Lidarr API key; null when no Lidarr URL. Never printed.</summary>
+    public string? LidarrApiKey { get; init; }
+
+    public string? LidarrRootFolder { get; init; }
+
+    public PathMapping LidarrPathMap { get; init; } = new("/media/music", "/media/music");
+
     /// <summary>Stable per-install device id (<c>encore-</c> plus 12 hex digits), set once the data dir is validated.</summary>
     public string DeviceId { get; init; } = "";
 
@@ -68,7 +106,12 @@ public sealed record EncoreOptions
             .Append($"Lookahead = {Lookahead}, Batch = {Batch}, PollSeconds = {PollSeconds}, RecentWindow = {RecentWindow}, ")
             .Append($"DryRun = {DryRun}, DataDir = {DataDir}, LogLevel = {LogLevel}, DeviceId = {DeviceId}, ")
             .Append($"FetchMode = {FetchMode}, SlskdUrl = {SlskdUrl}, SlskdApiKey = <redacted>, SlskdDownloadsDir = {SlskdDownloadsDir}, ")
-            .Append($"RadioDir = {RadioDir}, RadioJellyfinDir = {RadioJellyfinDir}, SearchLimit = {SearchLimit}, FetchConcurrency = {FetchConcurrency}");
+            .Append($"RadioDir = {RadioDir}, RadioJellyfinDir = {RadioJellyfinDir}, SearchLimit = {SearchLimit}, FetchConcurrency = {FetchConcurrency}, ")
+            .Append($"RequestsEnabled = {RequestsEnabled}, RequestUsers = [{(RequestUsersAll ? "*" : string.Join(", ", RequestUsers))}], ")
+            .Append($"RequestSongsPerDay = {RequestSongsPerDay}, RequestAlbumsPerDay = {RequestAlbumsPerDay}, ")
+            .Append($"RequestOrigins = [{string.Join(", ", RequestOrigins)}], PublicUrl = {PublicUrl}, PathBase = {PathBase}, ")
+            .Append($"TrustedProxies = [{string.Join(", ", TrustedProxies)}], JellyfinPublicUrl = {JellyfinPublicUrl}, ")
+            .Append($"LidarrUrl = {LidarrUrl}, LidarrApiKey = <redacted>, LidarrRootFolder = {LidarrRootFolder}, LidarrPathMap = {LidarrPathMap}");
         return true;
     }
 }

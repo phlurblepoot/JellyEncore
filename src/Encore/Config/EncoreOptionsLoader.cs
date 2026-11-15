@@ -24,6 +24,9 @@ public static class EncoreOptionsLoader
         "ENCORE_POLL_SECONDS", "ENCORE_RECENT_WINDOW", "ENCORE_DRY_RUN", "ENCORE_DATA_DIR", "LOG_LEVEL",
         "ENCORE_FETCH_MODE", "ENCORE_SLSKD_URL", "ENCORE_SLSKD_API_KEY", "ENCORE_SLSKD_DOWNLOADS_DIR", "ENCORE_RADIO_DIR",
         "ENCORE_RADIO_JELLYFIN_DIR", "ENCORE_SLSK_SEARCH_LIMIT", "ENCORE_FETCH_CONCURRENCY",
+        "ENCORE_REQUESTS", "ENCORE_REQUEST_USERS", "ENCORE_REQUEST_SONGS_PER_DAY", "ENCORE_REQUEST_ALBUMS_PER_DAY",
+        "ENCORE_REQUEST_ORIGINS", "ENCORE_PUBLIC_URL", "ENCORE_PATH_BASE", "ENCORE_TRUSTED_PROXIES", "ENCORE_JELLYFIN_PUBLIC_URL",
+        "ENCORE_LIDARR_URL", "ENCORE_LIDARR_API_KEY", "ENCORE_LIDARR_ROOT_FOLDER", "ENCORE_LIDARR_PATH_MAP",
     ];
 
     /// <summary>The variable names Encore reads (used by tests).</summary>
@@ -148,6 +151,36 @@ public static class EncoreOptionsLoader
             CheckLiveDirs(downloadsDir, radioDir, errors, warnings);
         }
 
+        var requestsEnabled = ParseRequests(Get(env, "ENCORE_REQUESTS"), errors);
+        var (requestUsers, requestUsersAll) = ParseRequestUsers(Get(env, "ENCORE_REQUEST_USERS"));
+        var songsPerDay = ParseInt(env, "ENCORE_REQUEST_SONGS_PER_DAY", 25, 0, 500, errors, out _);
+        var albumsPerDay = ParseInt(env, "ENCORE_REQUEST_ALBUMS_PER_DAY", 2, 0, 50, errors, out _);
+        var origins = ParseOrigins(Get(env, "ENCORE_REQUEST_ORIGINS"), errors);
+        var pathBase = ParsePathBase(Get(env, "ENCORE_PATH_BASE"), errors);
+        var publicUrl = ParsePublicUrl(Get(env, "ENCORE_PUBLIC_URL"), pathBase, errors);
+        var proxies = ParseTrustedProxies(Get(env, "ENCORE_TRUSTED_PROXIES"), errors);
+        var jellyfinPublicUrl = ParseHttpUrl("ENCORE_JELLYFIN_PUBLIC_URL", Get(env, "ENCORE_JELLYFIN_PUBLIC_URL"), errors, "https://media.example.com");
+        var lidarrUrl = ParseHttpUrl("ENCORE_LIDARR_URL", Get(env, "ENCORE_LIDARR_URL"), errors, "http://lidarr:8686");
+        var lidarrKeyText = Get(env, "ENCORE_LIDARR_API_KEY");
+        string? lidarrKey = null;
+        if (Get(env, "ENCORE_LIDARR_URL") is not null)
+        {
+            lidarrKey = ParseLidarrKey(lidarrKeyText, errors);
+        }
+        else if (lidarrKeyText is not null)
+        {
+            warnings.Add(new("ENCORE_LIDARR_API_KEY", "ENCORE_LIDARR_API_KEY is set but ENCORE_LIDARR_URL is not; album requests stay off"));
+        }
+
+        var lidarrRoot = ParseLidarrRoot(Get(env, "ENCORE_LIDARR_ROOT_FOLDER"), errors);
+        var pathMap = ParsePathMap(Get(env, "ENCORE_LIDARR_PATH_MAP"), errors);
+
+        if (requestsEnabled && fetchMode == FetchMode.Off && modeKnown)
+        {
+            warnings.Add(new("ENCORE_REQUESTS",
+                "ENCORE_REQUESTS=on but ENCORE_FETCH_MODE=off: song requests answer 503 songs_unavailable; only album requests (Lidarr) work"));
+        }
+
         if (errors.Count > 0)
         {
             return new ConfigResult(null, errors, warnings);
@@ -174,6 +207,20 @@ public static class EncoreOptionsLoader
             RadioJellyfinDir = radioJellyfinDir!,
             SearchLimit = searchLimit,
             FetchConcurrency = concurrency,
+            RequestsEnabled = requestsEnabled,
+            RequestUsers = requestUsers,
+            RequestUsersAll = requestUsersAll,
+            RequestSongsPerDay = songsPerDay,
+            RequestAlbumsPerDay = albumsPerDay,
+            RequestOrigins = origins,
+            PublicUrl = publicUrl,
+            PathBase = pathBase,
+            TrustedProxies = proxies,
+            JellyfinPublicUrl = jellyfinPublicUrl,
+            LidarrUrl = lidarrUrl,
+            LidarrApiKey = lidarrKey,
+            LidarrRootFolder = lidarrRoot,
+            LidarrPathMap = pathMap,
         };
         return new ConfigResult(options, errors, warnings);
     }
@@ -454,6 +501,275 @@ public static class EncoreOptionsLoader
         {
             return false;
         }
+    }
+
+    private static bool ParseRequests(string? text, List<ConfigError> errors)
+    {
+        if (text is null)
+        {
+            return false;
+        }
+
+        switch (text.ToLowerInvariant())
+        {
+            case "on":
+                return true;
+            case "off":
+                return false;
+            default:
+                errors.Add(new("ENCORE_REQUESTS", $"ENCORE_REQUESTS must be off or on, got \"{Truncate(text)}\""));
+                return false;
+        }
+    }
+
+    /// <summary>Names or ids, comma separated; "*" anywhere in the list means everyone. Unknown names are checked later, at start.</summary>
+    private static (List<string> Users, bool All) ParseRequestUsers(string? text)
+    {
+        var users = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var all = false;
+        foreach (var part in (text ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (part == "*")
+            {
+                all = true;
+            }
+            else if (seen.Add(part))
+            {
+                users.Add(part);
+            }
+        }
+
+        return (users, all);
+    }
+
+    private static List<string> ParseOrigins(string? text, List<ConfigError> errors)
+    {
+        const string name = "ENCORE_REQUEST_ORIGINS";
+        var origins = new List<string>();
+        foreach (var part in (text ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (!Uri.TryCreate(part, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https") || string.IsNullOrEmpty(uri.Host)
+                || !string.IsNullOrEmpty(uri.UserInfo) || !string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment)
+                || part.Contains('?') || part.Contains('#') || part.Contains('@')
+                || part.Count(c => c == '/') != 2 || part.EndsWith('/'))
+            {
+                errors.Add(new(name, $"{name} entries must be exact origins like https://media.example.com or http://192.168.1.5:8096 (http or https, no path), got \"{Truncate(part)}\""));
+                continue;
+            }
+
+            var origin = uri.GetLeftPart(UriPartial.Authority);
+            if (!origins.Contains(origin, StringComparer.Ordinal))
+            {
+                origins.Add(origin);
+            }
+        }
+
+        return origins;
+    }
+
+    private static string ParsePathBase(string? text, List<ConfigError> errors)
+    {
+        const string name = "ENCORE_PATH_BASE";
+        if (text is null)
+        {
+            return "";
+        }
+
+        var valid = text.StartsWith('/') && !text.EndsWith('/') && text.Length > 1;
+        if (valid)
+        {
+            foreach (var segment in text[1..].Split('/'))
+            {
+                if (segment.Length == 0 || segment is "." or ".." || !segment.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '.' or '~'))
+                {
+                    valid = false;
+                    break;
+                }
+            }
+        }
+
+        if (!valid)
+        {
+            errors.Add(new(name, $"{name} must be empty or like /encore or /apps/encore (letters, digits, - _ . ~; no trailing /), got \"{Truncate(text)}\""));
+            return "";
+        }
+
+        return text;
+    }
+
+    private static Uri? ParsePublicUrl(string? text, string pathBase, List<ConfigError> errors)
+    {
+        const string name = "ENCORE_PUBLIC_URL";
+        var uri = ParseHttpUrl(name, text, errors, "http://192.168.86.50:5095");
+        if (uri is null)
+        {
+            return null;
+        }
+
+        var path = uri.AbsolutePath.TrimEnd('/');
+        if (!string.Equals(path, pathBase, StringComparison.Ordinal))
+        {
+            errors.Add(new(name, $"{name} path \"{Truncate(path)}\" must equal ENCORE_PATH_BASE \"{pathBase}\""));
+            return null;
+        }
+
+        return uri;
+    }
+
+    /// <summary>Absolute http(s) URL with no credentials, query or fragment; trailing slashes are trimmed. Null (no error) when unset.</summary>
+    private static Uri? ParseHttpUrl(string name, string? text, List<ConfigError> errors, string example)
+    {
+        if (text is null)
+        {
+            return null;
+        }
+
+        if (!Uri.TryCreate(text, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https") || string.IsNullOrEmpty(uri.Host))
+        {
+            errors.Add(new(name, $"{name} must be an absolute http or https URL (for example {example})"));
+            return null;
+        }
+
+        if (!string.IsNullOrEmpty(uri.UserInfo))
+        {
+            errors.Add(new(name, $"{name} must not contain a user name or password"));
+            return null;
+        }
+
+        if (!string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment) || text.Contains('?') || text.Contains('#'))
+        {
+            errors.Add(new(name, $"{name} must not contain a query string or fragment"));
+            return null;
+        }
+
+        return new Uri(uri.GetLeftPart(UriPartial.Path).TrimEnd('/'), UriKind.Absolute);
+    }
+
+    private static List<System.Net.IPNetwork> ParseTrustedProxies(string? text, List<ConfigError> errors)
+    {
+        const string name = "ENCORE_TRUSTED_PROXIES";
+        var networks = new List<System.Net.IPNetwork>();
+        var parts = (text ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length > 64)
+        {
+            errors.Add(new(name, $"{name} may list at most 64 entries, got {parts.Length}"));
+            return networks;
+        }
+
+        foreach (var part in parts)
+        {
+            var slash = part.IndexOf('/');
+            var addressText = slash < 0 ? part : part[..slash];
+            if (!System.Net.IPAddress.TryParse(addressText, out var address) || addressText.Contains('%'))
+            {
+                errors.Add(new(name, $"{name} entries must be an IP address or CIDR such as 172.18.0.5 or 10.0.0.0/8, got \"{Truncate(part)}\""));
+                continue;
+            }
+
+            var maxPrefix = address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork ? 32 : 128;
+            var prefix = maxPrefix;
+            if (slash >= 0
+                && !(int.TryParse(part[(slash + 1)..], NumberStyles.None, CultureInfo.InvariantCulture, out prefix) && prefix <= maxPrefix))
+            {
+                errors.Add(new(name, $"{name} entry \"{Truncate(part)}\" has a bad prefix length (0..{maxPrefix})"));
+                continue;
+            }
+
+            if (prefix == 0)
+            {
+                errors.Add(new(name, $"{name} entry \"{Truncate(part)}\" would trust every address; list the proxies' own addresses"));
+                continue;
+            }
+
+            if (!System.Net.IPNetwork.TryParse($"{address}/{prefix}", out var network) || !network.BaseAddress.Equals(address))
+            {
+                errors.Add(new(name, $"{name} entry \"{Truncate(part)}\" has bits set after the prefix; use the network address (for example 10.0.0.0/8)"));
+                continue;
+            }
+
+            networks.Add(network);
+        }
+
+        return networks;
+    }
+
+    private static string? ParseLidarrKey(string? text, List<ConfigError> errors)
+    {
+        const string name = "ENCORE_LIDARR_API_KEY";
+        if (text is null)
+        {
+            errors.Add(new(name, "ENCORE_LIDARR_API_KEY is required when ENCORE_LIDARR_URL is set"));
+            return null;
+        }
+
+        // Messages below never include the value.
+        if (text.Length is < 20 or > 64 || !text.All(char.IsAsciiLetterOrDigit))
+        {
+            errors.Add(new(name, "ENCORE_LIDARR_API_KEY must be 20 to 64 letters and digits (copy it from Lidarr, Settings, General)"));
+            return null;
+        }
+
+        return text;
+    }
+
+    private static string? ParseLidarrRoot(string? text, List<ConfigError> errors)
+    {
+        const string name = "ENCORE_LIDARR_ROOT_FOLDER";
+        if (text is null)
+        {
+            return null;
+        }
+
+        if (text.Any(char.IsControl))
+        {
+            errors.Add(new(name, "ENCORE_LIDARR_ROOT_FOLDER contains a control character"));
+            return null;
+        }
+
+        var trimmed = text.Length > 1 ? text.TrimEnd('/') : text;
+        if (trimmed.Length == 0)
+        {
+            errors.Add(new(name, "ENCORE_LIDARR_ROOT_FOLDER must not be the root folder"));
+            return null;
+        }
+
+        return trimmed;
+    }
+
+    private static PathMapping ParsePathMap(string? text, List<ConfigError> errors)
+    {
+        const string name = "ENCORE_LIDARR_PATH_MAP";
+        var fallback = new PathMapping("/media/music", "/media/music");
+        if (text is null)
+        {
+            return fallback;
+        }
+
+        var parts = text.Split('=');
+        if (parts.Length == 2)
+        {
+            var lidarr = ParseMapPrefix(parts[0].Trim());
+            var jellyfin = ParseMapPrefix(parts[1].Trim());
+            if (lidarr is not null && jellyfin is not null)
+            {
+                return new PathMapping(lidarr, jellyfin);
+            }
+        }
+
+        errors.Add(new(name, $"{name} must be <lidarr folder>=<jellyfin folder>, both absolute paths starting with / (no .. segment, no backslash), got \"{Truncate(text)}\""));
+        return fallback;
+    }
+
+    private static string? ParseMapPrefix(string text)
+    {
+        if (!text.StartsWith('/') || text.Contains('\\') || text.Split('/').Contains("..") || text.Any(char.IsControl))
+        {
+            return null;
+        }
+
+        var trimmed = text.TrimEnd('/');
+        return trimmed.Length == 0 ? null : trimmed;
     }
 
     private static string Truncate(string s) => s.Length <= 100 ? s : s[..100] + "...";

@@ -6,11 +6,13 @@ namespace Encore.Logging;
 public static partial class Log
 {
     [LoggerMessage(EventId = 1000, EventName = "startup.config", Level = LogLevel.Information,
-        Message = "Encore {Version} configured: jellyfin {Url}, users [{AllowedUsers}], lookahead {Lookahead}, batch {Batch}, poll {PollSeconds}s, window {RecentWindow}, dryRun {DryRun}, dataDir {DataDir}, deviceId {DeviceId}, apiKey {ApiKey}, fetchMode {FetchMode}, slskdUrl {SlskdUrl}, slskdApiKey {SlskdApiKey}, slskdDownloadsDir {SlskdDownloadsDir}, radioDir {RadioDir}, radioJellyfinDir {RadioJellyfinDir}, searchLimit {SearchLimit}, fetchConcurrency {FetchConcurrency}")]
+        Message = "Encore {Version} configured: jellyfin {Url}, users [{AllowedUsers}], lookahead {Lookahead}, batch {Batch}, poll {PollSeconds}s, window {RecentWindow}, dryRun {DryRun}, dataDir {DataDir}, deviceId {DeviceId}, apiKey {ApiKey}, fetchMode {FetchMode}, slskdUrl {SlskdUrl}, slskdApiKey {SlskdApiKey}, slskdDownloadsDir {SlskdDownloadsDir}, radioDir {RadioDir}, radioJellyfinDir {RadioJellyfinDir}, searchLimit {SearchLimit}, fetchConcurrency {FetchConcurrency}, requests {Requests}, requestUsers [{RequestUsers}], songsPerDay {SongsPerDay}, albumsPerDay {AlbumsPerDay}, origins [{Origins}], publicUrl {PublicUrl}, pathBase {PathBase}, trustedProxies [{TrustedProxies}], jellyfinPublicUrl {JellyfinPublicUrl}, lidarrUrl {LidarrUrl}, lidarrApiKey {LidarrApiKey}, lidarrRootFolder {LidarrRootFolder}, lidarrPathMap {LidarrPathMap}")]
     private static partial void StartupConfig(ILogger logger, string version, string url, string allowedUsers,
         int lookahead, int batch, int pollSeconds, string recentWindow, bool dryRun, string dataDir, string deviceId, string apiKey,
         string fetchMode, string slskdUrl, string slskdApiKey, string slskdDownloadsDir, string radioDir, string radioJellyfinDir,
-        string searchLimit, int fetchConcurrency);
+        string searchLimit, int fetchConcurrency, string requests, string requestUsers, int songsPerDay, int albumsPerDay,
+        string origins, string publicUrl, string pathBase, string trustedProxies, string jellyfinPublicUrl, string lidarrUrl,
+        string lidarrApiKey, string lidarrRootFolder, string lidarrPathMap);
 
     [LoggerMessage(EventId = 1010, EventName = "startup.config_warning", Level = LogLevel.Warning,
         Message = "Configuration warning: {Variable}: {Reason}")]
@@ -25,5 +27,9 @@ public static partial class Log
         StartupConfig(logger, version, o.JellyfinUrl.ToString(), string.Join(", ", o.AllowedUsers), o.Lookahead, o.Batch,
             o.PollSeconds, o.RecentWindow.ToString(), o.DryRun, o.DataDir, o.DeviceId, "set",
             o.FetchMode.ToString(), o.SlskdUrl?.ToString() ?? "none", o.SlskdApiKey is null ? "unset" : "set", o.SlskdDownloadsDir,
-            o.RadioDir, o.RadioJellyfinDir, o.SearchLimit.ToString(), o.FetchConcurrency);
+            o.RadioDir, o.RadioJellyfinDir, o.SearchLimit.ToString(), o.FetchConcurrency,
+            o.RequestsEnabled ? "on" : "off", o.RequestUsersAll ? "*" : string.Join(", ", o.RequestUsers), o.RequestSongsPerDay, o.RequestAlbumsPerDay,
+            string.Join(", ", o.RequestOrigins), o.PublicUrl?.ToString() ?? "none", o.PathBase.Length == 0 ? "none" : o.PathBase,
+            string.Join(", ", o.TrustedProxies), o.JellyfinPublicUrl?.ToString() ?? "none", o.LidarrUrl?.ToString() ?? "none",
+            o.LidarrApiKey is null ? "unset" : "set", o.LidarrRootFolder ?? "none", o.LidarrPathMap.ToString());
 }
