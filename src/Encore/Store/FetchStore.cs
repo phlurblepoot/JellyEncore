@@ -175,6 +175,19 @@ public sealed class FetchStore : IDisposable
         }
     }
 
+    /// <summary>Marks every non-failed row of <paramref name="trackKey"/> as requested by a user (<c>requested = 1</c>, <c>kept_reason = 'requested'</c>). Returns the rows changed.</summary>
+    public int MarkRequested(string trackKey)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(trackKey);
+        lock (_gate)
+        {
+            using var cmd = _db.CreateCommand();
+            cmd.CommandText = "UPDATE fetched_files SET requested = 1, kept_reason = 'requested' WHERE track_key = $key AND state <> 'failed'";
+            cmd.Parameters.AddWithValue("$key", trackKey);
+            return cmd.ExecuteNonQuery();
+        }
+    }
+
     /// <summary>Sets the state and any non-null field of one row. Returns false when the id does not exist.</summary>
     public bool UpdateFetched(long id, string state, FetchedUpdate? fields = null)
     {

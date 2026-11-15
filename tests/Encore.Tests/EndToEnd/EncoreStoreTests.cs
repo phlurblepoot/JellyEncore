@@ -40,16 +40,16 @@ public class EncoreStoreTests : IDisposable
         at, Session, User, "Jellyfin Web", "full", "start", Catalog.G(100), "playlistItem2", key, outcome, run, 4, outcome == "failed" ? 503 : null);
 
     [Fact]
-    public void A_new_store_has_schema_2_and_reopens()
+    public void A_new_store_has_schema_3_and_reopens()
     {
         using (var store = EncoreStore.Open(Path_(), _time))
         {
-            Assert.Equal(2, store.SchemaVersionOnDisk);
+            Assert.Equal(3, store.SchemaVersionOnDisk);
             Assert.NotNull(store.GetMeta("created_utc"));
         }
 
         using var again = EncoreStore.Open(Path_(), _time);
-        Assert.Equal(2, again.SchemaVersionOnDisk);
+        Assert.Equal(3, again.SchemaVersionOnDisk);
     }
 
     [Fact]
@@ -57,7 +57,7 @@ public class EncoreStoreTests : IDisposable
     {
         using (var store = EncoreStore.Open(Path_(), _time))
         {
-            Assert.Equal(2, store.SchemaVersionOnDisk);
+            Assert.Equal(3, store.SchemaVersionOnDisk);
         }
 
         using (var raw = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = Path_(), Pooling = false }.ConnectionString))
@@ -208,7 +208,7 @@ public class EncoreStoreTests : IDisposable
         }
 
         using var db = Raw();
-        Run(db, "DROP TABLE fetch_attempts; DROP TABLE fetch_negative; DROP TABLE fetched_files; PRAGMA user_version = 1");
+        Run(db, "DROP TABLE requests; DROP TABLE fetch_attempts; DROP TABLE fetch_negative; DROP TABLE fetched_files; PRAGMA user_version = 1");
     }
 
     private static NewFetchedFile NewFetch(string job, string key = "key", DateTimeOffset? at = null) => new(
@@ -222,24 +222,24 @@ public class EncoreStoreTests : IDisposable
         }
 
         using var db = Raw();
-        Assert.Equal(2, Scalar(db, "PRAGMA user_version"));
+        Assert.Equal(3, Scalar(db, "PRAGMA user_version"));
         Assert.Equal(3, Scalar(db, "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('fetched_files','fetch_attempts','fetch_negative')"));
         Assert.Equal(5, Scalar(db, "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name IN ('ix_fetched_key','ix_fetched_state','ix_fetched_path','ix_attempts_at','ix_attempts_key')"));
     }
 
     [Fact]
-    public void A_v1_file_with_data_migrates_to_2_and_keeps_a_v1_backup()
+    public void A_v1_file_with_data_migrates_to_3_and_keeps_a_v1_backup()
     {
         MakeV1File();
 
         using (var store = EncoreStore.Open(Path_(), _time))
         {
-            Assert.Equal(2, store.SchemaVersionOnDisk);
+            Assert.Equal(3, store.SchemaVersionOnDisk);
         }
 
         using (var db = Raw())
         {
-            Assert.Equal(2, Scalar(db, "PRAGMA user_version"));
+            Assert.Equal(3, Scalar(db, "PRAGMA user_version"));
             Assert.Equal(1, Scalar(db, "SELECT COUNT(*) FROM triggers"));
             Assert.Equal(2, Scalar(db, "SELECT COUNT(*) FROM added_items"));
             Assert.Equal(3, Scalar(db, "SELECT COUNT(*) FROM plays"));
@@ -287,7 +287,7 @@ public class EncoreStoreTests : IDisposable
         using (var db = Raw())
         {
             Assert.True(Scalar(db, "PRAGMA user_version") > 1);
-            Run(db, "PRAGMA user_version = 3");
+            Run(db, "PRAGMA user_version = 4");
         }
 
         var ex = Assert.Throws<StoreException>(() => EncoreStore.Open(Path_(), _time));

@@ -42,7 +42,7 @@ public sealed record PruneResult(int Plays, int AddedItems, int Triggers, int At
 public sealed class EncoreStore : IDisposable
 {
     /// <summary>The schema this build writes. A database with a higher user_version refuses to open.</summary>
-    public const int SchemaVersion = 2;
+    public const int SchemaVersion = 3;
 
     /// <summary>Trigger outcomes that block a repeat fire with the same dedupe key.</summary>
     public const string SentOutcome = "sent";
@@ -123,6 +123,25 @@ public sealed class EncoreStore : IDisposable
         CREATE INDEX ix_attempts_key ON fetch_attempts(track_key, at_utc);
         CREATE TABLE fetch_negative (
           track_key TEXT PRIMARY KEY, until_utc TEXT NOT NULL, reason TEXT NOT NULL, misses INTEGER NOT NULL DEFAULT 1);
+        """,
+        """
+        ALTER TABLE fetched_files ADD COLUMN requested INTEGER NOT NULL DEFAULT 0 CHECK (requested IN (0,1));
+        CREATE TABLE requests (
+          id TEXT PRIMARY KEY,
+          kind TEXT NOT NULL CHECK (kind IN ('song','album')),
+          user_id TEXT NOT NULL, user_name TEXT NOT NULL,
+          state TEXT NOT NULL CHECK (state IN ('queued','searching','downloading','importing','ready','failed','cancelled')),
+          detail TEXT, fail_reason TEXT,
+          artist TEXT NOT NULL, title TEXT, album TEXT, year INTEGER, cover_url TEXT,
+          track_key TEXT, deezer_track_id INTEGER, duration_s INTEGER,
+          foreign_album_id TEXT, foreign_artist_id TEXT,
+          lidarr_artist_id INTEGER, lidarr_album_id INTEGER, tracks_done INTEGER, tracks_total INTEGER,
+          fetched_file_id INTEGER REFERENCES fetched_files(id), jellyfin_item_id TEXT,
+          attempts INTEGER NOT NULL DEFAULT 0, next_try_utc TEXT, cancelled_by TEXT,
+          created_utc TEXT NOT NULL, updated_utc TEXT NOT NULL, ready_utc TEXT, notified_utc TEXT);
+        CREATE INDEX ix_requests_user ON requests(user_id, created_utc);
+        CREATE INDEX ix_requests_state ON requests(state, updated_utc);
+        CREATE INDEX ix_requests_key ON requests(track_key) WHERE track_key IS NOT NULL;
         """,
     ];
 
@@ -430,7 +449,7 @@ public sealed class EncoreStore : IDisposable
         return new StoredRun(runId, lastItem, ids.Count, ids);
     }
 
-    /// <summary>Deletes rows past retention: plays after 14 days, added songs, triggers and fetch attempts after 90 days, expired negative-cache rows. Never <c>fetched_files</c>.</summary>
+    /// <summary>Deletes rows past retention: plays after 14 days, added songs, triggers and fetch attempts after 90 days, expired negative-cache rows. Never <c>fetched_files</c> or <c>requests</c>.</summary>
     public PruneResult Prune(DateTimeOffset now)
     {
         using var tx = _db.BeginTransaction();
