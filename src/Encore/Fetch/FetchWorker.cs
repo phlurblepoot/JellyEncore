@@ -55,6 +55,8 @@ public sealed class FetchWorker : BackgroundService
     private readonly ILogger<FetchWorker> _log;
     private readonly TimeProvider _time;
     private readonly SemaphoreSlim _slots;
+    /// <summary>The slot only request jobs may use (v0.3 design section 6.2), on top of <see cref="_slots"/>.</summary>
+    private readonly SemaphoreSlim _requestSlots = new(FetchLimits.RequestSlots, FetchLimits.RequestSlots);
     private readonly ConcurrentDictionary<Task, byte> _running = new();
     private string? _lastSlskdState;
 
@@ -131,26 +133,58 @@ public sealed class FetchWorker : BackgroundService
     {
         try
         {
-            await foreach (var job in _coordinator.Queue.ReadAllAsync(stopping).ConfigureAwait(false))
+            while (true)
             {
-                if (job.IsTerminal)
+                stopping.ThrowIfCancellationRequested();
+                while (TryDispatch(stopping))
                 {
-                    continue;
                 }
 
-                await _slots.WaitAsync(stopping).ConfigureAwait(false);
-                if (!_coordinator.TryStart(job))
-                {
-                    _slots.Release();
-                    continue;
-                }
-
-                Track(RunJobAsync(job, new Slot(_slots), stopping));
+                // New work, a freed slot, or the sweep (an hourly-cap wait may have ended) wakes us.
+                await _coordinator.WaitForWorkAsync(stopping).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (stopping.IsCancellationRequested)
         {
         }
+    }
+
+    /// <summary>Starts one job if a slot is free and a job can start; the slots it did not use go back at once.</summary>
+    private bool TryDispatch(CancellationToken stopping)
+    {
+        if (stopping.IsCancellationRequested)
+        {
+            return false;
+        }
+
+        var general = _slots.Wait(0);
+        var request = _requestSlots.Wait(0);
+        FetchJob? job = null;
+        var usedRequest = false;
+        try
+        {
+            job = _coordinator.TryTake(request, general, out usedRequest);
+        }
+        finally
+        {
+            if (general && (job is null || usedRequest))
+            {
+                _slots.Release();
+            }
+
+            if (request && (job is null || !usedRequest))
+            {
+                _requestSlots.Release();
+            }
+        }
+
+        if (job is null)
+        {
+            return false;
+        }
+
+        Track(RunJobAsync(job, new Slot(usedRequest ? _requestSlots : _slots, _coordinator.Signal), stopping));
+        return true;
     }
 
     private void Track(Task task)
@@ -160,7 +194,7 @@ public sealed class FetchWorker : BackgroundService
     }
 
     /// <summary>One slot of the Searching plus Downloading limit, released while the job imports or ingests.</summary>
-    private sealed class Slot(SemaphoreSlim slots)
+    private sealed class Slot(SemaphoreSlim slots, Action released)
     {
         private bool _held = true;
 
@@ -170,6 +204,7 @@ public sealed class FetchWorker : BackgroundService
             {
                 _held = false;
                 slots.Release();
+                released();
             }
         }
 
@@ -195,7 +230,8 @@ public sealed class FetchWorker : BackgroundService
         try
         {
             var c = job.Candidate;
-            var soulseek = new SoulseekJob(job.JobId, job.Key.Value, c.Artist, c.Title, c.Album, c.DurationS, job.DryRun, job.Deadline);
+            var soulseek = new SoulseekJob(job.JobId, job.Key.Value, c.Artist, c.Title, c.Album, c.DurationS, job.DryRun, job.Deadline,
+                _coordinator.PreferenceOf(job));
             var hooks = new SoulseekFetchHooks(
                 OnEnqueued: e => OnEnqueued(job, e),
                 VerifyAsync: (file, ct) => VerifyAsync(job, slot, file, ct));
@@ -649,6 +685,7 @@ public sealed class FetchWorker : BackgroundService
     public override void Dispose()
     {
         _slots.Dispose();
+        _requestSlots.Dispose();
         base.Dispose();
     }
 }

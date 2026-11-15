@@ -25,6 +25,15 @@ public static class FetchLimits
     public static readonly TimeSpan CleanupTimeout = TimeSpan.FromSeconds(5);
 
     public static readonly TimeSpan JobDeadline = TimeSpan.FromMinutes(15);
+
+    /// <summary>The deadline of a song request's fetch job (v0.3 design section 6.1).</summary>
+    public static readonly TimeSpan RequestDeadline = TimeSpan.FromMinutes(60);
+
+    /// <summary>Slots only request jobs may use, on top of ENCORE_FETCH_CONCURRENCY (v0.3 design section 6.2).</summary>
+    public const int RequestSlots = 1;
+
+    /// <summary>A request pick is forgotten this long after its job ended even if <c>Forget</c> was never called (a backstop).</summary>
+    public static readonly TimeSpan RequestPicksBackstop = TimeSpan.FromHours(24);
     public static readonly TimeSpan IngestWait = TimeSpan.FromMinutes(3);
     public static readonly TimeSpan IngestPoll = TimeSpan.FromSeconds(5);
     public const int MaxPassOvers = 1;

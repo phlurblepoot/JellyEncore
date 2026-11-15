@@ -4,10 +4,12 @@ namespace Encore.Fetch;
 
 /// <summary>
 /// One song for <see cref="ISoulseekFetcher"/>. <see cref="TrackKey"/> is the owned-index key text (design section 5.1),
-/// used for <c>fetch_attempts</c> and the negative cache. <see cref="Deadline"/> is 15 min after the first request.
+/// used for <c>fetch_attempts</c> and the negative cache. <see cref="Deadline"/> is 15 min after the first request
+/// (60 min for a song request). <see cref="Preference"/> picks the scorer's ranking (v0.3 design section 6.2).
 /// </summary>
 public sealed record SoulseekJob(
-    string JobId, string TrackKey, string Artist, string Title, string? Album, int? DurationS, bool DryRun, DateTimeOffset Deadline);
+    string JobId, string TrackKey, string Artist, string Title, string? Album, int? DurationS, bool DryRun, DateTimeOffset Deadline,
+    FetchPreference Preference = FetchPreference.Fastest);
 
 /// <summary>A download request slskd accepted (peer number 1 to 3).</summary>
 public sealed record EnqueuedDownload(string JobId, int PeerNo, ScoredFile File, Guid TransferId, string Query);

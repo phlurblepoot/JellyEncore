@@ -2,7 +2,11 @@ using Encore.Slskd;
 
 namespace Encore.Fetch.Scoring;
 
-/// <summary>Pure scorer: accepts FLAC or MP3 320 files that match the song and ranks peers by estimated time to finish (v0.2 design section 7).</summary>
+/// <summary>
+/// Pure scorer: accepts FLAC or MP3 320 files that match the song and ranks peers by estimated time to finish (v0.2 design
+/// section 7). With <see cref="FetchPreference.FlacFirst"/> (v0.3 design section 6.2), FLAC files rank before MP3s, each
+/// group by that same order, except a FLAC estimated to finish in more than 20 min or after the deadline, which ranks after the MP3s.
+/// </summary>
 public sealed class Scorer : IScorer
 {
     private static readonly string[][] VariantPhrases =
@@ -28,7 +32,19 @@ public sealed class Scorer : IScorer
             }
         }
 
-        accepted.Sort(Compare);
+        if (reference.Preference == FetchPreference.FlacFirst)
+        {
+            var secondsLeft = reference.SecondsLeft;
+            accepted.Sort((a, b) =>
+            {
+                var g = FlacFirstGroup(a, secondsLeft).CompareTo(FlacFirstGroup(b, secondsLeft));
+                return g != 0 ? g : Compare(a, b);
+            });
+        }
+        else
+        {
+            accepted.Sort(Compare);
+        }
         var ranked = new List<ScoredFile>();
         var peers = new HashSet<string>(StringComparer.Ordinal);
         foreach (var f in accepted)
@@ -37,6 +53,18 @@ public sealed class Scorer : IScorer
             if (peers.Add(f.Username)) ranked.Add(f);
         }
         return new ScoreResult(ranked, rejected, seen);
+    }
+
+    /// <summary>FlacFirst groups: 0 a FLAC that finishes in time, 1 an MP3, 2 a FLAC that is too slow or past the deadline.</summary>
+    private static int FlacFirstGroup(ScoredFile f, double? secondsLeft)
+    {
+        if (f.Format != AudioFormat.Flac)
+        {
+            return 1;
+        }
+
+        var tooSlow = f.EtaSeconds > ScorerLimits.FlacFirstMaxEtaSeconds || (secondsLeft is { } left && f.EtaSeconds > left);
+        return tooSlow ? 2 : 0;
     }
 
     private static int Compare(ScoredFile a, ScoredFile b)

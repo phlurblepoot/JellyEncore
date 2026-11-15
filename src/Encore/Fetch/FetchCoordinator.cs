@@ -24,6 +24,8 @@ internal sealed class FetchJob
         SessionId = first.SessionId;
         UserId = first.UserId;
         CreatedUtc = createdUtc;
+        Priority = first.Priority;
+        Preference = first.Preference;
     }
 
     public string JobId { get; }
@@ -55,6 +57,12 @@ internal sealed class FetchJob
 
     // ---- coordinator state (under the coordinator lock)
     public FetchStage Stage { get; set; } = FetchStage.Queued;
+
+    /// <summary>Request once any request pick joined; a queued job then moves to the request queue.</summary>
+    public FetchPriority Priority { get; set; }
+
+    /// <summary>Changed by a joining request only while Queued; the worker reads it once the job is Searching.</summary>
+    public FetchPreference Preference { get; set; }
 
     public CancellationTokenSource Soft { get; } = new();
 
@@ -94,7 +102,8 @@ internal sealed class PickRef(string pickId, string runId, string sessionId, Fet
 
 /// <summary>
 /// <see cref="IFetchRequests"/> for dry run and live mode (v0.2 design sections 3.1, 6.1 and 6.4): one job per
-/// TrackKey, joined by later picks; a channel the <see cref="FetchWorker"/> reads; a thread-safe readiness view per
+/// TrackKey, joined by later picks; a two-level queue (request jobs first, v0.3 design section 6.2) the
+/// <see cref="FetchWorker"/> takes from; a thread-safe readiness view per
 /// pick; the hourly cap (30 jobs per rolling hour reach Downloading or a would-download, all users; a job holds a
 /// place from its request until it gets there or ends); availability from the worker's periodic checks. Every public
 /// member returns at once and never throws; no lock is held while a cancellation token is cancelled.
@@ -112,7 +121,15 @@ public sealed class FetchCoordinator : IFetchRequests
     private readonly HashSet<FetchJob> _active = [];
     /// <summary>Songs whose file is in music-radio but not yet seen by Jellyfin (ingest timed out): never fetched again.</summary>
     private readonly HashSet<TrackKey> _importedPending = [];
-    private readonly Channel<FetchJob> _queue = Channel.CreateUnbounded<FetchJob>(new UnboundedChannelOptions { SingleReader = true });
+    /// <summary>The two-level queue (v0.3 design section 6.2): request jobs are always taken before radio jobs. Both FIFO.</summary>
+    private readonly List<FetchJob> _requestQueue = [];
+    private readonly List<FetchJob> _radioQueue = [];
+    /// <summary>An auto-reset wake-up for the worker's dispatcher: new work, a freed slot, or the sweep with jobs queued.</summary>
+    private readonly Channel<byte> _wake = Channel.CreateBounded<byte>(new BoundedChannelOptions(1)
+    {
+        SingleReader = true,
+        FullMode = BoundedChannelFullMode.DropWrite,
+    });
     private readonly Queue<DateTimeOffset> _window = new();
     private readonly IOwnedIndex _owned;
     private readonly ILogger _log;
@@ -155,7 +172,11 @@ public sealed class FetchCoordinator : IFetchRequests
 
     public FetchMode Mode { get; }
 
-    internal ChannelReader<FetchJob> Queue => _queue.Reader;
+    /// <summary>Waits until <see cref="Signal"/> was called since the last wait returned (the worker's dispatcher only).</summary>
+    internal async Task WaitForWorkAsync(CancellationToken ct) => await _wake.Reader.ReadAsync(ct).ConfigureAwait(false);
+
+    /// <summary>Wakes the dispatcher: there may be a job it can start now.</summary>
+    internal void Signal() => _wake.Writer.TryWrite(0);
 
     // ================================================================ IFetchRequests
 
@@ -192,6 +213,13 @@ public sealed class FetchCoordinator : IFetchRequests
                 var reason = ReasonLocked(now);
                 NoteAvailabilityLocked(reason);
 
+                // A request job is never refused at the hourly cap: it waits in Queued (v0.3 design section 6.2).
+                var isRequest = request.Priority == FetchPriority.Request;
+                if (isRequest && reason == AvailabilityReasons.HourlyCap)
+                {
+                    reason = ReasonLocked(now, ignoreCap: true);
+                }
+
                 // The file is already in music-radio, waiting for Jellyfin: a second download would duplicate it.
                 if (_importedPending.Contains(request.Candidate.Key))
                 {
@@ -205,6 +233,11 @@ public sealed class FetchCoordinator : IFetchRequests
                     var joined = new PickRef(request.PickId, request.RunId, request.SessionId, live);
                     live.Holders.Add(joined);
                     _picks[request.PickId] = joined;
+                    if (isRequest)
+                    {
+                        UpgradeLocked(live, request.Preference);
+                    }
+
                     LogRequested(live, request, joined: true);
                     return true;
                 }
@@ -214,15 +247,26 @@ public sealed class FetchCoordinator : IFetchRequests
                     return false;
                 }
 
-                var job = new FetchJob(Guid.NewGuid().ToString("N"), request, now) { Reserved = true };
-                _reserved++;
+                // A radio job holds its place in the hourly cap from now; a request job takes one when it leaves the queue.
+                var job = new FetchJob(Guid.NewGuid().ToString("N"), request, now) { Reserved = !isRequest };
+                if (!isRequest)
+                {
+                    _reserved++;
+                }
+
                 var pick = new PickRef(request.PickId, request.RunId, request.SessionId, job);
                 job.Holders.Add(pick);
                 _picks[request.PickId] = pick;
                 _live[job.Key] = job;
                 _active.Add(job);
-                _queue.Writer.TryWrite(job);
+                (isRequest ? _requestQueue : _radioQueue).Add(job);
+                if (isRequest)
+                {
+                    MarkCapWaitLocked(now);
+                }
+
                 LogRequested(job, request, joined: false);
+                Signal();
                 return true;
             }
         }
@@ -259,6 +303,21 @@ public sealed class FetchCoordinator : IFetchRequests
         }
 
         CancelOutside(cancel);
+    }
+
+    public void Forget(string pickId)
+    {
+        if (pickId is null || !_picks.TryGetValue(pickId, out var pick))
+        {
+            return;
+        }
+
+        if (!pick.Job.IsTerminal)
+        {
+            Abandon(pickId, "forgotten");
+        }
+
+        _picks.TryRemove(pickId, out _);
     }
 
     public void EndRun(string runId, string reason, string? callerSessionId = null)
@@ -424,15 +483,22 @@ public sealed class FetchCoordinator : IFetchRequests
                 }
             }
 
+            // Request picks wait for Forget (the request worker reads their terminal state first); the backstop catches leaks.
             foreach (var (id, pick) in _picks)
             {
-                if (pick.Job.FinishedUtc is { } done && now - done > ForgetPicksAfter)
+                var keep = IsRequestPick(id) ? FetchLimits.RequestPicksBackstop : ForgetPicksAfter;
+                if (pick.Job.FinishedUtc is { } done && now - done > keep)
                 {
                     _picks.TryRemove(id, out _);
                 }
             }
 
             NoteAvailabilityLocked(ReasonLocked(now));
+            MarkCapWaitLocked(now);
+            if (_requestQueue.Count > 0 || _radioQueue.Count > 0)
+            {
+                Signal();   // a request job may have been waiting for the hourly window to free
+            }
         }
 
         foreach (var cts in toCancel)
@@ -441,27 +507,96 @@ public sealed class FetchCoordinator : IFetchRequests
         }
     }
 
+    /// <summary>Song requests use pick ids <c>req:{id}</c> (v0.3 design section 6.1).</summary>
+    public static bool IsRequestPick(string pickId) => pickId.StartsWith("req:", StringComparison.Ordinal);
+
     // ================================================================ worker transitions
 
-    /// <summary>The worker got a slot for the job. False when it already ended (cancelled while queued) or is past its deadline.</summary>
-    internal bool TryStart(FetchJob job)
+    /// <summary>
+    /// The dispatcher holds a free request slot and/or a free general slot: takes the next job that can start and moves it
+    /// to Searching. Request jobs come first (in either slot, the request slot preferred); one without a place in the hourly
+    /// cap stays queued. Radio jobs need a general slot. Jobs that ended while queued are dropped; one past its deadline
+    /// fails. Null when nothing can start now.
+    /// </summary>
+    internal FetchJob? TryTake(bool requestSlot, bool generalSlot, out bool usedRequestSlot)
+    {
+        usedRequestSlot = false;
+        if (!requestSlot && !generalSlot)
+        {
+            return null;
+        }
+
+        lock (_gate)
+        {
+            var now = _time.GetUtcNow();
+            _requestQueue.RemoveAll(j => j.IsTerminal);
+            _radioQueue.RemoveAll(j => j.IsTerminal);
+            PruneWindowLocked(now);
+
+            for (var i = 0; i < _requestQueue.Count;)
+            {
+                var job = _requestQueue[i];
+                if (!job.Reserved)
+                {
+                    if (_window.Count + _reserved >= FetchLimits.FetchesPerHour)
+                    {
+                        i++;   // waits for the hourly window; a reserved (joined radio) job behind it may still start
+                        continue;
+                    }
+
+                    job.Reserved = true;
+                    _reserved++;
+                }
+
+                _requestQueue.RemoveAt(i);
+                if (StartLocked(job, now))
+                {
+                    usedRequestSlot = requestSlot;
+                    MarkCapWaitLocked(now);
+                    return job;
+                }
+            }
+
+            MarkCapWaitLocked(now);
+            while (generalSlot && _radioQueue.Count > 0)
+            {
+                var job = _radioQueue[0];
+                _radioQueue.RemoveAt(0);
+                if (StartLocked(job, now))
+                {
+                    return job;
+                }
+            }
+
+            return null;
+        }
+    }
+
+    /// <summary>Moves the job to Searching. False when it already ended (cancelled while queued) or is past its deadline.</summary>
+    private bool StartLocked(FetchJob job, DateTimeOffset now)
+    {
+        if (job.IsTerminal)
+        {
+            return false;
+        }
+
+        if (now >= job.Deadline)
+        {
+            _log.FetchCancelled(job.JobId, CancelReasons.Deadline);
+            FinishFailedLocked(job, FetchFailure.Deadline);
+            return false;
+        }
+
+        SetStageLocked(job, FetchStage.Searching);
+        return true;
+    }
+
+    /// <summary>The job's download preference, read by the worker once the job is Searching (it no longer changes then).</summary>
+    internal FetchPreference PreferenceOf(FetchJob job)
     {
         lock (_gate)
         {
-            if (job.IsTerminal)
-            {
-                return false;
-            }
-
-            if (_time.GetUtcNow() >= job.Deadline)
-            {
-                _log.FetchCancelled(job.JobId, CancelReasons.Deadline);
-                FinishFailedLocked(job, FetchFailure.Deadline);
-                return false;
-            }
-
-            SetStageLocked(job, FetchStage.Searching);
-            return true;
+            return job.Preference;
         }
     }
 
@@ -621,7 +756,8 @@ public sealed class FetchCoordinator : IFetchRequests
 
     // ================================================================ internals (call under _gate)
 
-    private string? ReasonLocked(DateTimeOffset now)
+    /// <param name="ignoreCap">True for a request job, which waits at the hourly cap instead of being refused.</param>
+    private string? ReasonLocked(DateTimeOffset now, bool ignoreCap = false)
     {
         if (Mode == FetchMode.Off)
         {
@@ -658,8 +794,9 @@ public sealed class FetchCoordinator : IFetchRequests
             return AvailabilityReasons.DiskLow;
         }
 
+        // Queued request jobs without a place yet count too, so requests get the free capacity first.
         PruneWindowLocked(now);
-        if (_window.Count + _reserved >= FetchLimits.FetchesPerHour)
+        if (!ignoreCap && _window.Count + _reserved + WaitingRequestsLocked() >= FetchLimits.FetchesPerHour)
         {
             return AvailabilityReasons.HourlyCap;
         }
@@ -670,6 +807,70 @@ public sealed class FetchCoordinator : IFetchRequests
         }
 
         return null;
+    }
+
+    /// <summary>Queued request jobs that hold no place in the hourly cap yet.</summary>
+    private int WaitingRequestsLocked()
+    {
+        var n = 0;
+        foreach (var job in _requestQueue)
+        {
+            if (!job.IsTerminal && !job.Reserved)
+            {
+                n++;
+            }
+        }
+
+        return n;
+    }
+
+    /// <summary>Marks queued request jobs without a place as waiting for the hourly cap (or clears the mark when there is room).</summary>
+    private void MarkCapWaitLocked(DateTimeOffset now)
+    {
+        if (_requestQueue.Count == 0)
+        {
+            return;
+        }
+
+        PruneWindowLocked(now);
+        var full = _window.Count + _reserved >= FetchLimits.FetchesPerHour;
+        foreach (var job in _requestQueue)
+        {
+            if (job.IsTerminal || job.Reserved || job.Stage != FetchStage.Queued)
+            {
+                continue;
+            }
+
+            var waiting = full ? FetchWaiting.HourlyCap : null;
+            if (job.Readiness is FetchReadiness.Pending p && p.Waiting != waiting)
+            {
+                job.Readiness = new FetchReadiness.Pending(FetchStage.Queued) { Waiting = waiting };
+            }
+        }
+    }
+
+    /// <summary>
+    /// A request pick joined the job: it becomes a request job (moved to the request queue if still queued). Its download
+    /// preference changes only while it is queued; a job already searching keeps what it started with.
+    /// </summary>
+    private void UpgradeLocked(FetchJob job, FetchPreference preference)
+    {
+        if (job.Stage == FetchStage.Queued && job.Preference != preference && preference != FetchPreference.Fastest)
+        {
+            job.Preference = preference;
+        }
+
+        if (job.Priority == FetchPriority.Request)
+        {
+            return;
+        }
+
+        job.Priority = FetchPriority.Request;
+        if (job.Stage == FetchStage.Queued && _radioQueue.Remove(job))
+        {
+            _requestQueue.Add(job);
+            Signal();
+        }
     }
 
     private void NoteAvailabilityLocked(string? reason)

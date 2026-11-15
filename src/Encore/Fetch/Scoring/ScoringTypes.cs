@@ -2,8 +2,13 @@ using Encore.Slskd;
 
 namespace Encore.Fetch.Scoring;
 
-/// <summary>The song being looked for. <see cref="DurationS"/> is null when unknown.</summary>
-public sealed record ScoreReference(string Artist, string Title, string? Album, int? DurationS);
+/// <summary>
+/// The song being looked for. <see cref="DurationS"/> is null when unknown. <see cref="Preference"/> picks the ranking;
+/// <see cref="SecondsLeft"/> (time to the job's deadline, null when unknown) is used only by FlacFirst.
+/// </summary>
+public sealed record ScoreReference(
+    string Artist, string Title, string? Album, int? DurationS,
+    FetchPreference Preference = FetchPreference.Fastest, double? SecondsLeft = null);
 
 /// <summary>Why a file was not accepted (the first failing rule, v0.2 design section 7.1).</summary>
 public enum RejectReason { Format, Queue, Bitrate, Length, Size, Tokens, Variant }
@@ -34,4 +39,7 @@ public static class ScorerLimits
     public const int MinSpeedBytesPerSecond = 51_200;
     public const int Mp3MinKbps = 300;
     public const int FlacMinKbps = 350;
+
+    /// <summary>FlacFirst: a FLAC estimated to finish later than this ranks after the MP3s (v0.3 design section 6.2).</summary>
+    public const double FlacFirstMaxEtaSeconds = 20 * 60;
 }

@@ -5,11 +5,30 @@ namespace Encore.Fetch;
 
 /// <summary>
 /// One fetch request for an unowned pick (v0.2 design section 3.1). <see cref="Deadline"/> is normally
-/// now + <see cref="FetchLimits.JobDeadline"/>; a pick that joins a live job keeps that job's deadline.
+/// now + <see cref="FetchLimits.JobDeadline"/> (radio) or <see cref="FetchLimits.RequestDeadline"/> (a song request);
+/// a pick that joins a live job keeps that job's deadline. <see cref="Priority"/> and <see cref="Preference"/>
+/// (v0.3 design section 6.2) default to the v0.2 behaviour.
 /// </summary>
 public sealed record FetchRequest(
     string PickId, string RunId, string SessionId, Guid UserId,
-    Candidate Candidate, bool DryRun, DateTimeOffset Deadline);
+    Candidate Candidate, bool DryRun, DateTimeOffset Deadline,
+    FetchPriority Priority = FetchPriority.Radio, FetchPreference Preference = FetchPreference.Fastest);
+
+/// <summary>
+/// Radio jobs are refused at the hourly cap; Request jobs (a user's song request) are dequeued first, may use the
+/// reserved request slot, and wait at the hourly cap instead of being refused (v0.3 design section 6.2).
+/// </summary>
+public enum FetchPriority { Radio, Request }
+
+/// <summary>Which copy to download: the fastest accepted one (v0.2), or FLAC first unless it is slow (v0.3 design section 6.2).</summary>
+public enum FetchPreference { Fastest, FlacFirst }
+
+/// <summary>Why a queued job waits (<see cref="FetchReadiness.Pending.Waiting"/>).</summary>
+public static class FetchWaiting
+{
+    /// <summary>A request job waits for the hourly download limit to free up.</summary>
+    public const string HourlyCap = "hourly_cap";
+}
 
 /// <summary>Where a job is. Searching and Downloading hold a slot; Importing and Ingesting do not.</summary>
 public enum FetchStage { Queued, Searching, Downloading, Importing, Ingesting }
@@ -21,7 +40,11 @@ public abstract record FetchReadiness
     {
     }
 
-    public sealed record Pending(FetchStage Stage) : FetchReadiness;
+    public sealed record Pending(FetchStage Stage) : FetchReadiness
+    {
+        /// <summary>Why a Queued job waits beyond a free slot (one of <see cref="FetchWaiting"/>), else null.</summary>
+        public string? Waiting { get; init; }
+    }
 
     public sealed record Ready(Guid ItemId) : FetchReadiness;
 
@@ -130,6 +153,12 @@ public interface IFetchRequests
     /// <summary>The run ended (design section 10): every Queued or Searching job held only by this run's picks is cancelled.</summary>
     void EndRun(string runId, string reason, string? sessionId = null);
 
+    /// <summary>
+    /// The caller has read the pick's terminal state and no longer needs it. Request picks (<c>req:</c> ids) are kept until
+    /// this is called (radio picks are forgotten an hour after their job ends). A pick still pending is abandoned first.
+    /// </summary>
+    void Forget(string pickId);
+
     FetchStatus Status { get; }
 }
 
@@ -151,6 +180,10 @@ public sealed class NullFetchRequests : IFetchRequests
     }
 
     public void EndRun(string runId, string reason, string? sessionId = null)
+    {
+    }
+
+    public void Forget(string pickId)
     {
     }
 

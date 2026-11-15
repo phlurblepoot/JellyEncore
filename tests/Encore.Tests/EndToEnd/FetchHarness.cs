@@ -72,6 +72,8 @@ internal sealed class RecordingFetch(IFetchRequests inner) : IFetchRequests
         inner.EndRun(runId, reason, sessionId);
     }
 
+    public void Forget(string pickId) => inner.Forget(pickId);
+
     public FetchStatus Status => inner.Status;
 
     /// <summary>The pick requested for this title (the first one).</summary>

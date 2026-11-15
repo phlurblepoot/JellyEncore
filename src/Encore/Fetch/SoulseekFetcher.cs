@@ -45,7 +45,7 @@ public sealed class SoulseekFetcher : ISoulseekFetcher
         ArgumentNullException.ThrowIfNull(job);
         hooks ??= new SoulseekFetchHooks();
         using var beforeEnqueue = CancellationTokenSource.CreateLinkedTokenSource(soft, stopping);
-        var reference = new ScoreReference(job.Artist, job.Title, job.Album, job.DurationS);
+        var reference = new ScoreReference(job.Artist, job.Title, job.Album, job.DurationS, job.Preference);
         var queries = SoulseekQueries.For(job.Artist, job.Title);
         var triedPeers = new HashSet<string>(StringComparer.Ordinal);
         var rejected = new Dictionary<RejectReason, int>();
@@ -247,7 +247,7 @@ public sealed class SoulseekFetcher : ISoulseekFetcher
                     && (lastScore is null || now - lastScore.Value >= FetchLimits.SearchScoreEvery))
                 {
                     lastScore = now;
-                    var partial = _scorer.Score(reference, await _slskd.GetSearchResponsesAsync(id, ct).ConfigureAwait(false));
+                    var partial = _scorer.Score(At(reference, job), await _slskd.GetSearchResponsesAsync(id, ct).ConfigureAwait(false));
                     if (partial.Ranked.Count > 0 && partial.Ranked[0].HasFreeUploadSlot)
                     {
                         await _slskd.CancelSearchAsync(id, ct).ConfigureAwait(false);
@@ -258,7 +258,7 @@ public sealed class SoulseekFetcher : ISoulseekFetcher
             }
 
             var responses = await _slskd.GetSearchResponsesAsync(id, ct).ConfigureAwait(false);
-            var result = _scorer.Score(reference, responses);
+            var result = _scorer.Score(At(reference, job), responses);
             finished = true;
             _log.SearchDone(job.JobId, id, responses.Count, result.FilesSeen,
                 (long)(_time.GetUtcNow() - startedAt).TotalMilliseconds, endedBy);
@@ -559,6 +559,12 @@ public sealed class SoulseekFetcher : ISoulseekFetcher
             _log.RequestFailed("store.attempt", null, ex.Message);
         }
     }
+
+    /// <summary>FlacFirst needs the time left to the deadline when it scores; Fastest is unchanged.</summary>
+    private ScoreReference At(ScoreReference reference, SoulseekJob job) =>
+        reference.Preference == FetchPreference.Fastest
+            ? reference
+            : reference with { SecondsLeft = (job.Deadline - _time.GetUtcNow()).TotalSeconds };
 
     private void Negative(SoulseekJob job, string reason)
     {

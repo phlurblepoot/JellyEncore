@@ -45,6 +45,10 @@ internal sealed class FakeFetchRequests : IFetchRequests
         EndedSessions.Enqueue(sessionId);
     }
 
+    public void Forget(string pickId)
+    {
+    }
+
     public FetchStatus Status => FetchStatus.Off;
 
     /// <summary>Sets the readiness of the pick requested for this song title.</summary>
