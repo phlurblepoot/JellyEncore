@@ -32,6 +32,12 @@ public enum SkipReason
 
     /// <summary>The previous instance sent songs that this report does not show yet; the delivery check owns that case (T28).</summary>
     AlreadyQueued,
+
+    /// <summary>
+    /// T75: Finamp's queue-first report (the old song again with the list that follows the next song). It belongs to
+    /// the old song's instance and never fires.
+    /// </summary>
+    QueueFirst,
 }
 
 public enum FireKind
@@ -86,6 +92,7 @@ public static class TriggerNames
         SkipReason.RateLimited => "rate_limited",
         SkipReason.RunCap => "run_cap",
         SkipReason.AlreadyQueued => "already_queued",
+        SkipReason.QueueFirst => "queue_first",
         _ => throw new ArgumentOutOfRangeException(nameof(reason), reason, null),
     };
 

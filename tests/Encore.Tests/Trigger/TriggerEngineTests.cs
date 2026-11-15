@@ -1013,7 +1013,7 @@ public sealed class TriggerEngineTests
     public void Wire_names_match_the_design()
     {
         Assert.Equal(
-            "not_allowed,not_audio,no_remote_control,repeat_on,unknown_client,stale_queue,no_history,not_last,duplicate,rate_limited,run_cap,already_queued",
+            "not_allowed,not_audio,no_remote_control,repeat_on,unknown_client,stale_queue,no_history,not_last,duplicate,rate_limited,run_cap,already_queued,queue_first",
             string.Join(',', Enum.GetValues<SkipReason>().Select(r => r.ToWire())));
         Assert.Equal("start,topup,resend", string.Join(',', Enum.GetValues<FireKind>().Select(k => k.ToWire())));
         Assert.Equal("near_end,last_song,resend", string.Join(',', Enum.GetValues<FireRule>().Select(r => r.ToWire())));

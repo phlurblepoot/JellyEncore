@@ -587,7 +587,7 @@ public sealed class Orchestrator : BackgroundService
 
     private void LogSkip(TriggerSession session, SkipReason reason)
     {
-        if (reason is SkipReason.NotLast or SkipReason.NotAllowed or SkipReason.AlreadyQueued)
+        if (reason is SkipReason.NotLast or SkipReason.NotAllowed or SkipReason.AlreadyQueued or SkipReason.QueueFirst)
         {
             OperationsLog.TriggerSkippedDebug(_log, session.Id, session.UserName, session.Client, reason.ToWire());
         }

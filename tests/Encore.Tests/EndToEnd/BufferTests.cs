@@ -464,4 +464,42 @@ public class BufferTests
         Assert.Equal(2, h.Jellyfin.PlayLasts.Count);
         Assert.Empty(h.Log.Named("queue.unconfirmed"));
     }
+
+    [Fact]
+    public async Task E15_Finamp_queue_first_reports_end_to_end()
+    {
+        // T75: Finamp sends each change as the stop, the OLD song with the NEW list, then the new song (live 2026-11-15).
+        var (h, o) = await CreateAsync();
+        using var _ = h;
+        Guid N3 = Catalog.G(530), N2 = Catalog.G(531), N1 = Catalog.G(532), N = Catalog.G(533);
+
+        async Task Change(Guid old, Guid next, params Guid[] upcoming)
+        {
+            h.Time.Advance(TimeSpan.FromSeconds(200));
+            await h.Send(o, Sessions.FinampStopped(upcoming));
+            await h.Send(o, Sessions.Finamp(old, upcoming));
+            await h.Send(o, Sessions.Finamp(next, upcoming));
+        }
+
+        await h.Send(o, Sessions.Finamp(N3, N2, N1, N));
+        await Change(N3, N2, N1, N);
+        Assert.Empty(h.Jellyfin.PlayLasts);
+        await Change(N2, N1, N);
+        var first = Assert.Single(h.Jellyfin.PlayLasts).ItemIds;
+        var fired = Assert.Single(h.Log.Named("trigger.fired"));
+        Assert.Equal("start", fired.Fields["Kind"]);
+        Assert.Equal("near_end", fired.Fields["Rule"]);
+
+        await Change(N1, N, first);
+        Assert.Single(h.Log.Named("queue.confirmed"));
+        Assert.Single(h.Jellyfin.PlayLasts);
+
+        await Change(N, first[0], first[1]);
+        Assert.Equal(2, h.Jellyfin.PlayLasts.Count);
+        Assert.Equal("topup", h.Log.Named("trigger.fired").Last().Fields["Kind"]);
+
+        Assert.DoesNotContain(h.Log.Named("trigger.skipped"), e => e.Fields["Reason"] as string == "stale_queue");
+        Assert.Contains(h.Log.Named("trigger.skipped_quiet"), e => e.Fields["Reason"] as string == "queue_first");
+        Assert.Empty(h.Log.Named("queue.unconfirmed"));
+    }
 }

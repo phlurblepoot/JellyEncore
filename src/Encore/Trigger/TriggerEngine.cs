@@ -50,6 +50,12 @@ public static class TriggerEngine
             return new(tracked, TriggerDecision.None.Instance, started);
         }
 
+        // 3b (T75). The ending song's instance took Finamp's queue-first report: it never fires again.
+        if (tracked.Instance.QueueFirstSeen)
+        {
+            return Skip(tracked, SkipReason.QueueFirst, model, started);
+        }
+
         // 7b. Delivery verdicts, on the first snapshot of a new instance only, before guards 4-7.
         IReadOnlyList<SendVerdict>? verdicts = null;
         if (started && context.PendingSends.Count > 0)
@@ -374,6 +380,12 @@ public static class TriggerEngine
             return (memory, false);
         }
 
+        // T75: Finamp's queue-first report joins the ending song's instance instead of starting one.
+        if (current is not null && IsQueueFirst(current, session))
+        {
+            return (memory with { Idle = false, Instance = current with { QueueFirstSeen = true } }, false);
+        }
+
         var sequence = memory.InstanceCount + 1;
         var next = memory with
         {
@@ -390,6 +402,37 @@ public static class TriggerEngine
             },
         };
         return (next, true);
+    }
+
+    /// <summary>
+    /// T75: since late 2026 Finamp reports a song change twice, about 20 ms apart: first the OLD song with the NEW
+    /// upcoming list (the songs after the next song), then the new song with that list. The first report is the
+    /// queue-first report: the same song as the current instance, after a stop (or a source change), whose list
+    /// begins with this instance's list minus its first song (the next song). Songs the user added may follow.
+    /// It is never a new play: as an instance of its own it would hide the ending song's list from the next song's
+    /// rules (near-end needs the previous list to hold the new song; the fallback needs it to end with it), and its
+    /// <c>[]</c> at the queue's end would look like a stale list.
+    /// A replay of the same song from a stopped player with the same list, or from an empty list, is still a new instance.
+    /// </summary>
+    private static bool IsQueueFirst(PlayInstance current, TriggerSession session)
+    {
+        if (current.ItemId != session.NowPlayingItem!.Id
+            || !string.Equals(session.Client, FinampClient, StringComparison.OrdinalIgnoreCase)
+            || current.EntryQueue.Count == 0
+            || session.NowPlayingQueue.Count < current.EntryQueue.Count - 1)
+        {
+            return false;
+        }
+
+        for (var i = 1; i < current.EntryQueue.Count; i++)
+        {
+            if (session.NowPlayingQueue[i - 1].Id != current.EntryQueue[i].Id)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /// <summary>Guard 10: the instance already fired, is firing, gave up, or waits for its retry.</summary>

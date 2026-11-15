@@ -68,4 +68,11 @@ public sealed record PlayInstance
 
     /// <summary>The trigger id of the send that <see cref="ResendIds"/> repeats.</summary>
     public long? ResendOf { get; init; }
+
+    /// <summary>
+    /// T75: Finamp sent its queue-first report for this song (the song again, after a stop, with the list that follows
+    /// the next song). The song is ending: the report joined this instance, which keeps its <see cref="EntryQueue"/>
+    /// for the next song's position rules and never fires again.
+    /// </summary>
+    public bool QueueFirstSeen { get; init; }
 }
