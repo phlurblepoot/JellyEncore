@@ -129,6 +129,9 @@ public sealed record UserPolicy
     public bool IsDisabled { get; init; }
 
     public bool IsHidden { get; init; }
+
+    /// <summary>Failed logins before Jellyfin disables the user; null, 0 or negative = no limit (Jellyfin default -1).</summary>
+    public int? LoginAttemptsBeforeLockout { get; init; }
 }
 
 public sealed record QueryResult<T>
