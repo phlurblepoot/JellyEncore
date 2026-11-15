@@ -619,6 +619,23 @@ public class FetchWorkerTests
         await Wait.Until(() => h.Coordinator.Status.RadioDirInLibrary == false, "library checked");
     }
 
+    [Theory]
+    [InlineData(401)]
+    [InlineData(403)]
+    public async Task FW10b_a_rejected_slskd_key_gives_its_own_reason_and_recovers(int status)
+    {
+        await using var h = new WorkerHarness();
+        h.Slskd.Failure = new Encore.Slskd.SlskdAuthException("GetServerState", status);
+        await h.StartAsync(waitAvailable: false);
+
+        await Wait.Until(() => h.Coordinator.Status.SlskdKeyRejected, "key rejection noticed");
+        Assert.Equal("slskd_key_rejected", h.Coordinator.Availability.Reason);
+        Assert.NotEqual("slskd_unreachable", h.Coordinator.Availability.Reason);
+        Assert.True(h.Coordinator.Status.SlskdReachable);
+        Assert.False(h.Request("p", "Artist", "Song"));
+        Assert.Contains(h.WorkerLog.Named("slskd.state"), e => (string?)e.Fields["State"] == "key_rejected");
+    }
+
     [Fact]
     public async Task Unexpected_check_errors_do_not_stop_the_periodic_checks()
     {

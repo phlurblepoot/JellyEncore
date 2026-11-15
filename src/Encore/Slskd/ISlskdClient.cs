@@ -3,7 +3,7 @@ namespace Encore.Slskd;
 /// <summary>slskd 0.26.2 REST client (see .knowledge/encore/slskd-api.md).</summary>
 public interface ISlskdClient
 {
-    /// <summary>GET /api/v0/server. Encore is ready when <see cref="SlskdServerState.IsLoggedIn"/> is true.</summary>
+    /// <summary>GET /api/v0/application (the server part; /server needs an admin key). Encore is ready when <see cref="SlskdServerState.IsLoggedIn"/> is true.</summary>
     Task<SlskdServerState> GetServerStateAsync(CancellationToken ct);
 
     /// <summary>POST /api/v0/searches with the fixed options. Throws <see cref="SlskdBusyException"/> on 429 and <see cref="SlskdUnavailableException"/> on 409.</summary>

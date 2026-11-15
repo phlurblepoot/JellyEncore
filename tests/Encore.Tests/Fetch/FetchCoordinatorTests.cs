@@ -145,6 +145,18 @@ public class FetchCoordinatorTests
     }
 
     [Fact]
+    public void FW10c_a_rejected_key_is_its_own_reason_and_clears_when_the_key_works()
+    {
+        var c = Create();
+        c.SetSlskdState(true, false, "rejected", keyRejected: true);
+        Assert.Equal("slskd_key_rejected", c.Availability.Reason);
+        Assert.True(c.Status.SlskdKeyRejected);
+        c.SetSlskdState(true, true, null);
+        Assert.True(c.Availability.Available);
+        Assert.False(c.Status.SlskdKeyRejected);
+    }
+
+    [Fact]
     public void FW10_availability_reasons_refuse_requests_and_log_once_per_change()
     {
         var c = Create();

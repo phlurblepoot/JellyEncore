@@ -122,6 +122,7 @@ public sealed class FetchCoordinator : IFetchRequests
     private int _reserved;
     private bool? _slskdReachable;
     private bool? _slskdLoggedIn;
+    private bool _slskdKeyRejected;
     private DateTimeOffset? _slskdLastOk;
     private string? _slskdLastError;
     private bool? _inLibrary;
@@ -326,7 +327,7 @@ public sealed class FetchCoordinator : IFetchRequests
                 return new FetchStatus(
                     Mode, reason is null, reason, queued, inFlight, ingesting, _ready, _failed, _cancelled, _wouldDownload,
                     _window.Count, FetchLimits.FetchesPerHour, _slskdReachable, _slskdLoggedIn, _slskdLastOk, _slskdLastError,
-                    _inLibrary, _libraryName, _freeBytes, _sourceLeftBehind, _lastReady, _lastError);
+                    _inLibrary, _libraryName, _freeBytes, _sourceLeftBehind, _lastReady, _lastError, _slskdKeyRejected);
             }
         }
     }
@@ -334,13 +335,14 @@ public sealed class FetchCoordinator : IFetchRequests
     // ================================================================ worker inputs (public for tests; only the worker calls them)
 
     /// <summary>The result of the last slskd server-state check (every 60 s).</summary>
-    public void SetSlskdState(bool reachable, bool loggedIn, string? error)
+    public void SetSlskdState(bool reachable, bool loggedIn, string? error, bool keyRejected = false)
     {
         lock (_gate)
         {
             _slskdReachable = reachable;
             _slskdLoggedIn = loggedIn;
             _slskdLastError = error;
+            _slskdKeyRejected = keyRejected;
             if (reachable)
             {
                 _slskdLastOk = _time.GetUtcNow();
@@ -619,6 +621,11 @@ public sealed class FetchCoordinator : IFetchRequests
         if (!_configured)
         {
             return AvailabilityReasons.NotConfigured;
+        }
+
+        if (_slskdKeyRejected)
+        {
+            return AvailabilityReasons.SlskdKeyRejected;
         }
 
         if (_slskdReachable != true)

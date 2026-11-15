@@ -451,7 +451,7 @@ public sealed class FetchWorker : BackgroundService
 
     private async Task CheckSlskdAsync(CancellationToken stopping)
     {
-        bool reachable, loggedIn;
+        bool reachable, loggedIn, keyRejected = false;
         string state;
         string? error = null;
         try
@@ -464,13 +464,14 @@ public sealed class FetchWorker : BackgroundService
         catch (Exception e) when (e is not OperationCanceledException || !stopping.IsCancellationRequested)
         {
             // Any failure means slskd cannot be used now; only slskd's own messages (which never hold the key or URL) are kept.
-            reachable = false;
             loggedIn = false;
-            state = "unreachable";
+            keyRejected = e is SlskdAuthException;
+            reachable = keyRejected;   // slskd answered, it just refused this key
+            state = keyRejected ? "key_rejected" : "unreachable";
             error = e is SlskdException ? e.Message : e.GetType().Name;
         }
 
-        _coordinator.SetSlskdState(reachable, loggedIn, error);
+        _coordinator.SetSlskdState(reachable, loggedIn, error, keyRejected);
         var summary = $"{reachable}|{loggedIn}|{state}";
         if (summary != _lastSlskdState)
         {

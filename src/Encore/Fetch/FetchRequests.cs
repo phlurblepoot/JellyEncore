@@ -56,6 +56,7 @@ public static class AvailabilityReasons
     public const string Off = "off";
     public const string NotConfigured = "not_configured";
     public const string SlskdUnreachable = "slskd_unreachable";
+    public const string SlskdKeyRejected = "slskd_key_rejected";
     public const string NotLoggedIn = "not_logged_in";
     public const string RadioDirNotInLibrary = "radio_dir_not_in_library";
     public const string DiskLow = "disk_low";
@@ -98,7 +99,8 @@ public sealed record FetchStatus(
     long? FreeBytes,
     int SourceLeftBehind,
     DateTimeOffset? LastReadyUtc,
-    string? LastError)
+    string? LastError,
+    bool SlskdKeyRejected = false)
 {
     /// <summary>The status of mode off: nothing configured, all counters zero.</summary>
     public static readonly FetchStatus Off = new(

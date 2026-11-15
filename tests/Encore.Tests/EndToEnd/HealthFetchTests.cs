@@ -79,6 +79,18 @@ public class HealthFetchTests
     }
 
     [Fact]
+    public void HE02b_A_rejected_slskd_key_is_its_own_warning_not_unreachable()
+    {
+        var status = Healthy() with { Available = false, UnavailableReason = "slskd_key_rejected", SlskdReachable = true, SlskdLoggedIn = false, SlskdKeyRejected = true, SlskdLastError = "GetServerState: slskd rejected the API key (HTTP 403)" };
+        var (code, report) = Eval(Options(FetchMode.Live), Loop(), Input(status));
+
+        Assert.Equal(200, code);
+        Assert.Equal("ok", report.Status);
+        Assert.Equal(["slskd: key rejected"], report.Warnings);
+        Assert.Equal("slskd_key_rejected", report.Fetch.UnavailableReason);
+    }
+
+    [Fact]
     public void HE03_Not_logged_in_is_a_warning()
     {
         var (_, report) = Eval(Options(FetchMode.Live), Loop(), Input(Healthy() with { SlskdLoggedIn = false }));

@@ -175,7 +175,11 @@ public static class HealthEvaluator
         }
 
         var s = f.Status;
-        if (s.SlskdReachable == false)
+        if (s.SlskdKeyRejected)
+        {
+            warnings.Add("slskd: key rejected");
+        }
+        else if (s.SlskdReachable == false)
         {
             warnings.Add("slskd: unreachable");
         }

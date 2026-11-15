@@ -36,7 +36,7 @@ public class SlskdClientTests
     public async Task Every_call_sends_exactly_the_api_key_header_and_no_key_in_the_url()
     {
         var fake = new SlskdHandler()
-            .Reply(HttpStatusCode.OK, """{ "isConnected": true, "isLoggedIn": true, "state": "Connected, LoggedIn" }""")
+            .Reply(HttpStatusCode.OK, """{ "server": { "isConnected": true, "isLoggedIn": true, "state": "Connected, LoggedIn" } }""")
             .Reply(HttpStatusCode.OK, SlskdJson.Search)
             .Reply(HttpStatusCode.OK, SlskdJson.Responses)
             .Reply(HttpStatusCode.NoContent);
@@ -61,12 +61,36 @@ public class SlskdClientTests
     [Fact]
     public async Task Server_state_reads_login()
     {
-        var fake = new SlskdHandler().Reply(HttpStatusCode.OK, """{ "isConnected": true, "isLoggedIn": false, "state": "Connected" }""");
+        var fake = new SlskdHandler().Reply(HttpStatusCode.OK, """{ "server": { "isConnected": true, "isLoggedIn": false, "state": "Connected" } }""");
         var state = await Make(fake).GetServerStateAsync(default);
-        Assert.Equal("/api/v0/server", fake.Sent[0].PathAndQuery);
+        Assert.Equal("/api/v0/application", fake.Sent[0].PathAndQuery);
         Assert.True(state.IsConnected);
         Assert.False(state.IsLoggedIn);
         Assert.Equal("Connected", state.State);
+    }
+
+    [Fact]
+    public async Task Server_state_comes_from_application_which_any_key_may_read_not_from_the_admin_only_server_endpoint()
+    {
+        // Shape of slskd 0.26.2 GET /api/v0/application (Core/State.cs), trimmed. A readwrite key gets 403 from /api/v0/server.
+        var fake = new SlskdHandler().Reply(HttpStatusCode.OK, """
+            { "version": { "current": "0.26.2", "isUpdateAvailable": false }, "pendingReconnect": false, "pendingRestart": false,
+              "server": { "address": "server.slsknet.org:2242", "state": "Connected, LoggedIn", "isConnected": true, "isLoggedIn": true, "isLoggingIn": false, "isTransitioning": false },
+              "shares": { "ready": true } }
+            """);
+        var state = await Make(fake).GetServerStateAsync(default);
+        Assert.Single(fake.Sent);
+        Assert.Equal("/api/v0/application", fake.Sent[0].PathAndQuery);
+        Assert.True(state.IsConnected);
+        Assert.True(state.IsLoggedIn);
+        Assert.Equal("Connected, LoggedIn", state.State);
+    }
+
+    [Fact]
+    public async Task An_application_reply_without_a_server_part_is_a_request_failure()
+    {
+        var fake = new SlskdHandler().Reply(HttpStatusCode.OK, """{ "version": {} }""");
+        await Assert.ThrowsAsync<SlskdRequestException>(() => Make(fake).GetServerStateAsync(default));
     }
 
     [Fact]
@@ -277,7 +301,7 @@ public class SlskdClientTests
     [Fact]
     public async Task Gets_retry_once_on_5xx_and_posts_do_not()
     {
-        var get = new SlskdHandler().Reply(HttpStatusCode.BadGateway).Reply(HttpStatusCode.OK, """{ "isConnected": true, "isLoggedIn": true }""");
+        var get = new SlskdHandler().Reply(HttpStatusCode.BadGateway).Reply(HttpStatusCode.OK, """{ "server": { "isConnected": true, "isLoggedIn": true } }""");
         Assert.True((await Make(get).GetServerStateAsync(default)).IsLoggedIn);
         Assert.Equal(2, get.Sent.Count);
 
@@ -365,7 +389,7 @@ public class SlskdClientTests
     {
         var logger = new CapturingLoggerProvider();
         var fake = new SlskdHandler()
-            .Reply(HttpStatusCode.OK, """{ "isConnected": true, "isLoggedIn": true }""")
+            .Reply(HttpStatusCode.OK, """{ "server": { "isConnected": true, "isLoggedIn": true } }""")
             .Reply(HttpStatusCode.Unauthorized, $"{{\"error\":\"{Key}\"}}");
         var options = new EncoreOptions
         {
@@ -388,7 +412,7 @@ public class SlskdClientTests
         await Assert.ThrowsAsync<SlskdAuthException>(() => client.GetServerStateAsync(default));
 
         Assert.Equal(Key, fake.Sent[0].Headers["X-API-Key"]);
-        Assert.Equal("http://gluetun-slskd:5030/api/v0/server", fake.Sent[0].FullUri);
+        Assert.Equal("http://gluetun-slskd:5030/api/v0/application", fake.Sent[0].FullUri);
         Assert.NotEmpty(logger.Lines);
         Assert.DoesNotContain(logger.Lines, l => l.Contains(Key));
         Assert.NotNull(provider.GetRequiredService<SearchBudget>());

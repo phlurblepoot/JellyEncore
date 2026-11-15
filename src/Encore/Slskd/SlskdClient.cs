@@ -50,7 +50,9 @@ public sealed class SlskdClient : ISlskdClient
 
     public async Task<SlskdServerState> GetServerStateAsync(CancellationToken ct)
     {
-        var dto = await GetJsonAsync<ServerDto>("api/v0/server", "GetServerState", ct).ConfigureAwait(false);
+        // /api/v0/server is Administrator-only in slskd 0.26.2; /api/v0/application takes any key (slskd-api.md section 9).
+        var app = await GetJsonAsync<ApplicationDto>("api/v0/application", "GetServerState", ct).ConfigureAwait(false);
+        var dto = app.Server ?? throw new SlskdRequestException("GetServerState", "response had no server state");
         return new SlskdServerState(dto.IsConnected, dto.IsLoggedIn, dto.State ?? "");
     }
 
@@ -267,6 +269,8 @@ public sealed class SlskdClient : ISlskdClient
         var dot = name.LastIndexOf('.');
         return dot < 0 || dot == name.Length - 1 ? "" : name[(dot + 1)..].ToLowerInvariant();
     }
+
+    private sealed record ApplicationDto(ServerDto? Server);
 
     private sealed record ServerDto(bool IsConnected, bool IsLoggedIn, string? State);
 
