@@ -141,12 +141,12 @@ public sealed class SoulseekFetcherTests : IDisposable
     [Fact]
     public async Task SF02_q1_without_acceptable_file_runs_q2_and_takes_two_budget_slots()
     {
-        const string q1 = "Radiohead Reckoner (2007 Remaster)";
+        const string q1 = "Radiohead Reckoner (feat. Thom)";
         Search(q1, null, Peer("bob", 1_000_000, true, Bad()));
         Search(Q1, null, Peer("carol", 1_000_000));
         _slskd.Peers["carol"] = FakeSlskd.Succeeds(TimeSpan.FromSeconds(4));
 
-        var result = await Run(Job("Reckoner (2007 Remaster)"));
+        var result = await Run(Job("Reckoner (feat. Thom)"));
 
         var done = Assert.IsType<SoulseekFetchResult.Downloaded>(result).File;
         Assert.Equal("carol", done.File.Username);
@@ -159,7 +159,7 @@ public sealed class SoulseekFetcherTests : IDisposable
     [Fact]
     public async Task SF03_no_results_in_both_queries_fails_with_attempt_rows_and_24h_negative_cache()
     {
-        var result = await Run(Job("Reckoner (2007 Remaster)"));
+        var result = await Run(Job("Reckoner (feat. Thom)"));
 
         Assert.Equal(FetchFailure.NoResults, Assert.IsType<SoulseekFetchResult.Failed>(result).Reason);
         Assert.Equal(2, _slskd.Started.Count);
@@ -226,7 +226,7 @@ public sealed class SoulseekFetcherTests : IDisposable
 
         // and after success and after "nothing found"
         _slskd.Searches.Clear();
-        await Run(Job("Reckoner (2007 Remaster)"));
+        await Run(Job("Reckoner (feat. Thom)"));
         Assert.Equal(3, _slskd.StartedIds.Count);
         Assert.Equal(_slskd.StartedIds, _slskd.DeletedSearches);
     }
@@ -507,13 +507,42 @@ public sealed class SoulseekFetcherTests : IDisposable
         Assert.Equal("a.mp3", SoulseekFetcher.LocalName("a.mp3"));
     }
 
+    [Theory]
+    [InlineData("Iron Maiden", "The Trooper (2015 Remaster) (Remastered 2015)", "Iron Maiden The Trooper")]
+    [InlineData("The Beatles", "Here Comes The Sun (Remastered 2009)", "The Beatles Here Comes The Sun")]
+    [InlineData("Queen", "Bohemian Rhapsody - 2011 Remaster", "Queen Bohemian Rhapsody")]
+    [InlineData("Queen", "Bohemian Rhapsody - Remastered 2011", "Queen Bohemian Rhapsody")]
+    [InlineData("Pink Floyd", "Money (Deluxe Edition)", "Pink Floyd Money")]
+    [InlineData("Pink Floyd", "Money [2011 Remastered Version]", "Pink Floyd Money")]
+    public void SF19b_remaster_and_edition_notes_are_left_out_of_q1_and_one_query_is_sent(string artist, string title, string expected)
+    {
+        Assert.Equal([expected], SoulseekQueries.For(artist, title));
+    }
+
+    [Theory]
+    [InlineData("Nirvana", "Come as You Are (Live)", "Nirvana Come as You Are (Live)")]
+    [InlineData("Nirvana", "Polly (Acoustic) (2011 Remaster)", "Nirvana Polly (Acoustic)")]
+    [InlineData("Nirvana", "Sliver (Demo)", "Nirvana Sliver (Demo)")]
+    [InlineData("Daft Punk", "Around the World (Radio Edit Remix)", "Daft Punk Around the World (Radio Edit Remix)")]
+    [InlineData("Nirvana", "Lithium - Live at Reading", "Nirvana Lithium Live at Reading")]
+    public void SF19c_live_acoustic_demo_and_remix_notes_stay_in_q1(string artist, string title, string expectedQ1)
+    {
+        Assert.Equal(expectedQ1, SoulseekQueries.For(artist, title)[0]);
+    }
+
+    [Fact]
+    public void SF19d_a_title_that_is_only_a_version_note_is_kept_as_given()
+    {
+        Assert.Equal("A (Remastered)", SoulseekQueries.For("A", "(Remastered)")[0]);
+    }
+
     [Fact]
     public void SF19_q2_text_is_simplified()
     {
         var q = SoulseekQueries.For("Beyoncé feat. Jay-Z", "Crazy in Love (feat. Jay-Z) - Remastered \"2003\" -explicit");
 
         Assert.Equal(2, q.Count);
-        Assert.Equal("Beyoncé feat. Jay-Z Crazy in Love (feat. Jay-Z) Remastered 2003", q[0]);
+        Assert.Equal("Beyoncé feat. Jay-Z Crazy in Love (feat. Jay-Z)", q[0]);
         Assert.Equal("Beyonce Crazy in Love", q[1]);
         Assert.Equal(["Radiohead Reckoner"], SoulseekQueries.For("Radiohead", "Reckoner"));
         Assert.Equal("Sigur Ros Hoppipolla", SoulseekQueries.Simplified("Sigur Rós", "Hoppípolla [Live]"));

@@ -1,10 +1,14 @@
 using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
+using Encore.Discovery;
 
 namespace Encore.Fetch;
 
-/// <summary>Search texts for one song (design section 6.2): q1 as given, q2 simplified, at most two.</summary>
+/// <summary>
+/// Search texts for one song (design section 6.2): q1 as given but without remaster or edition notes (they only narrow the
+/// search; live, acoustic, demo and remix notes stay), q2 simplified, at most two.
+/// </summary>
 public static partial class SoulseekQueries
 {
     private static readonly string[] FeatMarkers = [" feat.", " feat ", " ft.", " ft ", " featuring "];
@@ -12,7 +16,7 @@ public static partial class SoulseekQueries
     /// <summary>q1, then q2 when it differs from q1 and is not empty.</summary>
     public static IReadOnlyList<string> For(string artist, string title)
     {
-        var q1 = Clean($"{artist} {title}");
+        var q1 = Clean($"{artist} {KeyText.WithoutVersionNotes(title)}");
         var q2 = Simplified(artist, title);
         var list = new List<string>(FetchLimits.QueriesPerSong);
         if (q1.Length > 0)

@@ -13,6 +13,9 @@ public enum IngestOutcome
 
     /// <summary>The radio dir is in no Jellyfin music library (availability radio_dir_not_in_library). Nothing was sent or polled.</summary>
     NotInLibrary,
+
+    /// <summary>The radio dir is in a music library, but Jellyfin has not scanned it yet (a Scan All Libraries is needed). Nothing was sent or polled.</summary>
+    NotScanned,
 }
 
 public sealed record IngestResult(IngestOutcome Outcome, Guid? ItemId, TimeSpan Waited)
@@ -20,8 +23,12 @@ public sealed record IngestResult(IngestOutcome Outcome, Guid? ItemId, TimeSpan 
     public bool IsReady => Outcome == IngestOutcome.Ready;
 }
 
-/// <summary>Where the radio dir sits in Jellyfin. <see cref="LibraryItemId"/> is the library to poll, null when there is none.</summary>
-public sealed record LibraryCheck(bool InLibrary, Guid? LibraryItemId, string? LibraryName, IReadOnlyList<string> Locations);
+/// <summary>
+/// Where the radio dir sits in Jellyfin. <see cref="LibraryItemId"/> is the library to poll, null when there is none.
+/// <see cref="Scanned"/> is false when Jellyfin lists neither the radio dir nor a parent of it among its physical paths
+/// (a library added after the folder was empty is not walked until Scan All Libraries runs); true when unknown.
+/// </summary>
+public sealed record LibraryCheck(bool InLibrary, Guid? LibraryItemId, string? LibraryName, IReadOnlyList<string> Locations, bool Scanned = true);
 
 /// <summary>Reports an imported file to Jellyfin and waits until Jellyfin lists it (v0.2 design section 8.2).</summary>
 public interface IJellyfinIngest
@@ -86,10 +93,37 @@ public sealed class JellyfinIngest : IJellyfinIngest, IDisposable
     {
         var folders = await _jellyfin.GetVirtualFoldersAsync(ct).ConfigureAwait(false);
         var check = Evaluate(folders, _radioDir);
+        if (check.InLibrary)
+        {
+            check = check with { Scanned = await IsScannedAsync(ct).ConfigureAwait(false) };
+        }
+
         var locations = string.Join(", ", check.Locations);
         _log.IngestLibraryCheck(check.InLibrary ? LogLevel.Information : LogLevel.Warning, check.InLibrary, check.LibraryName, locations);
+        if (!check.Scanned)
+        {
+            _log.IngestNotScanned(_radioDir);
+        }
 
         return check;
+    }
+
+    /// <summary>
+    /// Does Jellyfin list the radio dir, or a parent of it, among its physical paths? A failed call counts as scanned:
+    /// without an answer the ingest is tried as before, and its own timeout still ends the job.
+    /// </summary>
+    private async Task<bool> IsScannedAsync(CancellationToken ct)
+    {
+        try
+        {
+            var paths = await _jellyfin.GetPhysicalPathsAsync(ct).ConfigureAwait(false);
+            return paths.Any(p => IsSameOrParent(p, _radioDir));
+        }
+        catch (JellyfinException e)
+        {
+            _log.IngestPhysicalPathsFailed(e.Message);
+            return true;
+        }
     }
 
     /// <summary>
@@ -135,6 +169,11 @@ public sealed class JellyfinIngest : IJellyfinIngest, IDisposable
         if (check.LibraryItemId is not { } library)
         {
             return new IngestResult(IngestOutcome.NotInLibrary, null, TimeSpan.Zero);
+        }
+
+        if (!check.Scanned)
+        {
+            return new IngestResult(IngestOutcome.NotScanned, null, TimeSpan.Zero);
         }
 
         await _jellyfin.ReportMediaUpdatedAsync([jellyfinPath], ct).ConfigureAwait(false);

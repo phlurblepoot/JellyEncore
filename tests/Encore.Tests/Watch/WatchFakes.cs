@@ -114,6 +114,8 @@ internal sealed class FakeJellyfinClient : IJellyfinClient
 
     public Task<IReadOnlyList<VirtualFolderInfo>> GetVirtualFoldersAsync(CancellationToken ct = default) => throw new NotSupportedException();
 
+    public Task<IReadOnlyList<string>> GetPhysicalPathsAsync(CancellationToken ct = default) => throw new NotSupportedException();
+
     public Task<IReadOnlyList<BaseItemDto>> GetRecentAudioAsync(Guid parentId, int limit, CancellationToken ct = default) => throw new NotSupportedException();
 
     public Task<QueryResult<BaseItemDto>> GetAudioPageAsync(int startIndex, int limit, CancellationToken ct = default) => throw new NotSupportedException();

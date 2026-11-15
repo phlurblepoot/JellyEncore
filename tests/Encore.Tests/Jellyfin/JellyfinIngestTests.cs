@@ -81,6 +81,19 @@ public sealed class JellyfinIngestClientTests
     }
 
     [Fact]
+    public async Task JI02b_Physical_paths_are_a_plain_list_of_strings()
+    {
+        var (client, script) = Build();
+        script.Reply(HttpStatusCode.OK, "[\"/music\",\"/music-radio\"]");
+
+        var paths = await client.GetPhysicalPathsAsync();
+
+        Assert.Equal("GET", script.Sent[0].Method);
+        Assert.Equal("/jf/Library/PhysicalPaths", script.Sent[0].PathAndQuery);
+        Assert.Equal(["/music", "/music-radio"], paths);
+    }
+
+    [Fact]
     public async Task JI02_Virtual_folders_parse_names_locations_collection_type_and_item_id()
     {
         var (client, script) = Build();
@@ -333,6 +346,61 @@ public sealed class JellyfinIngestTests
         Assert.Equal(IngestOutcome.NotInLibrary, result.Outcome);
         Assert.Empty(_jellyfin.MediaUpdatedPaths);
         Assert.Empty(_jellyfin.RecentCalls);
+    }
+
+    [Fact]
+    public async Task JI10_A_radio_dir_Jellyfin_has_not_scanned_is_not_reported_or_polled()
+    {
+        _jellyfin.PhysicalPaths = ["/music"];
+
+        var result = await _ingest.IngestAsync("job-1", PathA);
+
+        Assert.Equal(IngestOutcome.NotScanned, result.Outcome);
+        Assert.Null(result.ItemId);
+        Assert.False(result.IsReady);
+        Assert.Empty(_jellyfin.MediaUpdatedPaths);
+        Assert.Empty(_jellyfin.RecentCalls);
+        var warn = Assert.Single(_log.Named("ingest.not_scanned"));
+        Assert.Equal(Microsoft.Extensions.Logging.LogLevel.Warning, warn.Level);
+    }
+
+    [Theory]
+    [InlineData("/music-radio", true)]
+    [InlineData("/music-radio/", true)]
+    [InlineData("/", true)]
+    [InlineData("/music-radio2", false)]
+    [InlineData("/music-radio/soulseek", false)]
+    public async Task JI10_Scanned_means_the_radio_dir_or_a_parent_is_a_physical_path(string physical, bool scanned)
+    {
+        _jellyfin.PhysicalPaths = ["/movies", physical];
+
+        var check = await _ingest.CheckLibraryAsync();
+
+        Assert.True(check.InLibrary);
+        Assert.Equal(scanned, check.Scanned);
+    }
+
+    [Fact]
+    public async Task JI10_A_dir_in_no_library_is_not_asked_about_scanning()
+    {
+        _jellyfin.VirtualFolders = [];
+
+        var check = await _ingest.CheckLibraryAsync();
+
+        Assert.False(check.InLibrary);
+        Assert.True(check.Scanned);
+        Assert.Equal(0, _jellyfin.PhysicalPathsCalls);
+    }
+
+    [Fact]
+    public async Task JI10_Physical_paths_that_cannot_be_read_do_not_block_the_ingest()
+    {
+        _jellyfin.PhysicalPathsFailure = new JellyfinRequestException("GetPhysicalPaths", 500);
+
+        var check = await _ingest.CheckLibraryAsync();
+
+        Assert.True(check.Scanned);
+        Assert.Single(_log.Named("ingest.physical_paths_failed"));
     }
 
     [Fact]

@@ -342,6 +342,33 @@ public class FetchWorkerTests
     }
 
     [Fact]
+    public async Task FW08c_a_radio_dir_Jellyfin_has_not_scanned_ends_the_job_with_a_clear_reason_and_fetching_stays_available()
+    {
+        await using var h = new WorkerHarness();
+        h.Ingest.Behavior = (_, _, _) => Task.FromResult(new IngestResult(IngestOutcome.NotScanned, null, TimeSpan.Zero));
+        await h.StartAsync();
+
+        Assert.True(h.Request("n", "Artist", "Unscanned"));
+        await h.Until("n", IsFailed, "n failed");
+
+        Assert.Equal(new FetchReadiness.Failed(FetchReasons.NotScanned), h.Readiness("n"));
+        Assert.Equal("radio_dir_not_scanned", FetchReasons.NotScanned);
+        Assert.False(h.Coordinator.Status.RadioDirScanned);
+        Assert.True(h.Coordinator.Availability.Available);
+    }
+
+    [Fact]
+    public async Task FW08d_the_periodic_library_check_reports_an_unscanned_radio_dir()
+    {
+        await using var h = new WorkerHarness();
+        h.Ingest.Library = new LibraryCheck(true, FakeIngest.LibraryId, "Music", ["/music-radio"], Scanned: false);
+        await h.StartAsync();
+
+        await Wait.Until(() => h.Coordinator.Status.RadioDirScanned == false, "library checked");
+        Assert.True(h.Coordinator.Availability.Available);
+    }
+
+    [Fact]
     public async Task FW08b_a_song_whose_ingest_timed_out_is_not_fetched_again()
     {
         await using var h = new WorkerHarness();

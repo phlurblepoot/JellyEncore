@@ -138,7 +138,7 @@ public static class KeyText
             return [];
         }
 
-        var s = CutAtFeat(StripBrackets(title));
+        var s = CutAtFeat(StripBrackets(title, dropFeat: true));
         var dash = LastDash(s);
         if (dash.Index > 0 && AllVersionWords(Tokens(s[(dash.Index + dash.Length)..])))
         {
@@ -147,6 +147,35 @@ public static class KeyText
 
         var tokens = Tokens(s);
         return tokens.Count > 0 ? tokens : Tokens(title);
+    }
+
+    /// <summary>
+    /// The title with only its release-version notes removed: brackets and a " - " tail made only of version words
+    /// ("(2015 Remaster)", "(Remastered 2009)", "- 2012 Remaster", "(Deluxe Edition)"), however often they repeat.
+    /// Live, acoustic, demo, remix and feat. notes stay. Returns the title unchanged when nothing else would be left.
+    /// </summary>
+    public static string WithoutVersionNotes(string? title)
+    {
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            return title ?? "";
+        }
+
+        var s = StripBrackets(title, dropFeat: false);
+        while (true)
+        {
+            var dash = LastDash(s);
+            if (dash.Index > 0 && AllVersionWords(Tokens(s[(dash.Index + dash.Length)..])))
+            {
+                s = s[..dash.Index];
+                continue;
+            }
+
+            break;
+        }
+
+        s = string.Join(' ', s.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        return Tokens(s).Count > 0 ? s : title;
     }
 
     /// <summary>Artist words cut at feat., without a leading "the" (a lone "The" stays).</summary>
@@ -197,7 +226,7 @@ public static class KeyText
         return best;
     }
 
-    private static string StripBrackets(string s)
+    private static string StripBrackets(string s, bool dropFeat)
     {
         var sb = new StringBuilder();
         var i = 0;
@@ -215,7 +244,7 @@ public static class KeyText
 
             var tokens = Tokens(s[(i + 1)..end]);
             var first = tokens.Count > 0 ? tokens[0] : "";
-            var feat = first is "feat" or "ft" or "featuring" or "with";
+            var feat = dropFeat && first is "feat" or "ft" or "featuring" or "with";
             if (feat || (tokens.Count > 0 && AllVersionWords(tokens)))
             {
                 i = end + 1;

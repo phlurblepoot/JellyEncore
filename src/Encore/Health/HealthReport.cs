@@ -192,6 +192,10 @@ public static class HealthEvaluator
         {
             warnings.Add("music-radio is not in a Jellyfin music library");
         }
+        else if (s.RadioDirScanned == false)
+        {
+            warnings.Add("music-radio not scanned by Jellyfin yet (run Scan All Libraries)");
+        }
 
         if (s.FreeBytes is { } free && free < FetchLimits.FreeSpaceFloorBytes)
         {

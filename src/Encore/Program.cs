@@ -62,6 +62,22 @@ if (options.FetchMode != FetchMode.Off)
     }
 }
 
+// Live mode: the radio dir gets its soulseek folder now, so Jellyfin never scans an empty music-radio.
+if (options.FetchMode == FetchMode.Live)
+{
+    try
+    {
+        if (Encore.Fetch.Import.RadioFolders.EnsureSoulseekFolder(options.RadioDir))
+        {
+            Encore.Fetch.Import.ImportLog.ImportFolderCreated(storeLogger, options.RadioDir);
+        }
+    }
+    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+    {
+        Encore.Fetch.Import.ImportLog.ImportFolderFailed(storeLogger, options.RadioDir, ex.GetType().Name);
+    }
+}
+
 var builder = WebApplication.CreateBuilder(args);
 builder.Logging.ClearProviders();
 builder.Logging.AddJsonConsole(Encore.Logging.LogSetup.ConfigureJson);

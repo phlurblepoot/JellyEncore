@@ -328,9 +328,14 @@ public sealed class FetchWorker : BackgroundService
         switch (result.Outcome)
         {
             case IngestOutcome.Ready when result.ItemId is { } itemId:
+                _coordinator.SetScanned(true);
                 await AddOwnedAsync(itemId, jellyfinPath, job.Candidate, stopping).ConfigureAwait(false);
                 UpdateRow(job, FetchState.Ready, new FetchedUpdate(JellyfinItemId: itemId.ToString("N"), ReadyUtc: _time.GetUtcNow()));
                 _coordinator.Complete(job, itemId);
+                break;
+            case IngestOutcome.NotScanned:
+                _coordinator.SetScanned(false);
+                FailJob(job, FetchReasons.NotScanned, failRow: false);
                 break;
             case IngestOutcome.NotInLibrary:
                 _coordinator.SetLibrary(false, null);
@@ -486,6 +491,10 @@ public sealed class FetchWorker : BackgroundService
         {
             var check = await _ingest.CheckLibraryAsync(stopping).ConfigureAwait(false);
             _coordinator.SetLibrary(check.InLibrary, check.LibraryName);
+            if (check.InLibrary)
+            {
+                _coordinator.SetScanned(check.Scanned);
+            }
         }
         catch (JellyfinException e)
         {

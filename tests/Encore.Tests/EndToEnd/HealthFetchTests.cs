@@ -110,6 +110,16 @@ public class HealthFetchTests
     }
 
     [Fact]
+    public void HE04b_Radio_dir_not_scanned_by_Jellyfin_is_a_warning_and_fetching_stays_available()
+    {
+        var (_, report) = Eval(Options(FetchMode.Live), Loop(), Input(Healthy() with { RadioDirScanned = false }));
+
+        Assert.Equal("ok", report.Status);
+        Assert.Equal(["music-radio not scanned by Jellyfin yet (run Scan All Libraries)"], report.Warnings);
+        Assert.True(report.Fetch.Available);
+    }
+
+    [Fact]
     public void HE05b_Unreadable_free_space_is_a_warning_after_the_start_grace()
     {
         var (_, report) = Eval(Options(FetchMode.Live), Loop(), Input(Healthy() with { FreeBytes = null }));

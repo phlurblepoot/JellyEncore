@@ -127,6 +127,7 @@ public sealed class FetchCoordinator : IFetchRequests
     private string? _slskdLastError;
     private bool? _inLibrary;
     private string? _libraryName;
+    private bool? _scanned;
     private long? _freeBytes;
 
     private int _ready;
@@ -327,7 +328,7 @@ public sealed class FetchCoordinator : IFetchRequests
                 return new FetchStatus(
                     Mode, reason is null, reason, queued, inFlight, ingesting, _ready, _failed, _cancelled, _wouldDownload,
                     _window.Count, FetchLimits.FetchesPerHour, _slskdReachable, _slskdLoggedIn, _slskdLastOk, _slskdLastError,
-                    _inLibrary, _libraryName, _freeBytes, _sourceLeftBehind, _lastReady, _lastError, _slskdKeyRejected);
+                    _inLibrary, _libraryName, _freeBytes, _sourceLeftBehind, _lastReady, _lastError, _slskdKeyRejected, _scanned);
             }
         }
     }
@@ -362,6 +363,15 @@ public sealed class FetchCoordinator : IFetchRequests
         }
 
         RefreshAvailability();
+    }
+
+    /// <summary>Has Jellyfin scanned the radio dir yet (from the library check and every ingest)? Fetching stays available when not.</summary>
+    public void SetScanned(bool scanned)
+    {
+        lock (_gate)
+        {
+            _scanned = scanned;
+        }
     }
 
     /// <summary>Free bytes of the radio dir (every 5 min and after a disk_low import); null when it cannot be read.</summary>

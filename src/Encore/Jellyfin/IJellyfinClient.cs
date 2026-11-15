@@ -39,6 +39,9 @@ public interface IJellyfinClient
     /// <summary>GET /Library/VirtualFolders. Needs an admin token (the API key is one).</summary>
     Task<IReadOnlyList<VirtualFolderInfo>> GetVirtualFoldersAsync(CancellationToken ct = default);
 
+    /// <summary>GET /Library/PhysicalPaths: the folders Jellyfin has in its library tree (empty until a library has been scanned). Needs an admin token.</summary>
+    Task<IReadOnlyList<string>> GetPhysicalPathsAsync(CancellationToken ct = default);
+
     /// <summary>
     /// GET /Items?parentId=&amp;recursive=true&amp;includeItemTypes=Audio&amp;fields=Path,DateCreated&amp;sortBy=DateCreated&amp;sortOrder=Descending&amp;limit=&amp;enableTotalRecordCount=false.
     /// The newest songs in one library, with their paths.

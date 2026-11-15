@@ -17,6 +17,14 @@ internal static partial class ImportLog
         Message = "slskd copy of job {JobId} left behind at {Path}: {Error}")]
     public static partial void ImportSourceLeft(this ILogger logger, string jobId, string path, string error);
 
+    [LoggerMessage(EventId = 7371, EventName = "import.folder_created", Level = LogLevel.Information,
+        Message = "Created the soulseek folder in {RadioDir}")]
+    public static partial void ImportFolderCreated(this ILogger logger, string radioDir);
+
+    [LoggerMessage(EventId = 7372, EventName = "import.folder_failed", Level = LogLevel.Warning,
+        Message = "Could not create the soulseek folder in {RadioDir}: {Error}")]
+    public static partial void ImportFolderFailed(this ILogger logger, string radioDir, string error);
+
     [LoggerMessage(EventId = 7370, EventName = "import.cleanup", Level = LogLevel.Information,
         Message = "Import cleanup: {StagedDeleted} staged files deleted, {RowsFailed} rows failed, {RowsReingested} rows re-ingested, {OrphanDirsDeleted} orphan folders deleted")]
     public static partial void ImportCleanup(this ILogger logger, int stagedDeleted, int rowsFailed, int rowsReingested, int orphanDirsDeleted);

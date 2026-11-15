@@ -86,6 +86,14 @@ internal sealed class FakeJellyfin : IJellyfinClient
     /// <summary>What GET /Library/VirtualFolders returns.</summary>
     public List<VirtualFolderInfo> VirtualFolders { get; set; } = [];
 
+    /// <summary>What GET /Library/PhysicalPaths returns. Null = every location of every library (a scanned server).</summary>
+    public List<string>? PhysicalPaths { get; set; }
+
+    /// <summary>When set, GET /Library/PhysicalPaths throws it.</summary>
+    public Exception? PhysicalPathsFailure { get; set; }
+
+    public int PhysicalPathsCalls;
+
     /// <summary>Every path Encore reported through Media/Updated, in order.</summary>
     public ConcurrentQueue<string> MediaUpdatedPaths { get; } = new();
 
@@ -140,6 +148,17 @@ internal sealed class FakeJellyfin : IJellyfinClient
 
     public Task<IReadOnlyList<VirtualFolderInfo>> GetVirtualFoldersAsync(CancellationToken ct = default) =>
         Task.FromResult<IReadOnlyList<VirtualFolderInfo>>(VirtualFolders.ToList());
+
+    public Task<IReadOnlyList<string>> GetPhysicalPathsAsync(CancellationToken ct = default)
+    {
+        Interlocked.Increment(ref PhysicalPathsCalls);
+        if (PhysicalPathsFailure is { } failure)
+        {
+            throw failure;
+        }
+
+        return Task.FromResult<IReadOnlyList<string>>(PhysicalPaths?.ToList() ?? VirtualFolders.SelectMany(f => f.Locations ?? []).ToList());
+    }
 
     public Task<IReadOnlyList<BaseItemDto>> GetRecentAudioAsync(Guid parentId, int limit, CancellationToken ct = default)
     {

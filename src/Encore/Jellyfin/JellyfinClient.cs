@@ -142,6 +142,9 @@ public sealed class JellyfinClient : IJellyfinClient
     public async Task<IReadOnlyList<VirtualFolderInfo>> GetVirtualFoldersAsync(CancellationToken ct = default) =>
         await GetAsync<List<VirtualFolderInfo>>("Library/VirtualFolders", "GetVirtualFolders", ct).ConfigureAwait(false);
 
+    public async Task<IReadOnlyList<string>> GetPhysicalPathsAsync(CancellationToken ct = default) =>
+        await GetAsync<List<string>>("Library/PhysicalPaths", "GetPhysicalPaths", ct).ConfigureAwait(false);
+
     public async Task<IReadOnlyList<BaseItemDto>> GetRecentAudioAsync(Guid parentId, int limit, CancellationToken ct = default)
     {
         RequirePositive(limit);

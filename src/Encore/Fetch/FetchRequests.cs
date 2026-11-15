@@ -42,6 +42,7 @@ public static class FetchReasons
 {
     public const string ImportFailed = "import_failed";
     public const string IngestTimeout = "ingest_timeout";
+    public const string NotScanned = "radio_dir_not_scanned";
     public const string Restart = "restart";
     public const string FileMissing = "file_missing";
     public const string Internal = "internal";
@@ -100,7 +101,8 @@ public sealed record FetchStatus(
     int SourceLeftBehind,
     DateTimeOffset? LastReadyUtc,
     string? LastError,
-    bool SlskdKeyRejected = false)
+    bool SlskdKeyRejected = false,
+    bool? RadioDirScanned = null)
 {
     /// <summary>The status of mode off: nothing configured, all counters zero.</summary>
     public static readonly FetchStatus Off = new(

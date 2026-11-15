@@ -16,6 +16,20 @@ public sealed class TrackKeyTests
         Assert.Equal("beyonce|halo", Key("Beyoncé", "Halo"));
     }
 
+    [Theory]
+    [InlineData("The Trooper (2015 Remaster) (Remastered 2015)", "The Trooper")]
+    [InlineData("Song - 2012 Remaster", "Song")]
+    [InlineData("Song (Deluxe Edition)", "Song")]
+    [InlineData("Song (Live) (2015 Remaster)", "Song (Live)")]
+    [InlineData("Song (feat. X) - Remastered 2009", "Song (feat. X)")]
+    [InlineData("Song - Live - 2012 Remaster", "Song - Live")]
+    [InlineData("Song (Remix)", "Song (Remix)")]
+    [InlineData("(Remastered)", "(Remastered)")]
+    public void TK02b_version_notes_are_removed_but_live_and_remix_stay(string title, string expected)
+    {
+        Assert.Equal(expected, KeyText.WithoutVersionNotes(title));
+    }
+
     [Fact]
     public void TK02_feat_credits_are_dropped()
     {

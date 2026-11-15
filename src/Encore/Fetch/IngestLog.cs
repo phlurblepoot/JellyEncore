@@ -21,6 +21,14 @@ internal static partial class IngestLog
         Message = "Radio dir in a Jellyfin music library: {RadioDirInLibrary} (library {Library}, locations {Locations})")]
     public static partial void IngestLibraryCheck(this ILogger logger, LogLevel level, bool radioDirInLibrary, string? library, string locations);
 
+    [LoggerMessage(EventId = 7390, EventName = "ingest.not_scanned", Level = LogLevel.Warning,
+        Message = "Jellyfin has not scanned {RadioDir} yet: run Scan All Libraries in Jellyfin (Dashboard, Libraries)")]
+    public static partial void IngestNotScanned(this ILogger logger, string radioDir);
+
+    [LoggerMessage(EventId = 7391, EventName = "ingest.physical_paths_failed", Level = LogLevel.Warning,
+        Message = "Jellyfin physical paths could not be read, assuming the radio dir is scanned: {Error}")]
+    public static partial void IngestPhysicalPathsFailed(this ILogger logger, string error);
+
     [LoggerMessage(EventId = 7380, EventName = "ingest.poll_failed", Level = LogLevel.Warning,
         Message = "Jellyfin poll for new songs failed, will try again: {Error}")]
     public static partial void IngestPollFailed(this ILogger logger, string error);
