@@ -66,10 +66,10 @@ internal sealed class RecordingFetch(IFetchRequests inner) : IFetchRequests
         inner.Abandon(pickId, reason);
     }
 
-    public void EndRun(string runId, string reason)
+    public void EndRun(string runId, string reason, string? sessionId = null)
     {
         EndedRuns.Enqueue((runId, reason));
-        inner.EndRun(runId, reason);
+        inner.EndRun(runId, reason, sessionId);
     }
 
     public FetchStatus Status => inner.Status;

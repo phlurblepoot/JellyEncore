@@ -260,7 +260,7 @@ public sealed class FetchCoordinator : IFetchRequests
         CancelOutside(cancel);
     }
 
-    public void EndRun(string runId, string reason)
+    public void EndRun(string runId, string reason, string? callerSessionId = null)
     {
         if (runId is null)
         {
@@ -269,7 +269,7 @@ public sealed class FetchCoordinator : IFetchRequests
 
         var toCancel = new List<CancellationTokenSource>();
         var cancelled = 0;
-        string? sessionId = null;
+        string? sessionId = callerSessionId;
         lock (_gate)
         {
             var jobs = new HashSet<FetchJob>();

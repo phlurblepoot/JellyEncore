@@ -945,7 +945,7 @@ public sealed class Orchestrator : BackgroundService
         if (track.Run is { Ended: false } run)
         {
             run.Ended = true;
-            _fetch.EndRun(run.RunId, reason);
+            _fetch.EndRun(run.RunId, reason, track.LastSession?.Id);
         }
     }
 

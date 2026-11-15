@@ -126,7 +126,7 @@ public interface IFetchRequests
     void Abandon(string pickId, string reason);
 
     /// <summary>The run ended (design section 10): every Queued or Searching job held only by this run's picks is cancelled.</summary>
-    void EndRun(string runId, string reason);
+    void EndRun(string runId, string reason, string? sessionId = null);
 
     FetchStatus Status { get; }
 }
@@ -148,7 +148,7 @@ public sealed class NullFetchRequests : IFetchRequests
     {
     }
 
-    public void EndRun(string runId, string reason)
+    public void EndRun(string runId, string reason, string? sessionId = null)
     {
     }
 

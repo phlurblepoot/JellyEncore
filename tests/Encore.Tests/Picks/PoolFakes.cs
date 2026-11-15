@@ -21,6 +21,7 @@ internal sealed class FakeFetchRequests : IFetchRequests
     public ConcurrentQueue<(string PickId, string Reason)> Abandoned { get; } = new();
 
     public ConcurrentQueue<(string RunId, string Reason)> EndedRuns { get; } = new();
+    public ConcurrentQueue<string?> EndedSessions { get; } = new();
 
     public bool Request(FetchRequest request)
     {
@@ -38,7 +39,11 @@ internal sealed class FakeFetchRequests : IFetchRequests
 
     public void Abandon(string pickId, string reason) => Abandoned.Enqueue((pickId, reason));
 
-    public void EndRun(string runId, string reason) => EndedRuns.Enqueue((runId, reason));
+    public void EndRun(string runId, string reason, string? sessionId = null)
+    {
+        EndedRuns.Enqueue((runId, reason));
+        EndedSessions.Enqueue(sessionId);
+    }
 
     public FetchStatus Status => FetchStatus.Off;
 

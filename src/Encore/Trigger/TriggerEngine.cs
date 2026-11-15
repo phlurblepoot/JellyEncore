@@ -98,7 +98,7 @@ public static class TriggerEngine
                 return new(tracked, TriggerDecision.None.Instance, started);
             }
 
-            if (Limited(context, instance.ResendIds.Count) is { } limit)
+            if (Limited(context, instance.ResendIds.Count, applyRunCap: true) is { } limit)
             {
                 return Skip(tracked, limit, model, started);
             }
@@ -154,15 +154,16 @@ public static class TriggerEngine
             return Skip(tracked, SkipReason.Duplicate, model, started);
         }
 
-        // 12. Rate limits and the run cap.
-        if (Limited(context, context.Batch) is { } limited)
+        // 12. The fire kind: topup when the song that plays last is the last one Encore added; otherwise start.
+        var final = instance.EntryQueue.Count > 0 ? instance.EntryQueue[^1].Id : item.Id;
+        var kind = lastAdded is { } added && added == final ? FireKind.TopUp : FireKind.Start;
+
+        // 13. Rate limits for every fire; the run cap only for a fire that continues the run (a start gets a fresh cap).
+        if (Limited(context, context.Batch, kind == FireKind.TopUp) is { } limited)
         {
             return Skip(tracked, limited, model, started);
         }
 
-        // 13. topup when the song that plays last is the last one Encore added; otherwise start.
-        var final = instance.EntryQueue.Count > 0 ? instance.EntryQueue[^1].Id : item.Id;
-        var kind = lastAdded is { } added && added == final ? FireKind.TopUp : FireKind.Start;
         return Firing(tracked, new TriggerDecision.Fire(kind, model, key, instance.Attempts + 1, rule), started);
     }
 
@@ -419,8 +420,8 @@ public static class TriggerEngine
         return new(next, new TriggerDecision.Skip(reason, model, first), started);
     }
 
-    /// <summary>Guard 12 for <paramref name="count"/> songs: cooldown and hourly limits, then the run cap.</summary>
-    private static SkipReason? Limited(TriggerContext context, int count)
+    /// <summary>Guard 12/13 for <paramref name="count"/> songs: cooldown and hourly limits, then the run cap when <paramref name="applyRunCap"/>.</summary>
+    private static SkipReason? Limited(TriggerContext context, int count, bool applyRunCap)
     {
         if ((context.LastSessionFireAt is { } last && context.Now - last < TriggerLimits.SessionCooldown)
             || context.SessionItemsInLastHour() + count > TriggerLimits.SessionItemsPerHour
@@ -429,7 +430,7 @@ public static class TriggerEngine
             return SkipReason.RateLimited;
         }
 
-        return (context.Run?.AddedCount ?? 0) >= TriggerLimits.RunCap ? SkipReason.RunCap : null;
+        return applyRunCap && (context.Run?.AddedCount ?? 0) >= TriggerLimits.RunCap ? SkipReason.RunCap : null;
     }
 
     private static bool IsOwnSession(TriggerSession session, TriggerContext context) =>

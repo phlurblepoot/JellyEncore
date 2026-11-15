@@ -388,6 +388,29 @@ public sealed class TriggerEngineTests
     }
 
     [Fact]
+    public void TR27b_A_capped_old_run_does_not_block_a_fresh_web_start()
+    {
+        // The run's last added song E1 is not in this fresh queue, so this fire is a start with a fresh cap.
+        var h = new TriggerHarness { Run = new RunInfo(E1, TriggerLimits.RunCap) };
+        AssertFire(h.Feed(Web([A, B, C], 1)), FireKind.Start, QueueModel.Full, FireRule.NearEnd);
+    }
+
+    [Fact]
+    public void TR27c_A_capped_old_run_does_not_block_a_fresh_Finamp_start()
+    {
+        var h = new TriggerHarness { Run = new RunInfo(E2, TriggerLimits.RunCap, [E1, E2]) };
+        AssertSkip(h.Feed(Finamp(Nm2, [Nm1, N])), SkipReason.NotLast);
+        AssertFire(h.FeedAll(FinampChange(Nm1, [N])), FireKind.Start, QueueModel.Upcoming, FireRule.NearEnd);
+    }
+
+    [Fact]
+    public void TR27d_A_start_still_obeys_the_hourly_limit_when_the_old_run_is_capped()
+    {
+        var h = new TriggerHarness { Run = new RunInfo(E1, TriggerLimits.RunCap), SessionItemsLastHour = 29 };
+        AssertSkip(h.Feed(Web([A, B, C], 1)), SkipReason.RateLimited);
+    }
+
+    [Fact]
     public void TR28_Failed_fire_retries_once_after_15_seconds_then_gives_up()
     {
         var h = new TriggerHarness();

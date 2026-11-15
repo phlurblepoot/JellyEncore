@@ -451,7 +451,20 @@ public class FetchTests
         Assert.Contains(sources, s => s.EndsWith("+server", StringComparison.Ordinal));
         Assert.Contains(h.Log.Named("trigger.skipped"), e => (string?)e.Fields["Reason"] == "run_cap");
         Assert.Equal((runId, "run_cap"), Assert.Single(pool.Fetch.EndedRuns));
+        Assert.Equal(Sessions.WebId, Assert.Single(pool.Fetch.EndedSessions));
         Assert.Equal(0, o.Status.Failed);
+
+        // A new album on the same session starts a new run with a fresh cap (the capped run stays in memory).
+        var capSkips = h.Log.Named("trigger.skipped").Count(e => (string?)e.Fields["Reason"] == "run_cap");
+        h.Time.Advance(TimeSpan.FromHours(2));
+        Guid[] fresh = [Catalog.G(520), Catalog.G(521), Catalog.G(522)];
+        await h.Send(o, Sessions.WebAt(fresh, 0));
+        h.Time.Advance(TimeSpan.FromSeconds(200));
+        await h.Send(o, Sessions.WebAt(fresh, 1));
+        var restart = h.Log.Named("trigger.fired").Last();
+        Assert.Equal("start", restart.Fields["Kind"]);
+        Assert.NotEqual(runId, (string)restart.Fields["RunId"]!);
+        Assert.Equal(capSkips, h.Log.Named("trigger.skipped").Count(e => (string?)e.Fields["Reason"] == "run_cap"));
 
         static List<string> Rows(OrchestratorHarness h, string sql)
         {

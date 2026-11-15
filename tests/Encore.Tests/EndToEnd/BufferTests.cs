@@ -349,6 +349,33 @@ public class BufferTests
     }
 
     [Fact]
+    public async Task E13_A_capped_run_restored_from_the_store_does_not_block_a_fresh_album()
+    {
+        var (h, o) = await CreateAsync();
+        using var _ = h;
+
+        // An earlier run on this session reached the cap 3 hours ago (outside the hourly limits, inside the 6 hour restore window).
+        var earlier = Enumerable.Range(0, TriggerLimits.RunCap)
+            .Select(i => new PickedItem(Catalog.G(8000 + i), $"Earlier {i}", null, null, PickSource.SimilarArtist))
+            .ToList();
+        h.Store.RecordFire(
+            new TriggerRecord(h.Time.GetUtcNow() - TimeSpan.FromHours(3), Sessions.WebId, Catalog.User, "Jellyfin Web", "full", "start",
+                Catalog.G(9999), "playlistItem0", "earlier", EncoreStore.SentOutcome, "capped-run", 1),
+            earlier);
+        var stored = h.Store.LatestRun(Sessions.WebId, h.Time.GetUtcNow() - TimeSpan.FromHours(6));
+        Assert.Equal(TriggerLimits.RunCap, stored!.AddedCount);
+
+        var sent = await PlayToSecondToLastAsync(h, o);
+
+        Assert.Equal(2, sent.Length);
+        Assert.DoesNotContain(h.Log.Named("trigger.skipped"), e => e.Fields["Reason"] as string == "run_cap");
+        var fired = Assert.Single(h.Log.Named("trigger.fired"));
+        Assert.Equal("start", fired.Fields["Kind"]);
+        Assert.NotEqual("capped-run", fired.Fields["RunId"]);
+        Assert.Single(h.Jellyfin.PlayLasts);
+    }
+
+    [Fact]
     public async Task E12_Restart_between_the_send_and_the_next_song_uses_the_fallback()
     {
         var (h, o) = await CreateAsync();
