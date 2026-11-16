@@ -30,6 +30,7 @@ public sealed class ApiEndpoints
     private readonly SearchService _search;
     private readonly TimeProvider _time;
     private readonly SearchRateLimiter _searchRate;
+    private readonly PageTokens _pageTokens;
     private readonly object _quickGate = new();
     private (bool? Value, DateTimeOffset At)? _quickConnect;
 
@@ -41,7 +42,8 @@ public sealed class ApiEndpoints
         JellyfinServerInfo serverInfo,
         SearchService search,
         TimeProvider time,
-        string version)
+        string version,
+        PageTokens pageTokens)
     {
         _search = search;
         _options = options;
@@ -52,6 +54,7 @@ public sealed class ApiEndpoints
         _time = time;
         _searchRate = new SearchRateLimiter(time);
         _version = version;
+        _pageTokens = pageTokens ?? throw new ArgumentNullException(nameof(pageTokens));
     }
 
     /// <summary>The route group, so later tasks can map more routes onto the same filters and error shape.</summary>
@@ -65,6 +68,7 @@ public sealed class ApiEndpoints
         api.MapPost("/auth/quickconnect", (Delegate)QuickConnectStartAsync);
         api.MapPost("/auth/quickconnect/poll", (Delegate)QuickConnectPollAsync);
         api.MapPost("/auth/logout", (Delegate)LogoutAsync);
+        api.MapDelete("/admin/sessions", (Delegate)RevokePageTokensAsync);
         return api;
     }
 
@@ -220,6 +224,40 @@ public sealed class ApiEndpoints
     {
         var outcome = await _auth.LogoutAsync(context.Request.Headers.Authorization.ToString(), ClientIp(context), context.RequestAborted).ConfigureAwait(false);
         return outcome.Ok ? Results.NoContent() : ApiErrors.Result(outcome.Error!);
+    }
+
+    /// <summary>
+    /// DELETE /admin/sessions?userId=: an admin signs one user (32 hex digits or any Guid form) or, without userId,
+    /// everyone out of the request page (T114). Only the page's own tokens go; Jellyfin sessions are not touched.
+    /// Answers <c>{ "revoked": n }</c>. The admin's own page token goes too when it is among them.
+    /// </summary>
+    private async Task<IResult> RevokePageTokensAsync(HttpContext context)
+    {
+        var (user, failure) = await AuthenticateAsync(context).ConfigureAwait(false);
+        if (user is null)
+        {
+            return failure!;
+        }
+
+        if (!user.IsAdmin)
+        {
+            return ApiErrors.Result(StatusCodes.Status403Forbidden, "admin_only");
+        }
+
+        Guid? target = null;
+        var raw = context.Request.Query["userId"];
+        if (raw.Count > 0)
+        {
+            if (raw.Count > 1 || !Guid.TryParse(raw.ToString(), out var id))
+            {
+                return ApiErrors.Result(400, AuthCodes.BadRequest);
+            }
+
+            target = id;
+        }
+
+        var revoked = _pageTokens.RevokeAll(target);
+        return Results.Json(new { revoked }, ApiJson.Options);
     }
 
     private object SignedIn(LoginResult login) => new { token = login.Token, user = UserJson(login.User) };

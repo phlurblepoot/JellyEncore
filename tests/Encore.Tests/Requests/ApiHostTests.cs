@@ -154,9 +154,6 @@ internal sealed class ApiRig : IDisposable
         var logFactory = new LoggerFactory([Logs]);
         Users = new RequestUsers(Fake, ["kim"], false, logFactory.CreateLogger<RequestUsers>());
         Guard = new LoginGuard(TimeProvider.System, logFactory.CreateLogger<LoginGuard>(), Users.LockoutLimit);
-        Auth = new UserAuth(
-            new HttpClient(Jellyfin) { BaseAddress = new Uri("http://jellyfin.test:8096/") },
-            Users, Guard, logFactory.CreateLogger<UserAuth>(), TimeProvider.System, "0.3.0-test");
         ServerInfo = new JellyfinServerInfo(Fake, logFactory.CreateLogger<JellyfinServerInfo>());
 
         _factory = _root.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
@@ -174,7 +171,9 @@ internal sealed class ApiRig : IDisposable
             services.RemoveAll<JellyfinServerInfo>();
             services.AddSingleton(Users);
             services.AddSingleton(Guard);
-            services.AddSingleton(Auth);
+            services.AddSingleton(sp => new UserAuth(
+                new HttpClient(Jellyfin) { BaseAddress = new Uri("http://jellyfin.test:8096/") },
+                Users, Guard, sp.GetRequiredService<PageTokens>(), logFactory.CreateLogger<UserAuth>(), TimeProvider.System, "0.3.0-test"));
             services.AddSingleton(ServerInfo);
             services.RemoveAll<Encore.Requests.Search.SearchService>();
             services.AddSingleton(sp => new Encore.Requests.Search.SearchService(
@@ -220,7 +219,10 @@ internal sealed class ApiRig : IDisposable
 
     public LoginGuard Guard { get; }
 
-    public UserAuth Auth { get; }
+    /// <summary>The host's UserAuth (built in the container, over the real request store's page tokens).</summary>
+    public UserAuth Auth => Services.GetRequiredService<UserAuth>();
+
+    public PageTokens PageTokens => Services.GetRequiredService<PageTokens>();
 
     public JellyfinServerInfo ServerInfo { get; }
 
@@ -600,7 +602,8 @@ public sealed class ApiHostTests
         using var login = await rig.PostAsync("/api/v1/auth/login", new { username = "kim", password = ApiRig.Password, deviceId = ApiRig.DeviceId });
         Assert.Equal(HttpStatusCode.OK, login.StatusCode);
         var signedIn = await ApiRig.JsonOf(login);
-        Assert.Equal(ApiRig.KimToken, signedIn.GetProperty("token").GetString());
+        Assert.StartsWith("enc1_", signedIn.GetProperty("token").GetString(), StringComparison.Ordinal);
+        Assert.Equal(1, rig.Jellyfin.CountOf("POST /Sessions/Logout"));
         Assert.Equal("kim", signedIn.GetProperty("user").GetProperty("name").GetString());
         Assert.True(signedIn.GetProperty("user").GetProperty("canRequest").GetBoolean());
 
@@ -616,15 +619,23 @@ public sealed class ApiHostTests
         using var poll = await rig.PostAsync("/api/v1/auth/quickconnect/poll", new { secret = ApiRig.QuickSecret, deviceId = ApiRig.DeviceId });
         var polled = await ApiRig.JsonOf(poll);
         Assert.True(polled.GetProperty("authenticated").GetBoolean());
-        Assert.Equal(ApiRig.KimToken, polled.GetProperty("token").GetString());
+        Assert.StartsWith("enc1_", polled.GetProperty("token").GetString(), StringComparison.Ordinal);
+        Assert.Equal(2, rig.Jellyfin.CountOf("POST /Sessions/Logout"));
 
         using var unknown = await rig.PostAsync("/api/v1/auth/quickconnect/poll", new { secret = "neverissued0123456", deviceId = ApiRig.DeviceId });
         Assert.Equal(HttpStatusCode.NotFound, unknown.StatusCode);
         Assert.Equal("unknown_secret", (await ApiRig.JsonOf(unknown)).GetProperty("error").GetString());
 
-        using var logout = await rig.SendAsync(HttpMethod.Post, "/api/v1/auth/logout", bearer: ApiRig.KimToken);
+        // The page token: deleted by Encore, no Jellyfin call. A Jellyfin token (the web script's) is still signed out at Jellyfin.
+        var pageToken = polled.GetProperty("token").GetString()!;
+        using var logout = await rig.SendAsync(HttpMethod.Post, "/api/v1/auth/logout", bearer: pageToken);
         Assert.Equal(HttpStatusCode.NoContent, logout.StatusCode);
-        Assert.Equal(1, rig.Jellyfin.CountOf("POST /Sessions/Logout"));
+        Assert.Equal(2, rig.Jellyfin.CountOf("POST /Sessions/Logout"));
+        using var gone = await rig.GetAsync("/api/v1/me", bearer: pageToken);
+        Assert.Equal(HttpStatusCode.Unauthorized, gone.StatusCode);
+        using var jellyfinLogout = await rig.SendAsync(HttpMethod.Post, "/api/v1/auth/logout", bearer: ApiRig.KimToken);
+        Assert.Equal(HttpStatusCode.NoContent, jellyfinLogout.StatusCode);
+        Assert.Equal(3, rig.Jellyfin.CountOf("POST /Sessions/Logout"));
     }
 
     [Fact]
@@ -941,10 +952,21 @@ public sealed class ApiHostTests
         (await rig.PostAsync("/api/v1/auth/quickconnect/poll", new { secret = ApiRig.QuickSecret, deviceId = ApiRig.DeviceId })).Dispose();
         (await rig.SendAsync(HttpMethod.Post, "/api/v1/auth/logout", bearer: ApiRig.KimToken)).Dispose();
 
+        // T114: the page's own token through every route that sees it.
+        using var signIn = await rig.PostAsync("/api/v1/auth/login", new { username = "kim", password = ApiRig.Password, deviceId = ApiRig.DeviceId });
+        var page = (await ApiRig.JsonOf(signIn)).GetProperty("token").GetString()!;
+        (await rig.GetAsync("/api/v1/me", bearer: page)).Dispose();
+        (await rig.GetAsync("/api/v1/me", bearer: "enc1_" + new string('Q', 43))).Dispose();
+        (await rig.SendAsync(HttpMethod.Delete, "/api/v1/admin/sessions", bearer: ApiRig.NateToken)).Dispose();
+        (await rig.GetAsync("/api/v1/me", bearer: page)).Dispose();
+        (await rig.SendAsync(HttpMethod.Post, "/api/v1/auth/logout", bearer: page)).Dispose();
+
         var logs = rig.Logs.Everything();
         Assert.Contains("auth.", logs);
+        Assert.Contains("auth.page_tokens_revoked", logs);
         foreach (var secret in new[]
                  {
+                     page, page[5..], PageTokens.Hash(page), "enc1_",
                      ApiRig.NateToken, ApiRig.KimToken, ApiRig.LeeToken, "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "bad token!",
                      ApiRig.Password, "secret-wrong-password", ApiRig.QuickSecret, "Bearer ", "Authorization",
                  })

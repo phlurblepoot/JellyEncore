@@ -29,6 +29,7 @@ internal static class ApiErrors
         [AuthCodes.BadRequest] = "The request is not valid.",
         [AuthCodes.UnknownSecret] = "This Quick Connect sign-in is not known or has expired. Start again.",
         [AuthCodes.QuickConnectOff] = "Quick Connect is switched off in Jellyfin.",
+        [AuthCodes.TooManySessions] = "Your Jellyfin account is already signed in on the maximum number of devices. Sign out on one of them, or use Requests inside Jellyfin web.",
         [NotFound] = "There is nothing here.",
         [MethodNotAllowed] = "This method is not allowed here.",
         [Internal] = "Something went wrong on the server.",

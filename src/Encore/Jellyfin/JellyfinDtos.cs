@@ -137,6 +137,9 @@ public sealed record UserPolicy
 
     /// <summary>Failed logins before Jellyfin disables the user; null, 0 or negative = no limit (Jellyfin default -1).</summary>
     public int? LoginAttemptsBeforeLockout { get; init; }
+
+    /// <summary>How many Jellyfin sessions the user may hold at once; 0 or less = no limit (T114).</summary>
+    public int? MaxActiveSessions { get; init; }
 }
 
 public sealed record QueryResult<T>

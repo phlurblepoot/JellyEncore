@@ -30,6 +30,7 @@
     search_limited: 'You are searching too fast. Try again in a moment.',
     retry_limit: 'This request has been tried again too many times. Make a new request instead.',
     login_limited: 'Too many sign-in attempts. Please wait and try again.',
+    too_many_sessions: 'Your Jellyfin account is already signed in on the maximum number of devices. Sign out on one of them, or use Requests inside Jellyfin web.',
     songs_unavailable: 'Song requests are switched off.',
     albums_unavailable: 'Album requests are not available right now.',
     jellyfin_unavailable: 'Jellyfin did not answer. Try again in a moment.',
@@ -212,6 +213,14 @@
     return clean(message) || 'Something went wrong (' + status + ').';
   }
 
+  /**
+   * Is this one of Encore's own page tokens (enc1_...)? Before T114 the page kept the Jellyfin token from its sign-in,
+   * which held one of the account's Jellyfin session slots; such an old token is signed out once and dropped.
+   */
+  function isPageToken(token) {
+    return typeof token === 'string' && token.indexOf('enc1_') === 0;
+  }
+
   /** A random 32 hex digit device id. */
   function newDeviceId(cryptoObject) {
     var bytes = new Uint8Array(16);
@@ -315,6 +324,7 @@
     headline: headline,
     errorMessage: errorMessage,
     newDeviceId: newDeviceId,
+    isPageToken: isPageToken,
   };
 
   if (typeof module !== 'undefined' && module.exports) {
@@ -349,6 +359,7 @@
     searchTimer: 0,
     searchAbort: null,
     notice: '',
+    adminError: '',
   };
   var ui = {};
 
@@ -1044,8 +1055,30 @@
     }
   }
 
+  /** Admin view: end every request page sign-in (the admin's own too). Jellyfin sessions are not touched. */
+  function signEveryoneOut() {
+    if (root.confirm && !root.confirm('Sign everyone out of the request page, you included? Jellyfin apps stay signed in.')) {
+      return;
+    }
+    api('DELETE', 'admin/sessions').then(function () {
+      endSession('Everyone was signed out of the request page. Sign in again to go on.');
+    }).catch(function (e) {
+      S.adminError = failText(e);
+      renderRequests();
+    });
+  }
+
   function fillRequests(panel, list, everyone) {
     panel.replaceChildren();
+    if (everyone) {
+      var tools = el('div', 'admin-tools');
+      add(tools, button('Sign everyone out of the request page', 'btn btn-small', signEveryoneOut));
+      if (S.adminError) {
+        add(tools, el('p', 'error', S.adminError));
+        S.adminError = '';
+      }
+      add(panel, tools);
+    }
     if (list.length === 0) {
       add(panel, el('p', 'muted', everyone ? 'No requests yet.' : 'You have not requested anything yet.'));
       return;
@@ -1138,6 +1171,12 @@
     }, function () {
       S.cfg = {};
     }).then(function () {
+      if (S.token && !isPageToken(S.token)) {
+        // An old Jellyfin token from before T114: sign it out once to free its Jellyfin session slot, then drop it.
+        api('POST', 'auth/logout').catch(function () { /* dropped here either way */ });
+        S.token = null;
+        store(TOKEN_KEY, null);
+      }
       if (!S.token) {
         renderSignIn();
         return;

@@ -159,16 +159,23 @@ public sealed class AuthTests
         public LoginGuard Guard { get; }
         public UserAuth Auth { get; }
 
+        public MemoryPageTokenStore TokenStore { get; } = new();
+
+        public ListLogger<PageTokens> TokensLogger { get; } = new();
+
+        public PageTokens PageTokens { get; }
+
         public Rig(IReadOnlyList<string>? entries = null, bool all = false)
         {
             Users = new RequestUsers(Jellyfin, entries ?? [], all, UsersLogger, Clock);
             Guard = new LoginGuard(Clock, GuardLogger, Users.LockoutLimit);
             var http = new HttpClient(Handler) { BaseAddress = new Uri("http://jellyfin.test:8096/") };
-            Auth = new UserAuth(http, Users, Guard, AuthLogger, Clock, "0.3.0-test");
+            PageTokens = new PageTokens(TokenStore, Users, TokensLogger, Clock);
+            Auth = new UserAuth(http, Users, Guard, PageTokens, AuthLogger, Clock, "0.3.0-test");
             Handler.On("GET /Users/Me", HttpStatusCode.OK, MeJson(Nate, "nate"));
         }
 
-        public IEnumerable<LogEntry> AllLogs => AuthLogger.Entries.Concat(GuardLogger.Entries).Concat(UsersLogger.Entries);
+        public IEnumerable<LogEntry> AllLogs => AuthLogger.Entries.Concat(GuardLogger.Entries).Concat(UsersLogger.Entries).Concat(TokensLogger.Entries);
 
         public string Bearer(string token = Token) => "Bearer " + token;
 
@@ -378,8 +385,8 @@ public sealed class AuthTests
 
     // ---- request-user rule ------------------------------------------------------------------------------------
 
-    private static UserDto User(Guid id, string name, int? lockout = null, bool admin = false) =>
-        new() { Id = id, Name = name, Policy = new UserPolicy { IsAdministrator = admin, LoginAttemptsBeforeLockout = lockout } };
+    private static UserDto User(Guid id, string name, int? lockout = null, bool admin = false, int sessions = 0, bool disabled = false) =>
+        new() { Id = id, Name = name, Policy = new UserPolicy { IsAdministrator = admin, LoginAttemptsBeforeLockout = lockout, MaxActiveSessions = sessions, IsDisabled = disabled } };
 
     [Fact]
     public async Task RU01_admin_listed_star_and_other()
@@ -426,52 +433,98 @@ public sealed class AuthTests
     // ---- login ------------------------------------------------------------------------------------------------
 
     [Fact]
-    public async Task LG01_login_sends_the_device_id_and_no_token_and_returns_the_token()
+    public async Task LG01_login_sends_the_device_id_and_no_token_then_logs_the_jellyfin_session_out_and_returns_a_page_token()
     {
         var rig = new Rig();
         rig.Handler.On("POST /Users/AuthenticateByName", HttpStatusCode.OK, LoginJson(Nate, "nate", Token, admin: true));
+        rig.Handler.On("POST /Sessions/Logout", HttpStatusCode.NoContent);
 
         var result = await Login(rig, "nate", Rig.Ip(1));
 
         Assert.True(result.Ok);
-        Assert.Equal(Token, result.Value!.Token);
+        Assert.StartsWith("enc1_", result.Value!.Token, StringComparison.Ordinal);
+        Assert.Matches("^enc1_[A-Za-z0-9_-]{43}$", result.Value.Token);
+        Assert.DoesNotContain(Token, result.Value.Token, StringComparison.Ordinal);
         Assert.Equal(new RequestUser(Nate, "nate", true, false), result.Value.User);
-        var call = Assert.Single(rig.Handler.Calls);
+        Assert.Equal(2, rig.Handler.Calls.Count);
+        var call = rig.Handler.Calls[0];
+        Assert.Equal("/Users/AuthenticateByName", call.PathAndQuery);
         Assert.Equal($"MediaBrowser Client=\"Encore Requests\", Device=\"Encore Requests\", DeviceId=\"{DeviceId}\", Version=\"0.3.0-test\"", call.Authorization);
         Assert.DoesNotContain("Token", call.Authorization!);
         Assert.Equal(["Authorization"], call.HeaderNames);
         using var body = JsonDocument.Parse(call.Body!);
         Assert.Equal("nate", body.RootElement.GetProperty("Username").GetString());
         Assert.Equal(Password, body.RootElement.GetProperty("Pw").GetString());
+
+        // The Jellyfin session of the sign-in is logged out at once, with a token-only header.
+        var logout = rig.Handler.Calls[1];
+        Assert.Equal("POST", logout.Method);
+        Assert.Equal("/Sessions/Logout", logout.PathAndQuery);
+        Assert.Equal($"MediaBrowser Token=\"{Token}\"", logout.Authorization);
+        Assert.Equal(["Authorization"], logout.HeaderNames);
+        Assert.Equal(1, rig.Handler.CountOf("POST /Sessions/Logout"));
+
+        // Only the hash is kept.
+        var row = Assert.Single(rig.TokenStore.Rows.Values);
+        Assert.Equal(Nate.ToString("N"), row.UserId);
+        Assert.DoesNotContain(result.Value.Token, row.TokenHash, StringComparison.Ordinal);
+        Assert.Equal(64, row.TokenHash.Length);
+    }
+
+    [Fact]
+    public async Task LG01b_a_failed_jellyfin_logout_still_signs_in_and_is_logged_without_the_token()
+    {
+        var rig = new Rig();
+        rig.Handler.On("POST /Users/AuthenticateByName", HttpStatusCode.OK, LoginJson(Nate, "nate", Token));
+        rig.Handler.On("POST /Sessions/Logout", HttpStatusCode.InternalServerError);
+
+        var result = await Login(rig, "nate", Rig.Ip(1));
+
+        Assert.True(result.Ok);
+        Assert.StartsWith("enc1_", result.Value!.Token, StringComparison.Ordinal);
+        Assert.Single(rig.AuthLogger.Named("auth.jellyfin_failed"), e => (string)e.Fields["Operation"]! == "SessionsLogout");
     }
 
     [Fact]
     public async Task LG02_no_log_line_holds_a_password_or_a_token()
     {
         var rig = new Rig();
-        rig.Jellyfin.Users = [User(Nate, "nate", lockout: 3)];
+        rig.Jellyfin.Users = [User(Nate, "nate", lockout: 3), User(Kim, "kim", sessions: 2)];
         await rig.Users.RefreshAsync();
         rig.Handler.On("POST /Users/AuthenticateByName", HttpStatusCode.OK, LoginJson(Nate, "nate", Token));
         rig.Handler.On("POST /Sessions/Logout", HttpStatusCode.NoContent);
 
-        await Login(rig, "nate", Rig.Ip(1));
+        var page = (await Login(rig, "nate", Rig.Ip(1))).Value!.Token;
+        await rig.Auth.ValidateAsync(rig.Bearer(page), Rig.Ip(1));
+        await rig.Auth.ValidateAsync(rig.Bearer("enc1_" + new string('Z', 43)), Rig.Ip(1));
         await rig.Auth.ValidateAsync(rig.Bearer(), Rig.Ip(1));
         await rig.Auth.ValidateAsync(rig.Bearer(OtherToken), Rig.Ip(1));
         await rig.Auth.ValidateAsync("Bearer " + Password, Rig.Ip(1));
         rig.Handler.On("POST /Users/AuthenticateByName", HttpStatusCode.Unauthorized);
         await Login(rig, "nate", Rig.Ip(2), Password + "x");
         await Login(rig, Password, Rig.Ip(3));
+        rig.Handler.On("POST /Users/AuthenticateByName", HttpStatusCode.Forbidden);
+        await Login(rig, "kim", Rig.Ip(5));
         rig.Handler.On("GET /Users/Me", HttpStatusCode.Unauthorized);
         await rig.Auth.ValidateAsync(rig.Bearer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), Rig.Ip(4));
         await rig.Auth.LogoutAsync(rig.Bearer(), Rig.Ip(1));
+        await rig.Auth.LogoutAsync(rig.Bearer(page), Rig.Ip(1));
+        await rig.Auth.ValidateAsync(rig.Bearer(page), Rig.Ip(1));
+        rig.PageTokens.RevokeAll(null);
 
         Assert.NotEmpty(rig.AllLogs);
+        Assert.Contains(rig.AllLogs, e => e.EventId.Name == "auth.too_many_sessions");
+        Assert.Contains(rig.AllLogs, e => e.EventId.Name == "auth.page_tokens_revoked");
         foreach (var entry in rig.AllLogs)
         {
             var text = entry.Message + " " + string.Join(" ", entry.Fields.Values.Select(v => v?.ToString()));
             Assert.DoesNotContain(Password, text);
             Assert.DoesNotContain(Token, text, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain(OtherToken, text, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(page, text, StringComparison.Ordinal);
+            Assert.DoesNotContain(page[5..], text, StringComparison.Ordinal);
+            Assert.DoesNotContain(PageTokens.Hash(page), text, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("enc1_", text, StringComparison.Ordinal);
             Assert.DoesNotContain("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", text);
             Assert.DoesNotContain("Authorization", text, StringComparison.OrdinalIgnoreCase);
         }
@@ -794,7 +847,10 @@ public sealed class AuthTests
         var done = await rig.Auth.QuickConnectPollAsync("s3cretvalue", DeviceId, Rig.Ip(1));
         Assert.True(done.Ok);
         Assert.True(done.Value!.Authenticated);
-        Assert.Equal(Token, done.Value.Login!.Token);
+        Assert.StartsWith("enc1_", done.Value.Login!.Token, StringComparison.Ordinal);
+        var freed = Assert.Single(rig.Handler.Calls, c => c.PathAndQuery == "/Sessions/Logout");
+        Assert.Equal($"MediaBrowser Token=\"{Token}\"", freed.Authorization);
+        Assert.Equal(["Authorization"], freed.HeaderNames);
         var finish = rig.Handler.Calls.Single(c => c.PathAndQuery == "/Users/AuthenticateWithQuickConnect");
         Assert.Equal("""{"Secret":"s3cretvalue"}""", finish.Body);
 

@@ -56,7 +56,7 @@ public class RequestStoreTests : IDisposable
         new DateTimeOffset(2026, 11, 20, 18, 0, 0, TimeSpan.Zero));
 
     [Fact]
-    public void A_v2_file_with_data_upgrades_to_v3_with_a_v2_backup()
+    public void A_v2_file_with_data_upgrades_to_v4_with_a_v2_backup()
     {
         using (var store = EncoreStore.Open(DbPath, _time))
         {
@@ -67,17 +67,17 @@ public class RequestStoreTests : IDisposable
         using (var db = Raw())
         {
             // Turn the file back into a real v2 one: no requests table, no requested column.
-            Run(db, "DROP TABLE requests; ALTER TABLE fetched_files DROP COLUMN requested; PRAGMA user_version = 2");
+            Run(db, "DROP TABLE page_tokens; DROP TABLE requests; ALTER TABLE fetched_files DROP COLUMN requested; PRAGMA user_version = 2");
         }
 
         using (var store = EncoreStore.Open(DbPath, _time))
         {
-            Assert.Equal(3, store.SchemaVersionOnDisk);
+            Assert.Equal(4, store.SchemaVersionOnDisk);
         }
 
         using (var db = Raw())
         {
-            Assert.Equal(3, Scalar(db, "PRAGMA user_version"));
+            Assert.Equal(4, Scalar(db, "PRAGMA user_version"));
             Assert.Equal(1, Scalar(db, "SELECT COUNT(*) FROM fetched_files"));
             Assert.Equal(0, Scalar(db, "SELECT requested FROM fetched_files"));
             Assert.Equal(0, Scalar(db, "SELECT COUNT(*) FROM requests"));
@@ -91,6 +91,49 @@ public class RequestStoreTests : IDisposable
         Assert.Equal(2, Scalar(bak, "PRAGMA user_version"));
         Assert.Equal(1, Scalar(bak, "SELECT COUNT(*) FROM fetched_files"));
         Assert.Equal(0, Scalar(bak, "SELECT COUNT(*) FROM sqlite_master WHERE name = 'requests'"));
+    }
+
+    [Fact]
+    public void A_v3_file_with_requests_upgrades_to_v4_with_a_v3_backup_and_an_empty_page_token_table()
+    {
+        using (EncoreStore.Open(DbPath, _time))
+        using (var requests = RequestStore.Open(DbPath))
+        {
+            requests.Insert(Song("r1", "user-a", _time.GetUtcNow()));
+        }
+
+        using (var db = Raw())
+        {
+            // A real v3 file (v0.3.4): no page_tokens table.
+            Run(db, "DROP TABLE page_tokens; PRAGMA user_version = 3");
+        }
+
+        using (var store = EncoreStore.Open(DbPath, _time))
+        {
+            Assert.Equal(4, store.SchemaVersionOnDisk);
+        }
+
+        using (var db = Raw())
+        {
+            Assert.Equal(4, Scalar(db, "PRAGMA user_version"));
+            Assert.Equal(1, Scalar(db, "SELECT COUNT(*) FROM requests"));
+            Assert.Equal(0, Scalar(db, "SELECT COUNT(*) FROM page_tokens"));
+            Assert.Equal(1, Scalar(db, "SELECT COUNT(*) FROM sqlite_master WHERE name = 'ix_page_tokens_user'"));
+        }
+
+        var backup = DbPath + ".v3.bak";
+        Assert.True(File.Exists(backup));
+        using (var bak = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = backup, Mode = SqliteOpenMode.ReadOnly, Pooling = false }.ConnectionString))
+        {
+            bak.Open();
+            Assert.Equal(3, Scalar(bak, "PRAGMA user_version"));
+            Assert.Equal(1, Scalar(bak, "SELECT COUNT(*) FROM requests"));
+            Assert.Equal(0, Scalar(bak, "SELECT COUNT(*) FROM sqlite_master WHERE name = 'page_tokens'"));
+        }
+
+        // The request store opens the upgraded file with its rows.
+        using var reopened = RequestStore.Open(DbPath);
+        Assert.Single(reopened.ListAll());
     }
 
     [Fact]

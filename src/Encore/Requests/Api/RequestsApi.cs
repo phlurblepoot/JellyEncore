@@ -62,9 +62,12 @@ public static class RequestsApi
             var users = sp.GetRequiredService<RequestUsers>();
             return new LoginGuard(sp.GetRequiredService<TimeProvider>(), sp.GetRequiredService<ILogger<LoginGuard>>(), users.LockoutLimit);
         });
+        services.AddSingleton(sp => new PageTokens(
+            sp.GetRequiredService<RequestStore>(), sp.GetRequiredService<RequestUsers>(), sp.GetRequiredService<ILogger<PageTokens>>(),
+            sp.GetRequiredService<TimeProvider>()));
         services.AddSingleton(sp => new UserAuth(
             CreateUserAuthClient(options), sp.GetRequiredService<RequestUsers>(), sp.GetRequiredService<LoginGuard>(),
-            sp.GetRequiredService<ILogger<UserAuth>>(), sp.GetRequiredService<TimeProvider>(), JellyfinAuth.VersionFromAssembly()));
+            sp.GetRequiredService<PageTokens>(), sp.GetRequiredService<ILogger<UserAuth>>(), sp.GetRequiredService<TimeProvider>(), JellyfinAuth.VersionFromAssembly()));
         services.AddSingleton(sp => new JellyfinServerInfo(
             sp.GetRequiredService<IJellyfinClient>(), sp.GetRequiredService<ILogger<JellyfinServerInfo>>(), sp.GetRequiredService<TimeProvider>()));
         services.AddHostedService(sp => sp.GetRequiredService<JellyfinServerInfo>());
@@ -83,7 +86,8 @@ public static class RequestsApi
         Encore.Requests.Albums.AlbumServiceCollectionExtensions.AddAlbumRequests(services, options);
         services.AddSingleton(sp => new ApiEndpoints(
             options, sp.GetRequiredService<UserAuth>(), sp.GetRequiredService<RequestUsers>(), sp.GetRequiredService<RequestStore>(),
-            sp.GetRequiredService<JellyfinServerInfo>(), sp.GetRequiredService<SearchService>(), sp.GetRequiredService<TimeProvider>(), version));
+            sp.GetRequiredService<JellyfinServerInfo>(), sp.GetRequiredService<SearchService>(), sp.GetRequiredService<TimeProvider>(), version,
+            sp.GetRequiredService<PageTokens>()));
 
         // Song requests (T87). The notifier tells the requester through a Jellyfin session message (T88).
         services.TryAddSingleton<IRequestNotifier>(sp => new Encore.Requests.Notify.RequestNotifier(

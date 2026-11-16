@@ -100,7 +100,7 @@ public sealed record RequestRow(
 /// <see cref="EncoreStore"/>, same pragmas, one lock. Autocommit statements only: no transaction is held across calls,
 /// so it never holds a lock that EncoreStore's BEGIN IMMEDIATE blocks wait on. It never migrates.
 /// </summary>
-public sealed class RequestStore : IDisposable
+public sealed partial class RequestStore : IDisposable, IPageTokenStore
 {
     private const string Columns = """
         id, kind, user_id, user_name, state, detail, fail_reason, artist, title, album, year, cover_url, track_key,

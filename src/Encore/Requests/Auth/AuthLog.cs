@@ -29,4 +29,22 @@ public static partial class AuthLog
     [LoggerMessage(EventId = 9050, EventName = "auth.lockout_policies", Level = LogLevel.Information,
         Message = "Jellyfin lockout policies: {UsersWithLimit} users with a limit, lowest limit {LowestLimit}")]
     public static partial void LockoutPolicies(this ILogger logger, int usersWithLimit, int lowestLimit);
+
+    // 9060 is api.error (ApiLog).
+
+    [LoggerMessage(EventId = 9070, EventName = "auth.page_tokens_revoked", Level = LogLevel.Information,
+        Message = "Request page tokens removed ({Reason}): {Count}")]
+    public static partial void PageTokensRevoked(this ILogger logger, string reason, int count);
+
+    [LoggerMessage(EventId = 9075, EventName = "auth.page_token_store_failed", Level = LogLevel.Warning,
+        Message = "Request page tokens could not be cleaned up: {ExceptionType}")]
+    public static partial void PageTokenStoreFailed(this ILogger logger, string exceptionType);
+
+    [LoggerMessage(EventId = 9080, EventName = "auth.jellyfin_session_freed", Level = LogLevel.Debug,
+        Message = "Jellyfin sign-in session of the request page logged out ({Method}), ok {Ok}")]
+    public static partial void JellyfinSessionFreed(this ILogger logger, string method, bool ok);
+
+    [LoggerMessage(EventId = 9085, EventName = "auth.too_many_sessions", Level = LogLevel.Information,
+        Message = "Login {Method} refused by Jellyfin: the account is at its session limit")]
+    public static partial void TooManySessions(this ILogger logger, string method);
 }

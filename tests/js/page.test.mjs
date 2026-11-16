@@ -182,3 +182,19 @@ test('result tabs: counts, default and remembered tab, label', () => {
   assert.equal(h.tabLabel('songs', 3), 'Songs (3)');
   assert.equal(h.tabLabel('albums', 0), 'Albums (0)');
 });
+
+test('page tokens (T114): only enc1_ tokens are kept; an old Jellyfin token is not one', () => {
+  assert.equal(h.isPageToken('enc1_' + 'A'.repeat(43)), true);
+  assert.equal(h.isPageToken('0123456789abcdef0123456789abcdef'), false);
+  assert.equal(h.isPageToken('xenc1_abc'), false);
+  assert.equal(h.isPageToken(null), false);
+  assert.equal(h.isPageToken(undefined), false);
+  assert.match(h.errorMessage(409, 'too_many_sessions', 'x'), /maximum number of devices/);
+});
+
+test('the page frees an old Jellyfin token once and offers admins a sign-everyone-out button', () => {
+  const src = readFileSync(file, 'utf8');
+  assert.match(src, /!isPageToken\(S\.token\)/);
+  assert.match(src, /api\('DELETE', 'admin\/sessions'\)/);
+  assert.ok(src.includes('Sign everyone out of the request page'));
+});

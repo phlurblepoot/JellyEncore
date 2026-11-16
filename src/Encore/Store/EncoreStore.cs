@@ -42,7 +42,7 @@ public sealed record PruneResult(int Plays, int AddedItems, int Triggers, int At
 public sealed class EncoreStore : IDisposable
 {
     /// <summary>The schema this build writes. A database with a higher user_version refuses to open.</summary>
-    public const int SchemaVersion = 3;
+    public const int SchemaVersion = 4;
 
     /// <summary>Trigger outcomes that block a repeat fire with the same dedupe key.</summary>
     public const string SentOutcome = "sent";
@@ -143,6 +143,14 @@ public sealed class EncoreStore : IDisposable
         CREATE INDEX ix_requests_user ON requests(user_id, created_utc);
         CREATE INDEX ix_requests_state ON requests(state, updated_utc);
         CREATE INDEX ix_requests_key ON requests(track_key) WHERE track_key IS NOT NULL;
+        """,
+        """
+        CREATE TABLE page_tokens (
+          token_hash TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL,
+          created_utc TEXT NOT NULL,
+          last_used_utc TEXT NOT NULL);
+        CREATE INDEX ix_page_tokens_user ON page_tokens(user_id);
         """,
     ];
 

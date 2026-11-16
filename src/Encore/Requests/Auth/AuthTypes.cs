@@ -28,7 +28,7 @@ public sealed record AuthOutcome<T>
     public static AuthOutcome<T> Fail(int status, string code, TimeSpan? retryAfter = null) => new(default, new AuthError(status, code, retryAfter));
 }
 
-/// <summary>The token and the user a login returns. The token is passed on to the page and not kept.</summary>
+/// <summary>The token and the user a login returns: the request page's own token (T114; only its hash is kept).</summary>
 public sealed record LoginResult(string Token, RequestUser User);
 
 /// <summary>Quick Connect start: the code the person approves in Jellyfin and the secret the page polls with.</summary>
@@ -51,4 +51,7 @@ public static class AuthCodes
     public const string BadRequest = "bad_request";
     public const string UnknownSecret = "unknown_secret";
     public const string QuickConnectOff = "quickconnect_disabled";
+
+    /// <summary>Jellyfin refused the sign-in because the account already holds its maximum number of sessions (T114).</summary>
+    public const string TooManySessions = "too_many_sessions";
 }

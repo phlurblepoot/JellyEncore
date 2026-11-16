@@ -13,6 +13,17 @@ public static class RequestLimits
     public static readonly TimeSpan JellyfinTimeout = TimeSpan.FromSeconds(10);
     public static readonly TimeSpan UserRefresh = TimeSpan.FromMinutes(10);
 
+    /// <summary>An extra GET /Users asked for by a page-token check runs at most this often (T114).</summary>
+    public static readonly TimeSpan UserRefreshOnDemandGap = TimeSpan.FromSeconds(30);
+
+    /// <summary>Request page tokens (T114): gone after 30 days unused or 90 days in all; last use written at most once a minute.</summary>
+    public static readonly TimeSpan PageTokenIdle = TimeSpan.FromDays(30);
+    public static readonly TimeSpan PageTokenMaxAge = TimeSpan.FromDays(90);
+    public static readonly TimeSpan PageTokenTouch = TimeSpan.FromMinutes(1);
+
+    /// <summary>The user data a page-token check relies on is at most this old (the Jellyfin master chat's 10 minutes).</summary>
+    public static readonly TimeSpan PageTokenUserMaxAge = TimeSpan.FromMinutes(10);
+
     /// <summary>Wait before the next try at reading the Jellyfin server id (GET /System/Info/Public) after a failure.</summary>
     public static readonly TimeSpan ServerInfoRetry = TimeSpan.FromMinutes(1);
 

@@ -8,7 +8,10 @@ using Encore.Jellyfin;
 namespace Encore.Requests.Auth;
 
 /// <summary>
-/// Checks a person's Jellyfin token and passes sign-ins through (design 3.2, 3.3, 3.5). Invariants it keeps:
+/// Checks a person's token and passes sign-ins through (design 3.2, 3.3, 3.5). Two kinds of Bearer token are accepted:
+/// the request page's own <c>enc1_</c> tokens (T114, see <see cref="PageTokens"/>), handed out at sign-in after the
+/// Jellyfin session was logged out, and any other token, checked with GET /Users/Me as a Jellyfin token (the Jellyfin web
+/// search script uses the browser's own Jellyfin session). Invariants it keeps:
 /// the token is checked with a header that holds only the token (no Client, Device, DeviceId or Version, so Jellyfin
 /// does not rename the person's device); Encore's own API key is never sent here (the HttpClient has no
 /// <see cref="JellyfinAuthHandler"/>); a password or token is never logged, stored or put in an error; only a
@@ -25,15 +28,18 @@ public sealed partial class UserAuth
     private readonly TimeProvider _time;
     private readonly string _version;
     private readonly TokenCache _cache;
+    private readonly PageTokens _pageTokens;
     private readonly object _secretGate = new();
     private readonly Dictionary<string, DateTimeOffset> _secrets = [];
 
     /// <param name="http">A client for Jellyfin's base URL with NO Encore auth handler and no default headers.</param>
-    public UserAuth(HttpClient http, RequestUsers users, LoginGuard guard, ILogger<UserAuth> logger, TimeProvider? time = null, string? version = null)
+    /// <param name="pageTokens">The request page's own tokens (T114): handed out at sign-in instead of the Jellyfin token.</param>
+    public UserAuth(HttpClient http, RequestUsers users, LoginGuard guard, PageTokens pageTokens, ILogger<UserAuth> logger, TimeProvider? time = null, string? version = null)
     {
         _http = http ?? throw new ArgumentNullException(nameof(http));
         _users = users ?? throw new ArgumentNullException(nameof(users));
         _guard = guard ?? throw new ArgumentNullException(nameof(guard));
+        _pageTokens = pageTokens ?? throw new ArgumentNullException(nameof(pageTokens));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _time = time ?? TimeProvider.System;
         _version = version ?? JellyfinAuth.VersionFromAssembly();
@@ -75,6 +81,24 @@ public sealed partial class UserAuth
             }
 
             return AuthOutcome<RequestUser>.Fail(401, problem!);
+        }
+
+        if (PageTokens.HasPrefix(token))
+        {
+            // The page's own token (T114): checked against Encore's table, never sent to Jellyfin.
+            var (outcome, known) = await _pageTokens.CheckAsync(token, ct).ConfigureAwait(false);
+            if (outcome.Ok)
+            {
+                return Accept(outcome.Value!, cached: false, ip);
+            }
+
+            if (!known)
+            {
+                _guard.RecordTokenFailure(remoteIp);
+            }
+
+            _logger.Rejected(outcome.Error!.Code, ip);
+            return outcome;
         }
 
         var key = Hash(token);
@@ -138,7 +162,7 @@ public sealed partial class UserAuth
 
         var body = JsonSerializer.Serialize(new { Username = username, Pw = password });
         var reply = await SendAsync(HttpMethod.Post, "Users/AuthenticateByName", LoginHeader(deviceId), body, "AuthenticateByName", ct).ConfigureAwait(false);
-        return FinishLogin(reply, "AuthenticateByName", "password", username, remoteIp);
+        return await FinishLoginAsync(reply, "AuthenticateByName", "password", username, remoteIp, ct).ConfigureAwait(false);
     }
 
     /// <summary>Is Quick Connect switched on in Jellyfin? Null when Jellyfin could not be asked.</summary>
@@ -248,7 +272,7 @@ public sealed partial class UserAuth
 
         var body = JsonSerializer.Serialize(new { Secret = secret });
         var login = await SendAsync(HttpMethod.Post, "Users/AuthenticateWithQuickConnect", header, body, "AuthenticateWithQuickConnect", ct).ConfigureAwait(false);
-        var finished = FinishLogin(login, "AuthenticateWithQuickConnect", "quick_connect", null, remoteIp);
+        var finished = await FinishLoginAsync(login, "AuthenticateWithQuickConnect", "quick_connect", null, remoteIp, ct).ConfigureAwait(false);
         if (!finished.Ok)
         {
             return AuthOutcome<QuickConnectPoll>.Fail(finished.Error!);
@@ -271,6 +295,13 @@ public sealed partial class UserAuth
             return AuthOutcome<bool>.Fail(401, problem!);
         }
 
+        if (PageTokens.HasPrefix(token))
+        {
+            // The page's own token: deleted here; Jellyfin holds no session for it. An unknown token is already gone.
+            _pageTokens.Revoke(token);
+            return AuthOutcome<bool>.Success(true);
+        }
+
         _cache.Remove(Hash(token));
         var reply = await SendAsync(HttpMethod.Post, "Sessions/Logout", TokenOnlyHeader(token), null, "SessionsLogout", ct).ConfigureAwait(false);
         _cache.Remove(Hash(token));
@@ -284,12 +315,21 @@ public sealed partial class UserAuth
         return Unavailable<bool>("SessionsLogout", reply);
     }
 
-    private AuthOutcome<LoginResult> FinishLogin(HttpReply reply, string operation, string method, string? typedName, IPAddress? remoteIp)
+    /// <summary>
+    /// A finished Jellyfin sign-in (T114): the Jellyfin session is logged out at once with its own token, so the page
+    /// never holds one of the user's Jellyfin session slots, and the page gets Encore's own token instead.
+    /// Jellyfin answers 403 when the account already holds its maximum number of sessions (SecurityException in
+    /// SessionManager.AuthenticateNewSessionInternal, mapped to 403 by Jellyfin's ExceptionMiddleware): that is 409
+    /// too_many_sessions and is not a failed password. A 403 can also mean a disabled account (checked before the
+    /// password), so for a password sign-in it is read as the session limit only when the user is known, not disabled
+    /// and has a session limit; Quick Connect skips the disabled check, so its 403 is always the session limit.
+    /// </summary>
+    private async Task<AuthOutcome<LoginResult>> FinishLoginAsync(HttpReply reply, string operation, string method, string? typedName, IPAddress? remoteIp, CancellationToken ct)
     {
         if (reply.Status == 200)
         {
             var result = Parse<AuthenticationResultDto>(reply.Body);
-            var user = result?.User is { Name: { Length: > 0 } name } dto && !string.IsNullOrEmpty(result.AccessToken)
+            var user = result?.User is { Name: { Length: > 0 } name } dto && dto.Id != Guid.Empty && !string.IsNullOrEmpty(result.AccessToken)
                 ? new RequestUser(dto.Id, name, dto.Policy?.IsAdministrator ?? false, dto.Policy?.IsDisabled ?? false)
                 : null;
             if (user is null || result is null)
@@ -300,7 +340,24 @@ public sealed partial class UserAuth
 
             _guard.RecordLoginSuccess(remoteIp, typedName ?? user.Name);
             _logger.Login(user.Name, method, true);
-            return AuthOutcome<LoginResult>.Success(new LoginResult(result.AccessToken!, user));
+
+            // Free the Jellyfin session slot right away. A failure is logged and the sign-in still goes on: the slot then
+            // stays taken until Jellyfin drops it, as before T114.
+            var logout = await SendAsync(HttpMethod.Post, "Sessions/Logout", TokenOnlyHeader(result.AccessToken!), null, "SessionsLogout", ct).ConfigureAwait(false);
+            var freed = logout.Status is >= 200 and < 300;
+            if (!freed)
+            {
+                LogFailure("SessionsLogout", logout);
+            }
+
+            _logger.JellyfinSessionFreed(method, freed);
+            return AuthOutcome<LoginResult>.Success(new LoginResult(_pageTokens.Issue(user.Id), user));
+        }
+
+        if (reply.Status == 403 && (typedName is null || _users.HasSessionLimit(typedName)))
+        {
+            _logger.TooManySessions(method);
+            return AuthOutcome<LoginResult>.Fail(409, AuthCodes.TooManySessions);
         }
 
         if (reply.Status is 401 or 403)
@@ -370,7 +427,7 @@ public sealed partial class UserAuth
         }
 
         var token = authorization[scheme.Length..].Trim();
-        if (!TokenPattern().IsMatch(token))
+        if (PageTokens.HasPrefix(token) ? !PageTokens.IsWellFormed(token) : !TokenPattern().IsMatch(token))
         {
             problem = AuthCodes.MalformedToken;
             return null;

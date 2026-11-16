@@ -54,6 +54,7 @@ body {
 
 .bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .who { display: flex; align-items: center; gap: 10px; }
+.admin-tools { padding: 10px 0; border-bottom: 1px solid var(--line); }
 
 .form { display: grid; gap: 10px; margin-top: 12px; }
 .input {
