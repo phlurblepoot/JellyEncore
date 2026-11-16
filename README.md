@@ -1,6 +1,6 @@
 # JellyEncore
 
-Encore is a small .NET 10 service that runs alongside a Jellyfin 12.4 server. When a listed user's music queue is down to one song after the current one, Encore adds more songs to the queue, so the music keeps going. v0.1 uses only songs already in the library. v0.2 can also fetch songs the server does not have from Soulseek (through slskd), import them into the library and queue them; it is off by default. v0.3 adds song and album requests (a request page and a Jellyfin search script; albums go through Lidarr), also off by default.
+Encore is a small .NET 10 service that runs alongside a Jellyfin 12.4 server. When a listed user's music queue is down to one song after the current one, Encore adds more songs to the queue, so the music keeps going. v0.1 uses only songs already in the library. v0.2 can also fetch songs the server does not have from Soulseek (through slskd), import them into the library and queue them; it is off by default. v0.3 adds song and album requests (a request page and a Jellyfin search script; albums go through Lidarr), also off by default. v0.4 adds retention for the songs fetched from Soulseek (keep and move the ones you like into the main library, delete the rest after a while, share the radio folder back on Soulseek), off by default and with a dry run first.
 
 ## What it does
 
@@ -80,6 +80,26 @@ Fetching is off unless `ENCORE_FETCH_MODE` says otherwise. In mode `off` the sls
 Fixed in v0.2, not configurable: two search queries per song, up to three peers tried per song, a 15-minute deadline per song, a 24-hour memory of songs that could not be found, at most 30 fetches per hour in total, a 20 GB free-space floor on the radio folder, an owned-song index refreshed every 30 minutes, FLAC or MP3 at 320 kbps only, and one hand-out pass-over for a song that is still downloading (it is skipped the second time).
 
 Fixed in v0.1, not configurable: a 60-minute dedupe window, a 20-second cooldown per session, at most 30 songs per session and 120 in total per hour (re-sent songs count), at most 60 songs per radio run, two fire attempts 15 seconds apart, one re-send of songs the next queue report does not show, a 3-second delivery lag (plus the poll interval for poll reports) before a report can prove songs missing, a 10-second grace after a stop, a 10-second timeout per Jellyfin call, song lengths of 60 seconds to 12 minutes, and at most 8 Jellyfin calls per pick.
+
+#### Retention (v0.4)
+
+Retention is off unless `ENCORE_RETENTION_MODE` says otherwise. Any mode but `off` needs `ENCORE_FETCH_MODE=live` (otherwise Encore exits with a configuration error). In mode `off` Encore behaves as v0.3.6: no retention work, no `/retention/report`, and nothing is written to slskd or Jellyfin.
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `ENCORE_RETENTION_MODE` | `off`, `dry_run` (also `dry-run`, `dryrun`) or `live`. See "Retention (v0.4)" | `off` |
+| `ENCORE_RETENTION_DAYS` | A fetched song that no rule keeps is deleted at this age in days (1-365) | `30` |
+| `ENCORE_RETENTION_UPLOADS` | ... or after this many completed uploads to other Soulseek users (1-1000), whichever comes first | `3` |
+| `ENCORE_RETENTION_PLAYS` | Plays you started yourself and listened to the end that keep a song for good (1-50) | `3` |
+| `ENCORE_RETENTION_HOUR` | Hour of the daily pass, 0-23, in the container's local time (set `TZ` on the container). One extra pass runs 10 minutes after start | `4` |
+| `ENCORE_RETENTION_MAX_PROMOTIONS` | Songs moved into the main library per pass (0-500; 0 = no moves) | `20` |
+| `ENCORE_RETENTION_MAX_DELETES` | Songs deleted per pass (0-5000; 0 = no deletes) | `100` |
+| `ENCORE_RETENTION_IGNORE_PLAYLISTS` | Comma-separated playlist ids (32 hex characters) that never keep a song and are never edited. SmartLists playlists are always ignored | empty |
+| `ENCORE_LIBRARY_DIR` | Where Encore sees your main music folder, read-write. In `live` it must exist and pass a write test; in `dry_run` a missing folder is only a warning | `/library` |
+| `ENCORE_LIBRARY_JELLYFIN_DIR` | The same folder as Jellyfin sees it. It must be a location of a Jellyfin Music library | `/media/music` |
+| `ENCORE_SLSKD_RADIO_DIR` | The music-radio folder as slskd sees it, to map upload events to files and to find the radio share | `/music-radio` |
+
+Fixed in v0.4, not configurable: slskd upload events read every 15 minutes, the share check every 30 minutes, at most one share rescan per 6 hours, one promotion at a time with 5 attempts before it is marked stalled, the trash kept 7 days, a song that is playing now, sits in anyone's queue, was queued by Encore in the last 3 hours or is being uploaded right now is skipped for that pass, a 20 GB free-space floor on the library, and a play counts only when at least 90 percent of the song was reached and at least 50 percent of it was listened to.
 
 ## Running in Docker
 
@@ -221,12 +241,60 @@ Add to the Encore service (paths are the QBStream ones):
 
 Rollback is `ENCORE_FETCH_MODE=off` (or the previous image tag; the database keeps a `.v1.bak` copy from before the v0.2 migration). Songs already imported stay in the library.
 
+## Retention (v0.4)
+
+### What it does
+
+A daily pass looks at every song Encore fetched into the radio folder and decides:
+
+- **Kept and moved into the main library** when anyone favorited it, it is in a playlist someone made by hand, it was requested, or it was played to the end `ENCORE_RETENTION_PLAYS` times by plays the listener started (songs the radio queued by itself do not count). Once kept, always kept: unfavoriting later does not undo it. The move is byte-identical (tags are not changed), Jellyfin's favorites, play counts and playlist places are carried over, and the file lands in the usual `Artist/Album (Year)/NN - Title` layout. Encore only adds files to the main library; it never overwrites, renames or deletes one.
+- **Deleted** when nothing keeps it and it is `ENCORE_RETENTION_DAYS` old or has had `ENCORE_RETENTION_UPLOADS` completed uploads. Deleted files go to `.encore-trash` inside the radio folder and stay there 7 days, so a wrong delete can be undone by hand.
+- **Waiting** otherwise.
+
+SmartLists playlists (plugin lists and names ending in `[Smart]`) and playlists in `ENCORE_RETENTION_IGNORE_PLAYLISTS` never keep a song. If SmartLists is installed but its list cannot be read, or any other read of favorites or playlists fails, that pass deletes nothing (`/health` warns). Files in the radio folder that Encore does not track are listed in the report and never touched. Album files Lidarr imported into the main library are out of scope.
+
+### Mounts
+
+- **Encore:** `/mnt/user/media/music:/library` read-write (your main music folder; the array). Encore runs as `99:100`, like the library. Set `ENCORE_LIBRARY_DIR=/library` and `ENCORE_LIBRARY_JELLYFIN_DIR` to the path Jellyfin uses for the same folder (`/media/music`). Encore also keeps a hidden `.encore-incoming` folder there for its staged copies.
+- **slskd:** `/mnt/user/music-radio:/music-radio:ro`, read-only, so slskd can share the radio folder back on Soulseek. Then change its share setting to list both folders, separated by a semicolon: `SLSKD_SHARED_DIR=/music;/music-radio/soulseek`. Use the environment variable, not `slskd.yml`: a one-item `shares.directories` there would likely replace `/music`. Only `soulseek/` is shared; the trash and staging folders are hidden and stay private. After the change slskd rescans and publishes your whole library, not only the radio files, so the share counts jump once. Encore never edits slskd's settings.
+- Set `ENCORE_SLSKD_RADIO_DIR` to the radio folder as slskd sees it (default `/music-radio`). If `/health` says `music-radio is not shared on Soulseek`, the share line above is missing or the folder is excluded; uploads are then not counted and the upload rule cannot fire.
+
+### Dry run and the report
+
+1. Set `ENCORE_RETENTION_MODE=dry_run`, mount `/library`, and restart. The first pass runs 10 minutes after start, then daily at `ENCORE_RETENTION_HOUR`. A dry run writes only Encore's own tables and logs: it never deletes, moves, edits a playlist or marks a favorite. (A favorite or a requested song is still recorded as kept, since keeping takes nothing away. Encore also asks slskd to rescan its shares and counts uploads, as it does live.)
+2. Read the result with `GET http://<encore>:5095/retention/report` (JSON) or `?format=text` (a plain list grouped by promote, keep, delete, skip and wait, with age, uploads, plays, the reason and the library path a move would use; then the untracked files and the playlists counted or skipped, with why). It answers only direct requests from your local network, never through a proxy. Or read the log: `retention.pass_done` (8110) is the summary and `retention.decision` (8120) is one line per song that is not waiting.
+3. `/health` shows `retention.signals.smartListsInstalled` and `smartListsRead`. If SmartLists is installed and `smartListsRead` stays false, deletes stay off until that is fixed.
+4. Let it run for about a week so songs reach their age, then check that the delete and promote lists are what you expect.
+
+### Going live, step by step
+
+1. Check `/health`: no `retention:` warnings, `retention.slskd.radioShared` true, `retention.lidarrGuard.ok` true (see below), and the report looks right.
+2. **One promotion first.** Set `ENCORE_RETENTION_MODE=live`, `ENCORE_RETENTION_MAX_PROMOTIONS=1` and `ENCORE_RETENTION_MAX_DELETES=0`, restart. After the pass (or the 10-minute pass after start) check in Jellyfin that the song is now in the main library with its favorite, play count and playlist places intact. Log `promote.done` (8520) and `promote.userdata` (8550) confirm it.
+3. Raise the caps, still with deletes at 0 if you want to see more moves first, then remove `ENCORE_RETENTION_MAX_PROMOTIONS` and `ENCORE_RETENTION_MAX_DELETES` to use the defaults (20 and 100 per pass). Watch the next pass's `retention.pass_done` and `/health` `retention`: `stalled` should stay 0.
+
+A promotion survives a restart: each step is saved, and the radio copy is removed only after a verified copy (size and SHA-256) exists in the library's staging folder. A song whose promotion fails 5 times is marked stalled (`promote.stalled`, 8540) and is not tried again automatically; the `/health` warning counts them.
+
+### Lidarr settings it relies on
+
+Lidarr's folder watcher finds a promoted file and imports it in place, adding the artist if Lidarr does not have it. Encore does not tell Lidarr anything, but with `ENCORE_LIDARR_URL` set it pauses promotions (`promote.paused`, 8590, and a `/health` warning) unless Lidarr is safe:
+
+- The root folder's **default monitor** and **default new item monitor** options must be `none`. Otherwise an auto-added artist would get every album monitored and Soularr would download them (`lidarr_defaults`).
+- **Write Audio Tags** must be `no` or `newFiles`. `allFiles` or `sync` would retag the promoted file before Jellyfin has seen it and break the carry-over of favorites and playlists (`lidarr_tags`).
+- If Lidarr's settings cannot be read the promotion pauses too (`lidarr_unreadable`). Before a file is placed, Encore waits up to 10 minutes while Lidarr runs an import, rescan, rename or retag.
+- Without a Lidarr URL these checks are skipped.
+
+Promotions also pause when the library has under 20 GB free (`disk_low`) or `/library` cannot be written (`library_not_writable`).
+
+### Rollback
+
+To switch retention off, set `ENCORE_RETENTION_MODE=off` and restart; the schema stays. Songs already moved stay in the main library, and songs in the trash can be moved back by hand within 7 days. To go back to v0.3.6 itself, stop Encore, restore `encore.db.v4.bak` (made on the first v0.4 start) over `encore.db`, and run the v0.3.6 tag. Retention history since the upgrade is lost, and a song Encore had already moved is simply a library file to v0.3.6.
+
 ## Health
 
 `GET /health` returns JSON. It shows the same kind of data as the startup summary, and it never shows either key.
 
 - `status`: `starting` for the first 30 seconds; `ok` when the socket is subscribed (or polling works), every allow-list name resolved and the store is open; `degraded` otherwise; `stopped` (HTTP 503) when the main loop has not run for 60 seconds. Fetch problems never change the status while owned radio works; they appear under `warnings`.
-- `warnings`: a list of strings, empty in mode `off`. Possible entries: `slskd: unreachable`, `slskd: key rejected`, `slskd: not logged in`, `music-radio is not in a Jellyfin music library`, `music-radio not scanned by Jellyfin yet (run Scan All Libraries)`, `music-radio free space below 20 GB`, `owned index not loaded` (5 minutes after start), `slskd copies left behind: N`, `deezer: failing` (a Deezer error in the last 10 minutes). With requests on: `lidarr: unreachable`, `lidarr: key rejected`, `requests: N album(s) in Lidarr but not in Jellyfin` (requested albums that Lidarr has had for over 2 hours but Jellyfin does not list yet), `requests: song fetching is off`. Request problems never change the status.
+- `warnings`: a list of strings, empty in mode `off`. Possible entries: `slskd: unreachable`, `slskd: key rejected`, `slskd: not logged in`, `music-radio is not in a Jellyfin music library`, `music-radio not scanned by Jellyfin yet (run Scan All Libraries)`, `music-radio free space below 20 GB`, `owned index not loaded` (5 minutes after start), `slskd copies left behind: N`, `deezer: failing` (a Deezer error in the last 10 minutes). With requests on: `lidarr: unreachable`, `lidarr: key rejected`, `requests: N album(s) in Lidarr but not in Jellyfin` (requested albums that Lidarr has had for over 2 hours but Jellyfin does not list yet), `requests: song fetching is off`. Request problems never change the status. With retention on: `retention: promotion paused (<reason>)`, `retention: N promotions stalled`, `retention: music-radio is not shared on Soulseek` (5 minutes after start), `retention: slskd events unreadable`, `retention: library dir not writable`, `retention: SmartLists list unreadable, deletes skipped`. Retention problems never change the status.
 - `slskd`: `configured`, the URL (no credentials), `reachable`, `loggedIn`, `lastOkUtc`, `lastError`, `searchesInWindow` and `searchLimit` (the budget).
 - `fetch`: `mode`, `available` and `unavailableReason` (`off`, `not_configured`, `slskd_unreachable`, `slskd_key_rejected`, `not_logged_in`, `radio_dir_not_in_library`, `disk_low`, `hourly_cap`, `index_not_ready`), `ownedIndex` (`loaded`, `items`, `refreshedUtc`), job counters since start (`queued`, `inFlight`, `ingesting`, `ready`, `failed`, `cancelled`, `wouldDownload`), `passedOver` and `skipped` (picks passed over or skipped at hand-out), `lastHour` against `hourlyCap`, `radioDirInLibrary` and `radioLibrary`, `freeBytes`, `sourceLeftBehind`, `lastReadyUtc` and `lastError`.
 - `dryRun`: whether the service only logs.
@@ -236,6 +304,7 @@ Rollback is `ENCORE_FETCH_MODE=off` (or the previous image tag; the database kee
 - `triggers` and `playLast`: counters since start (fires, sent, dry runs, no picks, failures, songs sent, songs never seen in the queue).
 - `store`: whether the database is working and its schema version.
 - `requests`: with `ENCORE_REQUESTS=off` only `{"enabled": false}`. With requests on: `enabled`; `songs` and `albums` (`available`, or the reason: `fetch_off`, `fetch_unavailable:<reason>`, `lidarr_unreachable`, `lidarr_key_rejected`, `lidarr_not_configured`); `active` (requests now `queued`, `searching`, `downloading`, `importing`, `upcoming`); `auth` (`blockedIps`, `lockedNames`, `failedLoginsLastHour`: counts only, never names or addresses); `today` (`created`, `ready`, `failed` in the last 24 hours); `lidarr` (`configured`, `reachable`, `version`, `lastOkUtc`, `lastError`); `notify` (`sent`, `failed` since start). It never shows a key or a token.
+- `retention`: always present; with `ENCORE_RETENTION_MODE=off` only `{"mode": "off"}`. Otherwise `mode`, `lastPassUtc` and `nextPassUtc`, `tracked` (songs in the latest pass), `decisions` (`promote`, `keep`, `delete`, `wait`, `untracked` in the latest pass), `keptBy` (`requested`, `favorite`, `playlist`, `plays`), `promoted` and `deleted` (all time), `promoting`, `stalled`, `inTrash` (files), `signals` (`users`, `playlistsCounted`, `playlistsSkipped`, `smartListsInstalled`, `smartListsRead`), `slskd` (`radioShared`, `uploadsCounted` since start, `lastEventsReadUtc`, `lastRescanUtc`, `rescanPending`), `lidarrGuard` (`checked`, `ok`, `reason`) and `libraryFreeBytes` (both from the last live promotion check). Counts and times only.
 
 The image's HEALTHCHECK runs `--healthcheck`, which calls `/health` and fails on anything but a 2xx.
 
@@ -282,6 +351,11 @@ JSON lines on stdout. Set `LOG_LEVEL` to see more. The events an operator looks 
 | `lidarr.artist_other_wanted` | Warning | Switching an artist on also made N other albums wanted (9370) |
 | `request.search_no_albums` | Information | A search where Lidarr returned no albums (9111; counts only, no search text) |
 | `notify.sent`, `notify.failed` | Info, Warning | A "Ready" or "Could not get" message went to the requester, or could not be delivered (9400, 9410) |
+| `retention.pass_started`, `retention.pass_done`, `retention.decision`, `retention.kept`, `retention.untracked` | Info, Warning | A retention pass began and ended with counts (8100, 8110), one line per decided song (8120), a song kept for good (8130), a file Encore does not track (8140, Warning) |
+| `signals.read`, `signals.failed`, `plays.counted` | Info, Warning | Favorites and playlists were read (8200); a read failed and the pass deletes nothing (8210); a play you started was counted (8220) |
+| `uploads.read`, `uploads.failed`, `shares.rescan`, `shares.state`, `uploads.active_skip` | Info, Warning | Soulseek uploads counted (8300, 8310), a share rescan asked for (8320), the radio share found or lost (8340), a delete or move put off because a peer is downloading the file (8350) |
+| `delete.done`, `delete.failed`, `delete.skipped`, `trash.purged` | Info, Warning | A song went to the trash (8400, 8410), was skipped with the reason (8420), old trash was purged (8430) |
+| `promote.step`, `promote.done`, `promote.failed`, `promote.stalled`, `promote.paused`, `promote.duplicate_in_library`, `promote.userdata`, `playlist.readded`, `playlist.readd_failed` | Info, Warning | A move into the main library: each step, done, failed attempt, stalled after 5 attempts, paused with a reason (8500-8590); a name clash in the library stops that move (8580) |
 
 `trigger.skipped` reasons: `not_allowed`, `not_audio` (a video or episode), `no_remote_control`, `repeat_on`, `unknown_client`, `stale_queue`, `no_history`, `not_last` (two or more songs still to come), `duplicate`, `rate_limited`, `run_cap`, `already_queued` (songs sent at the previous song have not shown up yet; the delivery check handles them), `queue_first` (debug), `single_waiting` (debug: a song played on its own that is paused or has more than 90 s left). `trigger.fired` rules: `near_end`, `last_song`, `resend`, `single`.
 
@@ -319,4 +393,4 @@ JSON lines on stdout. Set `LOG_LEVEL` to see more. The events an operator looks 
 
 ## Upgrading and rollback
 
-Pin a version tag. The database schema version is stored in the file itself (`PRAGMA user_version`; v0.1 uses schema 1, v0.2 schema 2, v0.3 schema 3, and v0.3 builds with request page tokens schema 4). The first start of a schema-4 build adds the empty `page_tokens` table and first copies the file to `encore.db.v3.bak`; to go back to an earlier v0.3 tag, stop Encore, restore that copy over `encore.db` and run the old tag (it exits with code 3 on a schema 4 file); requests and radio history since the upgrade are lost, and everyone signs in to the request page again. The first v0.3 start migrates a v0.2 file the same way and first copies it to `encore.db.v2.bak`. This happens even with `ENCORE_REQUESTS=off`. To go back to v0.2.x, stop Encore, restore `encore.db.v2.bak` over `encore.db` and run the old tag (v0.2 exits with code 3 on a schema 3 file); requests and radio history since the upgrade are lost. The copy is made only when none exists, so delete an old `encore.db.v2.bak` from a test run before the first v0.3 start. The first v0.2 start migrates a v0.1 file and first copies it to `encore.db.v1.bak`; to go back to v0.1.x, stop Encore, restore that copy over `encore.db` and run the old tag (v0.1 exits with code 3 on a schema 2 file). To roll back, run the previous tag. A database from a newer build makes the older build exit with code 3, so back up `encore.db` before an upgrade.
+Pin a version tag. v0.4 uses schema 5. The first v0.4 start adds the retention columns and tables and first copies the file to `encore.db.v4.bak` (only when none exists), even with `ENCORE_RETENTION_MODE=off`. To go back to v0.3.6, stop Encore, restore `encore.db.v4.bak` over `encore.db` and run the v0.3.6 tag (it exits with code 3 on a schema 5 file); retention history, upload counts and request or radio history since the upgrade are lost. Delete a stale `encore.db.v4.bak` from a test run before the first real v0.4 start. The database schema version is stored in the file itself (`PRAGMA user_version`; v0.1 uses schema 1, v0.2 schema 2, v0.3 schema 3, and v0.3 builds with request page tokens schema 4). The first start of a schema-4 build adds the empty `page_tokens` table and first copies the file to `encore.db.v3.bak`; to go back to an earlier v0.3 tag, stop Encore, restore that copy over `encore.db` and run the old tag (it exits with code 3 on a schema 4 file); requests and radio history since the upgrade are lost, and everyone signs in to the request page again. The first v0.3 start migrates a v0.2 file the same way and first copies it to `encore.db.v2.bak`. This happens even with `ENCORE_REQUESTS=off`. To go back to v0.2.x, stop Encore, restore `encore.db.v2.bak` over `encore.db` and run the old tag (v0.2 exits with code 3 on a schema 3 file); requests and radio history since the upgrade are lost. The copy is made only when none exists, so delete an old `encore.db.v2.bak` from a test run before the first v0.3 start. The first v0.2 start migrates a v0.1 file and first copies it to `encore.db.v1.bak`; to go back to v0.1.x, stop Encore, restore that copy over `encore.db` and run the old tag (v0.1 exits with code 3 on a schema 2 file). To roll back, run the previous tag. A database from a newer build makes the older build exit with code 3, so back up `encore.db` before an upgrade.

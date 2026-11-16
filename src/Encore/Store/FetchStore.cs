@@ -318,6 +318,18 @@ public sealed class FetchStore : IDisposable
         }
     }
 
+    /// <summary>How many rows are in <paramref name="state"/> (for /health).</summary>
+    public int CountState(string state)
+    {
+        lock (_gate)
+        {
+            using var cmd = _db.CreateCommand();
+            cmd.CommandText = "SELECT COUNT(*) FROM fetched_files WHERE state = $state";
+            cmd.Parameters.AddWithValue("$state", state);
+            return Convert.ToInt32(cmd.ExecuteScalar(), CultureInfo.InvariantCulture);
+        }
+    }
+
     /// <summary>How many downloads were requested at or after <paramref name="since"/> (any state; the hourly cap window).</summary>
     public int CountFetchesSince(DateTimeOffset since)
     {

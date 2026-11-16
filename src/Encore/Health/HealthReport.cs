@@ -22,7 +22,8 @@ public sealed record HealthReport(
     IReadOnlyList<string> Warnings,
     HealthSlskd Slskd,
     HealthFetch Fetch,
-    HealthRequests? Requests = null);
+    HealthRequests? Requests = null,
+    HealthRetention? Retention = null);
 
 public sealed record HealthJellyfin(string Url, DateTimeOffset? LastOkUtc, string? LastError);
 
@@ -101,7 +102,8 @@ public sealed record HealthInput(
     string StorePath,
     int StoreSchemaVersion,
     FetchHealthInput? Fetch = null,
-    RequestsHealthInput? Requests = null);
+    RequestsHealthInput? Requests = null,
+    RetentionHealthInput? Retention = null);
 
 public static class HealthEvaluator
 {
@@ -155,7 +157,8 @@ public static class HealthEvaluator
             Warnings: warnings,
             Slskd: SlskdSection(input),
             Fetch: FetchSection(input),
-            Requests: RequestsSection(input));
+            Requests: RequestsSection(input),
+            Retention: HealthRetentionEvaluator.Section(input));
 
         return (stale ? 503 : 200, report);
     }
@@ -174,6 +177,7 @@ public static class HealthEvaluator
     {
         var warnings = FetchWarnings(input);
         warnings.AddRange(RequestWarnings(input));
+        warnings.AddRange(HealthRetentionEvaluator.Warnings(input));
         return warnings;
     }
 

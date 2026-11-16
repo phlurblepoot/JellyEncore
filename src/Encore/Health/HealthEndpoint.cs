@@ -3,12 +3,14 @@ using Encore.Discovery;
 using Encore.Fetch;
 using Encore.Lidarr;
 using Encore.Orchestration;
+using Encore.Retention;
 using Encore.Requests.Albums;
 using Encore.Requests.Auth;
 using Encore.Requests.Notify;
 using Encore.Requests.Songs;
 using Encore.Slskd;
 using Encore.Store;
+using Microsoft.Data.Sqlite;
 using Encore.Watch;
 
 namespace Encore.Health;
@@ -36,12 +38,81 @@ public static class HealthEndpoint
                 store.Path,
                 store.SchemaVersionOnDisk,
                 FetchInput(services),
-                RequestsInput(options, services, time.GetUtcNow())));
+                RequestsInput(options, services, time.GetUtcNow()),
+                RetentionInput(options, services, time.GetUtcNow(), orchestrator)));
             return Results.Json(report, statusCode: code);
         });
     }
 
-    /// <summary>Null with ENCORE_REQUESTS=off, where none of the request services exist.</summary>
+    /// <summary>Null with ENCORE_RETENTION_MODE=off, where none of the retention services exist.</summary>
+    private static RetentionHealthInput? RetentionInput(EncoreOptions options, IServiceProvider services, DateTimeOffset now, Orchestrator orchestrator)
+    {
+        if (options.RetentionMode == RetentionMode.Off)
+        {
+            return null;
+        }
+
+        var fetch = services.GetService<FetchStore>();
+        var store = services.GetService<RetentionStore>();
+        var pass = services.GetService<RetentionPass>();
+        var promoter = services.GetService<Promoter>();
+        var keeper = services.GetService<SharesKeeper>();
+        var events = services.GetService<SlskdEvents>();
+        if (fetch is null || store is null || pass is null)
+        {
+            return null;
+        }
+
+        var latest = pass.Latest;
+        var next = latest is null
+            ? orchestrator.Status.StartedUtc + new RetentionTiming().StartupDelay
+            : now + RetentionWorker.DelayUntilNext(now, options.RetentionHour, TimeZoneInfo.Local);
+        var active = Safe(() => store.ActivePromotions(), []);
+        return new RetentionHealthInput(
+            options.RetentionMode,
+            latest,
+            next,
+            Safe(() => fetch.CountState(FetchState.Promoted), 0),
+            Safe(() => fetch.CountState(FetchState.Deleted), 0),
+            active.Count(p => !p.Stalled),
+            active.Count(p => p.Stalled),
+            TrashCount(options.RadioDir),
+            keeper?.RadioShared ?? false,
+            events?.UploadsCounted ?? 0,
+            events?.Unreadable ?? false,
+            events?.LastReadUtc,
+            keeper is null ? null : Safe(() => keeper.LastRescanUtc, null),
+            keeper?.Dirty ?? false,
+            promoter?.LastGuard);
+    }
+
+    private static T Safe<T>(Func<T> read, T fallback)
+    {
+        try
+        {
+            return read();
+        }
+        catch (Exception e) when (e is SqliteException or StoreException)
+        {
+            return fallback;
+        }
+    }
+
+    /// <summary>Files in the dated trash folders under the radio folder; 0 when there is none or it cannot be read.</summary>
+    private static int TrashCount(string radioDir)
+    {
+        try
+        {
+            var root = Path.Combine(Path.GetFullPath(radioDir), Deleter.TrashFolder);
+            return Directory.Exists(root) ? Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories).Count() : 0;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            return 0;
+        }
+    }
+
+/// <summary>Null with ENCORE_REQUESTS=off, where none of the request services exist.</summary>
     private static RequestsHealthInput? RequestsInput(EncoreOptions options, IServiceProvider services, DateTimeOffset now)
     {
         if (!options.RequestsEnabled)
