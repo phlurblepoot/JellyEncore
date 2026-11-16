@@ -179,11 +179,24 @@ internal sealed class PromoterJellyfin : IJellyfinClient, IRetentionJellyfin
 
     public Task<SmartListsInfo> GetSmartListsAsync(CancellationToken ct = default) => Task.FromResult(SmartListsInfo.NotInstalled);
 
-    public Task<IReadOnlyList<BaseItemDto>> GetFavoriteAudioAsync(Guid userId, Guid? parentId = null, CancellationToken ct = default) => throw new NotSupportedException();
+    /// <summary>Each user's favorite song ids (read by the retention signals; the end-to-end tests use it).</summary>
+    public Dictionary<Guid, List<Guid>> Favorites { get; } = [];
 
-    public Task<IReadOnlyList<PlaylistRef>> GetPlaylistsAsync(Guid userId, CancellationToken ct = default) => throw new NotSupportedException();
+    /// <summary>What GET /Sessions returns (the deleter's now-playing check).</summary>
+    public List<SessionInfoDto> Sessions { get; } = [];
 
-    public Task<IReadOnlyList<SessionInfoDto>> GetSessionsAsync(CancellationToken ct = default) => throw new NotSupportedException();
+    /// <summary>Makes every favorites read fail (a failed signal read).</summary>
+    public bool FailFavorites { get; set; }
+
+    public Task<IReadOnlyList<BaseItemDto>> GetFavoriteAudioAsync(Guid userId, Guid? parentId = null, CancellationToken ct = default) =>
+        FailFavorites ? Task.FromException<IReadOnlyList<BaseItemDto>>(new JellyfinRequestException("GetFavorites", 500)) :
+        Task.FromResult<IReadOnlyList<BaseItemDto>>(Favorites.TryGetValue(userId, out var list) ? list.Select(id => new BaseItemDto { Id = id }).ToList() : []);
+
+    /// <summary>A user's playlists are the ones that user may edit.</summary>
+    public Task<IReadOnlyList<PlaylistRef>> GetPlaylistsAsync(Guid userId, CancellationToken ct = default) =>
+        Task.FromResult<IReadOnlyList<PlaylistRef>>(Editors.Where(e => e.Value.Contains(userId)).Select(e => new PlaylistRef(e.Key, "pl")).ToList());
+
+    public Task<IReadOnlyList<SessionInfoDto>> GetSessionsAsync(CancellationToken ct = default) => Task.FromResult<IReadOnlyList<SessionInfoDto>>(Sessions.ToList());
 
     public Task<QueryResult<BaseItemDto>> GetSimilarArtistsAsync(Guid artistId, Guid userId, int limit = 10, CancellationToken ct = default) => throw new NotSupportedException();
 
