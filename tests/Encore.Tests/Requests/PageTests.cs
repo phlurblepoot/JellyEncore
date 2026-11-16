@@ -15,8 +15,9 @@ public sealed class PageTests
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.StartsWith("text/html", response.Content.Headers.ContentType!.ToString());
         var html = await response.Content.ReadAsStringAsync();
-        Assert.Contains("request/app.js", html);
-        Assert.Contains("request/app.css", html);
+        Assert.Matches("src=\"request/app\\.js\\?v=[0-9a-f]{16}\"", html);
+        Assert.Matches("href=\"request/app\\.css\\?v=[0-9a-f]{16}\"", html);
+        Assert.DoesNotContain("{{", html);
         Assert.DoesNotContain("<script>", html);
         Assert.DoesNotContain("style=", html);
         Assert.Contains("nosniff", response.Headers.GetValues("X-Content-Type-Options"));
@@ -41,6 +42,41 @@ public sealed class PageTests
         Assert.True(response.Headers.Contains("Content-Security-Policy"));
         Assert.Equal("public, max-age=300", response.Headers.CacheControl!.ToString());
         Assert.True((await response.Content.ReadAsStringAsync()).Length > 500);
+    }
+
+    [Theory]
+    [InlineData("/request/app.js?v=abc123")]
+    [InlineData("/request/app.css?v=abc123")]
+    public async Task PG02b_The_assets_answer_the_same_with_a_version_query(string path)
+    {
+        using var rig = new ApiRig();
+        using var response = await rig.GetAsync(path);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.True((await response.Content.ReadAsStringAsync()).Length > 500);
+    }
+
+    [Fact]
+    public async Task PG02c_The_versions_in_the_page_are_the_hashes_of_the_served_assets()
+    {
+        using var rig = new ApiRig();
+        var html = await (await rig.GetAsync("/request")).Content.ReadAsStringAsync();
+        var js = await (await rig.GetAsync("/request/app.js")).Content.ReadAsByteArrayAsync();
+        var css = await (await rig.GetAsync("/request/app.css")).Content.ReadAsByteArrayAsync();
+        Assert.Contains("request/app.js?v=" + Encore.Requests.Page.RequestPage.ContentHash(js) + "\"", html);
+        Assert.Contains("request/app.css?v=" + Encore.Requests.Page.RequestPage.ContentHash(css) + "\"", html);
+    }
+
+    [Fact]
+    public void PG02d_The_hash_changes_when_the_content_changes()
+    {
+        var a = Encore.Requests.Page.RequestPage.ContentHash("one"u8.ToArray());
+        Assert.Equal(a, Encore.Requests.Page.RequestPage.ContentHash("one"u8.ToArray()));
+        Assert.NotEqual(a, Encore.Requests.Page.RequestPage.ContentHash("two"u8.ToArray()));
+        var html = "<a ?v={{js}}><b ?v={{css}}>"u8.ToArray();
+        var one = System.Text.Encoding.UTF8.GetString(Encore.Requests.Page.RequestPage.Version(html, "x"u8.ToArray(), "y"u8.ToArray()));
+        var two = System.Text.Encoding.UTF8.GetString(Encore.Requests.Page.RequestPage.Version(html, "x2"u8.ToArray(), "y"u8.ToArray()));
+        Assert.DoesNotContain("{{", one);
+        Assert.NotEqual(one, two);
     }
 
     [Fact]
