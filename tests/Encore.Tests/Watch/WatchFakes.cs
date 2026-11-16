@@ -129,6 +129,8 @@ internal sealed class FakeJellyfinClient : IJellyfinClient
     public Task<QueryResult<BaseItemDto>> GetInstantMixAsync(Guid songId, Guid userId, int limit = 50, CancellationToken ct = default) => throw new NotSupportedException();
 
     public Task PlayLastAsync(string sessionId, IReadOnlyCollection<Guid> itemIds, CancellationToken ct = default) => throw new NotSupportedException();
+
+    public Task SendMessageAsync(string sessionId, string header, string text, int timeoutMs, CancellationToken ct = default) => throw new NotSupportedException();
 }
 
 internal sealed record LogEntry(LogLevel Level, EventId EventId, string Message, IReadOnlyDictionary<string, object?> Fields);

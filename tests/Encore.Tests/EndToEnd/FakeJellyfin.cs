@@ -22,7 +22,23 @@ internal sealed class FakeJellyfin : IJellyfinClient
 
     public FakePickClient Picks { get; } = new();
 
-    public Task<IReadOnlyList<SessionInfoDto>> GetSessionsAsync(CancellationToken ct = default) => throw new NotSupportedException();
+    /// <summary>What GET /Sessions returns (empty unless a test sets it).</summary>
+    public List<SessionInfoDto> Sessions { get; set; } = [];
+
+    /// <summary>Every SendMessage call, including the ones that failed.</summary>
+    public ConcurrentQueue<(string SessionId, string Header, string Text, int TimeoutMs)> Messages { get; } = new();
+
+    /// <summary>Failures the next SendMessage calls throw, one each, in order.</summary>
+    public ConcurrentQueue<Exception> MessageFailures { get; } = new();
+
+    public Task<IReadOnlyList<SessionInfoDto>> GetSessionsAsync(CancellationToken ct = default) =>
+        Task.FromResult<IReadOnlyList<SessionInfoDto>>(Sessions.ToList());
+
+    public Task SendMessageAsync(string sessionId, string header, string text, int timeoutMs, CancellationToken ct = default)
+    {
+        Messages.Enqueue((sessionId, header, text, timeoutMs));
+        return MessageFailures.TryDequeue(out var failure) ? throw failure : Task.CompletedTask;
+    }
 
     public Task<IReadOnlyList<UserDto>> GetUsersAsync(CancellationToken ct = default) =>
         Task.FromResult<IReadOnlyList<UserDto>>(Users.ToList());

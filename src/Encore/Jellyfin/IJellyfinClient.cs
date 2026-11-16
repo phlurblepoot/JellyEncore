@@ -59,4 +59,10 @@ public interface IJellyfinClient
 
     /// <summary>POST /Sessions/{sessionId}/Playing with playCommand=PlayLast and itemIds. Expects 204.</summary>
     Task PlayLastAsync(string sessionId, IReadOnlyCollection<Guid> itemIds, CancellationToken ct = default);
+
+    /// <summary>
+    /// POST /Sessions/{sessionId}/Message with {"Header","Text","TimeoutMs"}, expects 204. Shows a message on that session's client.
+    /// Never retried here: the caller decides (the request notifier retries once on a 5xx).
+    /// </summary>
+    Task SendMessageAsync(string sessionId, string header, string text, int timeoutMs, CancellationToken ct = default);
 }

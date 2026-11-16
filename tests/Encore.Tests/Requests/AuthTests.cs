@@ -128,6 +128,8 @@ internal sealed class UsersClient : IJellyfinClient
     public Task<IReadOnlyList<BaseItemDto>> GetRecentAudioAsync(Guid parentId, int limit, CancellationToken ct = default) => throw new NotSupportedException();
 
     public Task PlayLastAsync(string sessionId, IReadOnlyCollection<Guid> itemIds, CancellationToken ct = default) => throw new NotSupportedException();
+
+    public Task SendMessageAsync(string sessionId, string header, string text, int timeoutMs, CancellationToken ct = default) => throw new NotSupportedException();
 }
 
 public sealed class AuthTests

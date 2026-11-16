@@ -29,6 +29,8 @@ internal sealed class FakePickClient : IJellyfinClient
 
     public Task PlayLastAsync(string sessionId, IReadOnlyCollection<Guid> itemIds, CancellationToken ct = default) => throw new NotSupportedException();
 
+    public Task SendMessageAsync(string sessionId, string header, string text, int timeoutMs, CancellationToken ct = default) => throw new NotSupportedException();
+
     public Task<QueryResult<BaseItemDto>> GetSimilarArtistsAsync(Guid artistId, Guid userId, int limit = 10, CancellationToken ct = default) =>
         Answer("similar_artists", SimilarArtists.GetValueOrDefault(artistId), limit);
 

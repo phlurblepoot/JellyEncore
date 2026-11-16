@@ -42,4 +42,12 @@ public static partial class RequestLog
     [LoggerMessage(EventId = 9490, EventName = "request.worker_error", Level = LogLevel.Error,
         Message = "The request worker failed at {Stage}: {Error}")]
     public static partial void WorkerError(this ILogger logger, string stage, string error);
+
+    [LoggerMessage(EventId = 9400, EventName = "notify.sent", Level = LogLevel.Information,
+        Message = "Request {RequestId}: told {Sessions} session(s) it is {Status}")]
+    public static partial void NotifySent(this ILogger logger, string requestId, int sessions, string status);
+
+    [LoggerMessage(EventId = 9410, EventName = "notify.failed", Level = LogLevel.Warning,
+        Message = "Request {RequestId}: could not message session {SessionId} ({Status}): {Error}")]
+    public static partial void NotifyFailed(this ILogger logger, string requestId, string sessionId, string status, string error);
 }

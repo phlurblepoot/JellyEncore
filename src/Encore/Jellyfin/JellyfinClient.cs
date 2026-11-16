@@ -195,6 +195,18 @@ public sealed class JellyfinClient : IJellyfinClient
         using var response = await SendAsync(HttpMethod.Post, path, "PlayLast", maxRetries: 1, IsGatewayError, ct).ConfigureAwait(false);
     }
 
+    public async Task SendMessageAsync(string sessionId, string header, string text, int timeoutMs, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(text);
+        var body = JsonSerializer.Serialize(new { Header = header, Text = text, TimeoutMs = timeoutMs }, MediaUpdatedJson);
+
+        // No retries here: the notifier owns the one retry (a repeated message is only a second toast).
+        using var response = await SendAsync(
+            HttpMethod.Post, $"Sessions/{Uri.EscapeDataString(sessionId)}/Message", "SendMessage", maxRetries: 0, _ => false, ct,
+            () => new StringContent(body, System.Text.Encoding.UTF8, "application/json")).ConfigureAwait(false);
+    }
+
     private async Task<T> GetAsync<T>(string path, string operation, CancellationToken ct) where T : class
     {
         using var response = await SendAsync(HttpMethod.Get, path, operation, _options.RetryDelays.Count, IsServerError, ct).ConfigureAwait(false);

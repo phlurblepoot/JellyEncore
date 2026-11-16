@@ -81,8 +81,10 @@ public static class RequestsApi
             options, sp.GetRequiredService<UserAuth>(), sp.GetRequiredService<RequestUsers>(), sp.GetRequiredService<RequestStore>(),
             sp.GetRequiredService<JellyfinServerInfo>(), sp.GetRequiredService<SearchService>(), sp.GetRequiredService<TimeProvider>(), version));
 
-        // Song requests (T87). The notifier is a no-op until T88 registers the Jellyfin message one.
-        services.TryAddSingleton<IRequestNotifier>(NullRequestNotifier.Instance);
+        // Song requests (T87). The notifier tells the requester through a Jellyfin session message (T88).
+        services.TryAddSingleton<IRequestNotifier>(sp => new Encore.Requests.Notify.RequestNotifier(
+            sp.GetRequiredService<IJellyfinClient>(), sp.GetRequiredService<RequestStore>(),
+            sp.GetRequiredService<ILogger<Encore.Requests.Notify.RequestNotifier>>(), sp.GetRequiredService<TimeProvider>()));
         services.AddSingleton(sp => new RequestService(
             sp.GetRequiredService<RequestStore>(), sp.GetRequiredService<IFetchRequests>(), sp.GetService<IOwnedIndex>(),
             sp.GetRequiredService<IDeezerClient>(), sp.GetService<FetchStore>(), SongRequestSettings.From(options),
