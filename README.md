@@ -95,6 +95,16 @@ Install it with the JavaScript Injector plugin (the plugin that adds custom Java
 3. Reload Jellyfin Web (a hard refresh, Ctrl+F5) on every device that should get radio.
 4. Check in the browser's developer tools (Network, WS) that the `/socket?ApiKey=...` connection stays open, or look for `queue.confirmed` in Encore's logs after a radio fire.
 
+## Requests from the Jellyfin web search (v0.3)
+
+`contrib/jellyfin-request-search.js` adds a "Not in library? Request" section at the bottom of the Jellyfin Web search page when `ENCORE_REQUESTS=on`. It lists songs and albums Encore found that the library does not have, with a Request button or the request's status.
+
+1. In the JavaScript Injector plugin, import `contrib/jellyfin-request-search.import.json` (or add a script and paste the whole `.js` file), then press Save.
+2. Set the two settings at the top of the script: `ENCORE_URL_HTTP` (Encore's http address) and `ENCORE_URL_HTTPS` (leave empty until Encore is reachable over https). On an https Jellyfin page with no https address, the section is only a link to Encore's request page.
+3. Hard-refresh Jellyfin Web (Ctrl+F5).
+
+The script sends the Jellyfin token only when Jellyfin Web talks to the same address the page came from. Its tests run with `node --test tests/js`.
+
 ## Going live
 
 1. Start with `ENCORE_DRY_RUN=true` (the default).
