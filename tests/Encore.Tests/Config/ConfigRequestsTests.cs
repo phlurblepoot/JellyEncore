@@ -329,6 +329,24 @@ public sealed class ConfigRequestsTests : IDisposable
         Assert.Empty(EncoreOptionsLoader.Load(env).Warnings);
     }
 
+    [Fact]
+    public void RQ17_https_public_url_without_trusted_proxies_warns()
+    {
+        var env = Full();
+        env.Remove("ENCORE_TRUSTED_PROXIES");
+        var result = EncoreOptionsLoader.Load(env);
+        Assert.True(result.IsValid);
+        Assert.Equal("ENCORE_TRUSTED_PROXIES", Assert.Single(result.Warnings).Variable);
+
+        Assert.Empty(EncoreOptionsLoader.Load(Full()).Warnings);
+
+        var lan = Full();
+        lan.Remove("ENCORE_TRUSTED_PROXIES");
+        lan.Remove("ENCORE_PATH_BASE");
+        lan["ENCORE_PUBLIC_URL"] = "http://192.168.86.50:5095";
+        Assert.Empty(EncoreOptionsLoader.Load(lan).Warnings);
+    }
+
     private Dictionary<string, string?> Full()
     {
         var env = With("ENCORE_REQUESTS", "on");

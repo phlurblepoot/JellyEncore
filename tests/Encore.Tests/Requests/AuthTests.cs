@@ -652,6 +652,27 @@ public sealed class AuthTests
         Assert.False(rig.Guard.CheckLogin(v4.MapToIPv6(), "other").Allowed);
     }
 
+    [Fact]
+    public void BF07_ipv6_addresses_count_per_64_network()
+    {
+        var rig = new Rig();
+        for (var i = 1; i <= 5; i++)
+        {
+            // Five addresses of one /64: one client stepping through its own network.
+            var ip = IPAddress.Parse("2001:db8:1:2::" + i.ToString("x", System.Globalization.CultureInfo.InvariantCulture));
+            Assert.True(rig.Guard.CheckLogin(ip, "n" + i).Allowed);
+            rig.Guard.RecordLoginFailure(ip, "n" + i);
+        }
+
+        Assert.False(rig.Guard.CheckLogin(IPAddress.Parse("2001:db8:1:2:ffff::9"), "other").Allowed);
+        Assert.True(rig.Guard.CheckLogin(IPAddress.Parse("2001:db8:1:3::1"), "other").Allowed);
+
+        Assert.Equal("2001:db8:1:2::/64", LoginGuard.Key(IPAddress.Parse("2001:db8:1:2:aaaa:bbbb:cccc:dddd")));
+        Assert.Equal("192.168.1.9", LoginGuard.Key(IPAddress.Parse("192.168.1.9").MapToIPv6()));
+        Assert.Equal("::1", LoginGuard.Key(IPAddress.IPv6Loopback));
+        Assert.Equal("unknown", LoginGuard.Key(null));
+    }
+
     // ---- Jellyfin lockout policy ------------------------------------------------------------------------------
 
     [Fact]

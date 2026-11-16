@@ -625,6 +625,23 @@ public sealed class ApiHostTests
     }
 
     [Fact]
+    public async Task AH13b_a_body_that_is_not_sent_as_json_is_a_400_and_never_reaches_jellyfin()
+    {
+        // A text/plain POST needs no CORS preflight, so another site could make its visitors' browsers try passwords.
+        using var rig = new ApiRig();
+        var body = "{\"username\":\"kim\",\"password\":\"" + ApiRig.Password + "\",\"deviceId\":\"" + ApiRig.DeviceId + "\"}";
+        using var plain = await rig.SendAsync(HttpMethod.Post, "/api/v1/auth/login", json: body,
+            tweak: r => r.Content!.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("text/plain"));
+        Assert.Equal(HttpStatusCode.BadRequest, plain.StatusCode);
+        Assert.Equal("bad_request", (await ApiRig.JsonOf(plain)).GetProperty("error").GetString());
+        Assert.Equal(0, rig.Jellyfin.CountOf("POST /Users/AuthenticateByName"));
+
+        using var json = await rig.SendAsync(HttpMethod.Post, "/api/v1/auth/login", json: body,
+            tweak: r => r.Content!.Headers.ContentType = System.Net.Http.Headers.MediaTypeHeaderValue.Parse("Application/JSON; charset=utf-8"));
+        Assert.Equal(HttpStatusCode.OK, json.StatusCode);
+    }
+
+    [Fact]
     public async Task AH14_a_bad_device_id_is_a_400_and_a_down_jellyfin_a_503()
     {
         using var rig = new ApiRig();

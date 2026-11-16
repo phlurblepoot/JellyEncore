@@ -181,6 +181,14 @@ public static class EncoreOptionsLoader
                 "ENCORE_REQUESTS=on but ENCORE_FETCH_MODE=off: song requests answer 503 songs_unavailable; only album requests (Lidarr) work"));
         }
 
+        if (requestsEnabled && publicUrl is { Scheme: "https" } && proxies.Count == 0)
+        {
+            // Published over https means a proxy in front. Without the proxy listed, /health is reachable through it and
+            // every visitor shares the proxy's address in the sign-in limits.
+            warnings.Add(new("ENCORE_TRUSTED_PROXIES",
+                "ENCORE_PUBLIC_URL is https but ENCORE_TRUSTED_PROXIES is empty: list the proxy (and Cloudflare's ranges), or /health is reachable through it and all visitors share one sign-in limit"));
+        }
+
         if (errors.Count > 0)
         {
             return new ConfigResult(null, errors, warnings);

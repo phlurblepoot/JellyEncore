@@ -28,7 +28,8 @@ public static class GuardScopes
 /// max(1, limit - 1) failures in 24 h lock it for 24 h. Global: 30 login attempts per minute. Quick Connect start:
 /// 10 per IP per 15 min. Failed token checks: 30 per IP per 5 min block that IP on every /api/v1 route for 15 min.
 /// A successful login clears that IP's and that name's failure counts. Logs 9030 once per block.
-/// The IP is the client IP the middleware worked out (design 3.6); this class never reads headers.
+/// The IP is the client IP the middleware worked out (design 3.6); this class never reads headers. An IPv6 client is
+/// counted by its /64 network (<see cref="Key"/>).
 /// </summary>
 public sealed class LoginGuard
 {
@@ -113,6 +114,11 @@ public sealed class LoginGuard
             if (starts.Count >= RequestLimits.QuickConnectStartsPerIp)
             {
                 var until = starts.Peek() + RequestLimits.QuickConnectIpWindow;
+                if (_quickConnectLogged.Count > PruneAbove)
+                {
+                    _quickConnectLogged.Clear();
+                }
+
                 if (_quickConnectLogged.Add(ipKey))
                 {
                     _logger.LoginLimited(GuardScopes.Ip, ipKey, string.Empty, until);
@@ -175,6 +181,8 @@ public sealed class LoginGuard
 
             Prune(_ipFails, RequestLimits.LoginIpWindow, now);
             Prune(_nameFails, RequestLimits.LoginNameLockWindow, now);
+            PruneBlocks(_ipBlocked, now);
+            PruneBlocks(_nameLocked, now);
         }
     }
 
@@ -210,6 +218,7 @@ public sealed class LoginGuard
             }
 
             Prune(_tokenFails, RequestLimits.TokenFailureWindow, now);
+            PruneBlocks(_tokenBlocked, now);
         }
     }
 
@@ -317,13 +326,44 @@ public sealed class LoginGuard
         }
     }
 
-    private static string Key(IPAddress? ip)
+    /// <summary>Drops blocks and locks that have run out, once the map is large (attacker-chosen keys).</summary>
+    private static void PruneBlocks(Dictionary<string, DateTimeOffset> map, DateTimeOffset now)
+    {
+        if (map.Count <= PruneAbove)
+        {
+            return;
+        }
+
+        foreach (var key in map.Where(p => p.Value <= now).Select(p => p.Key).ToList())
+        {
+            map.Remove(key);
+        }
+    }
+
+    /// <summary>
+    /// The guard's key for a client: the IPv4 address (a mapped one unmapped), or the /64 network of an IPv6 address.
+    /// One home or phone gets a whole /64 and can pick any address in it, so counting single IPv6 addresses would let one
+    /// client step around the per-IP limits.
+    /// </summary>
+    public static string Key(IPAddress? ip)
     {
         if (ip is null)
         {
             return "unknown";
         }
 
-        return (ip.IsIPv4MappedToIPv6 ? ip.MapToIPv4() : ip).ToString();
+        if (ip.IsIPv4MappedToIPv6)
+        {
+            return ip.MapToIPv4().ToString();
+        }
+
+        if (ip.AddressFamily != System.Net.Sockets.AddressFamily.InterNetworkV6 || IPAddress.IsLoopback(ip))
+        {
+            return ip.ToString();
+        }
+
+        var bytes = ip.GetAddressBytes();
+        Array.Clear(bytes, 8, 8);
+        return new IPAddress(bytes) + "/64";
     }
 }

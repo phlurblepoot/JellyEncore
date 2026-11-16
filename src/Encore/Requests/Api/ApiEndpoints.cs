@@ -225,13 +225,15 @@ public sealed class ApiEndpoints
     };
 
     /// <summary>
-    /// Reads a small JSON body. Null when it is missing, too big, not JSON or not an object: the caller answers 400.
+    /// Reads a small JSON body. Null when it is missing, too big, not sent as <c>application/json</c>, not JSON or not an
+    /// object: the caller answers 400. The content type rule makes every cross-origin POST a CORS preflight, so a page
+    /// on another site cannot use its visitors' browsers to try passwords (a text/plain form post needs no preflight).
     /// The body is never logged (it can hold a password).
     /// </summary>
     internal static async Task<T?> ReadBodyAsync<T>(HttpContext context) where T : class
     {
         var request = context.Request;
-        if (request.ContentLength is > RequestLimits.ApiBodyMaxBytes)
+        if (request.ContentLength is > RequestLimits.ApiBodyMaxBytes || !IsJson(request.ContentType))
         {
             return null;
         }
@@ -263,4 +265,9 @@ public sealed class ApiEndpoints
             return null;
         }
     }
+
+    /// <summary>Is the Content-Type <c>application/json</c> (any parameters, any case)?</summary>
+    internal static bool IsJson(string? contentType) =>
+        Microsoft.Net.Http.Headers.MediaTypeHeaderValue.TryParse(contentType, out var media)
+        && string.Equals(media.MediaType.Value, "application/json", StringComparison.OrdinalIgnoreCase);
 }
