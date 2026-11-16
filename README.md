@@ -124,7 +124,7 @@ Off unless `ENCORE_REQUESTS=on`. When on, Encore also serves a small request pag
 | `ENCORE_PUBLIC_URL` | Encore as browsers reach it, for example `http://192.168.86.50:5095`, later the https address. Absolute http(s) URL; its path must equal `ENCORE_PATH_BASE` | - |
 | `ENCORE_PATH_BASE` | Optional `/segment` when Encore is published under a path. No trailing `/` | empty |
 | `ENCORE_TRUSTED_PROXIES` | Comma-separated IPs or CIDR ranges of the proxies whose `X-Forwarded-*` headers are believed (at most 64). Empty: those headers are ignored | empty |
-| `ENCORE_JELLYFIN_PUBLIC_URL` | Jellyfin as browsers reach it, for the "Open in Jellyfin" links | - |
+| `ENCORE_JELLYFIN_PUBLIC_URL` | Jellyfin as browsers reach it, for the "Open in <server name>" links on the request page; set it to the public Jellyfin address when Encore is published | - |
 | `ENCORE_LIDARR_URL` | Lidarr base URL, for example `http://lidarr:8686`. Unset: album requests are off | - |
 | `ENCORE_LIDARR_API_KEY` | Lidarr API key, required with the URL (20-64 letters and digits). Never logged or shown | - |
 | `ENCORE_LIDARR_ROOT_FOLDER` | The Lidarr root folder new artists go in. Only needed when Lidarr has more than one | the only root folder |

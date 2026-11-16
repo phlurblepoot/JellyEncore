@@ -72,6 +72,17 @@ test('the Open in Jellyfin details link, with and without serverId', () => {
   assert.equal(h.detailsLink('http://jf.test', null, 'srv1'), null);
 });
 
+test('serverLabel: the server name, trimmed and capped, or Jellyfin', () => {
+  assert.equal(h.serverLabel('QBStream'), 'QBStream');
+  assert.equal(h.serverLabel('  QBStream  '), 'QBStream');
+  assert.equal(h.serverLabel(''), 'Jellyfin');
+  assert.equal(h.serverLabel('   '), 'Jellyfin');
+  assert.equal(h.serverLabel(null), 'Jellyfin');
+  assert.equal(h.serverLabel(undefined), 'Jellyfin');
+  assert.equal(h.serverLabel('x'.repeat(100)).length, 40);
+  assert.equal(h.serverLabel('y'.repeat(40)), 'y'.repeat(40));
+});
+
 test('?q= prefill', () => {
   assert.equal(h.queryFromSearch('?q=radiohead'), 'radiohead');
   assert.equal(h.queryFromSearch('?x=1&q=a%20b+c'), 'a b c');

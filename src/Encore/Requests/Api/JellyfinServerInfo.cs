@@ -14,6 +14,7 @@ public sealed class JellyfinServerInfo : BackgroundService
     private readonly ILogger _logger;
     private readonly TimeProvider _time;
     private volatile string? _serverId;
+    private volatile string? _serverName;
 
     public JellyfinServerInfo(IJellyfinClient jellyfin, ILogger<JellyfinServerInfo> logger, TimeProvider? time = null)
     {
@@ -24,6 +25,9 @@ public sealed class JellyfinServerInfo : BackgroundService
 
     /// <summary>The server id, or null until one read has worked.</summary>
     public string? ServerId => _serverId;
+
+    /// <summary>The server's own name (for page labels), or null until known or when it has none.</summary>
+    public string? ServerName => _serverName;
 
     /// <summary>One read. Returns true when the id is known (now or before).</summary>
     public async Task<bool> RefreshAsync(CancellationToken ct = default)
@@ -42,6 +46,7 @@ public sealed class JellyfinServerInfo : BackgroundService
                 return false;
             }
 
+            _serverName = string.IsNullOrWhiteSpace(info.ServerName) ? null : info.ServerName.Trim();
             _serverId = info.Id;
             return true;
         }

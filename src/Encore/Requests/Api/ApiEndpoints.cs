@@ -92,6 +92,7 @@ public sealed class ApiEndpoints
             quickConnect = quick,
             jellyfinUrl = _options.JellyfinPublicUrl?.AbsoluteUri.TrimEnd('/'),
             jellyfinServerId = _serverInfo.ServerId,
+            jellyfinServerName = _serverInfo.ServerName,
         }, ApiJson.Options);
     }
 

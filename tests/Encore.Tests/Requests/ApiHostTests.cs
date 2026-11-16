@@ -522,6 +522,7 @@ public sealed class ApiHostTests
         Assert.True(config.GetProperty("quickConnect").GetBoolean());
         Assert.Equal("https://media.nateplex.com", config.GetProperty("jellyfinUrl").GetString());
         Assert.Equal("serverid1234567890", config.GetProperty("jellyfinServerId").GetString());
+        Assert.Equal("Fake", config.GetProperty("jellyfinServerName").GetString());
         Assert.Equal(1, rig.Fake.PublicInfoCalls);
     }
 
@@ -533,9 +534,11 @@ public sealed class ApiHostTests
         var fresh = new JellyfinServerInfo(rig.Fake, new LoggerFactory([rig.Logs]).CreateLogger<JellyfinServerInfo>());
         Assert.False(await fresh.RefreshAsync());
         Assert.Null(fresh.ServerId);
+        Assert.Null(fresh.ServerName);
         rig.Fake.PublicInfoDown = false;
         Assert.True(await fresh.RefreshAsync());
         Assert.Equal("serverid1234567890", fresh.ServerId);
+        Assert.Equal("Fake", fresh.ServerName);
 
         rig.Jellyfin.On("GET /QuickConnect/Enabled", HttpStatusCode.ServiceUnavailable);
         var config = await ApiRig.JsonOf(await rig.GetAsync("/api/v1/config"));

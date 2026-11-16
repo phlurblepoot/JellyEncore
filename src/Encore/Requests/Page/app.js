@@ -116,6 +116,15 @@
     return link;
   }
 
+  /** The server's own name for page text: trimmed, at most 40 characters (39 and an ellipsis when longer); "Jellyfin" when unknown. */
+  function serverLabel(name) {
+    var text = clean(name);
+    if (!text) {
+      return 'Jellyfin';
+    }
+    return text.length > 40 ? text.slice(0, 39) + '…' : text;
+  }
+
   /** The q parameter of a location.search string, trimmed to 100 characters. */
   function queryFromSearch(search) {
     var text = typeof search === 'string' ? search : '';
@@ -208,7 +217,7 @@
       return clean(message);
     }
     if (Object.prototype.hasOwnProperty.call(ERROR_TEXT, code)) {
-      return ERROR_TEXT[code];
+      return code === 'jellyfin_unavailable' ? serverLabel(S.cfg && S.cfg.jellyfinServerName) + ' did not answer. Try again in a moment.' : ERROR_TEXT[code];
     }
     return clean(message) || 'Something went wrong (' + status + ').';
   }
@@ -315,6 +324,7 @@
     apiUrl: apiUrl,
     requestPageUrl: requestPageUrl,
     detailsLink: detailsLink,
+    serverLabel: serverLabel,
     queryFromSearch: queryFromSearch,
     pollDelay: pollDelay,
     canCancel: canCancel,
@@ -444,7 +454,7 @@
 
   function openLink(itemId) {
     var href = detailsLink(S.cfg && S.cfg.jellyfinUrl, itemId, S.cfg && S.cfg.jellyfinServerId);
-    return href ? linkTo(href, 'Open in Jellyfin') : null;
+    return href ? linkTo(href, 'Open in ' + serverLabel(S.cfg && S.cfg.jellyfinServerName)) : null;
   }
 
   // ---- API
@@ -601,12 +611,12 @@
     stopQuick();
     var box = ui.quickBox;
     box.replaceChildren();
-    add(box, el('p', 'muted', 'Asking Jellyfin for a code...'));
+    add(box, el('p', 'muted', 'Asking ' + serverLabel(S.cfg && S.cfg.jellyfinServerName) + ' for a code...'));
     api('POST', 'auth/quickconnect', { deviceId: deviceId() }).then(function (result) {
       var session = { secret: result.secret, until: Date.now() + 5 * 60 * 1000, timer: 0 };
       S.quick = session;
       box.replaceChildren();
-      add(box, el('p', 'muted', 'Approve this code in Jellyfin: your profile, then Quick Connect.'));
+      add(box, el('p', 'muted', 'Approve this code in ' + serverLabel(S.cfg && S.cfg.jellyfinServerName) + ': your profile, then Quick Connect.'));
       add(box, el('p', 'code', clean(result.code)));
       var status = el('p', 'muted', 'Waiting for approval...');
       add(box, status);
