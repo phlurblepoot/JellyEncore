@@ -17,8 +17,11 @@ public static class LidarrWriteAudioTags
     public const string AllFiles = "allFiles";
     public const string Sync = "sync";
 
-    /// <summary>True when an in-place import of an existing file would retag it (<c>allFiles</c> or <c>sync</c>).</summary>
+    /// <summary>
+    /// True when an in-place import of an existing file may retag it: <c>allFiles</c>, <c>sync</c>, and any value this build does not know
+    /// (fail closed: only <c>no</c> and <c>newFiles</c> are known to leave an existing file alone).
+    /// </summary>
     public static bool RetagsExistingFiles(string value) =>
-        string.Equals(value, AllFiles, StringComparison.OrdinalIgnoreCase)
-        || string.Equals(value, Sync, StringComparison.OrdinalIgnoreCase);
+        !string.Equals(value, No, StringComparison.OrdinalIgnoreCase)
+        && !string.Equals(value, NewFiles, StringComparison.OrdinalIgnoreCase);
 }

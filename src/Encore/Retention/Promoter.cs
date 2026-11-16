@@ -188,7 +188,9 @@ public sealed class Promoter : IDisposable
             return rowIds.Select(id => new PromotionResult(id, PromotionOutcome.Paused, null, guard.Reason)).ToList();
         }
 
-        var active = _store.ActivePromotions().Select(p => p.FetchedFileId).ToHashSet();
+        var activeRows = _store.ActivePromotions();
+        var active = activeRows.Select(p => p.FetchedFileId).ToHashSet();
+        var pastSnapshot = activeRows.Where(p => p.Step != PromotionStep.Snapshot).Select(p => p.FetchedFileId).ToHashSet();
         var ordered = rowIds.Distinct().OrderBy(id => active.Contains(id) ? 0 : 1).ToList();
         var used = 0;
         foreach (var id in ordered)
@@ -196,6 +198,14 @@ public sealed class Promoter : IDisposable
             if (used >= max)
             {
                 break;
+            }
+
+            if (!signals.PlaylistsComplete && !pastSnapshot.Contains(id))
+            {
+                // The snapshot records the song's playlist places from these signals; with a failed playlist read it would miss some and
+                // the song would drop out of them. Promotions past the snapshot need no signals and go on.
+                results.Add(new PromotionResult(id, PromotionOutcome.Deferred, null, "signals_incomplete"));
+                continue;
             }
 
             var memberships = _fetch.GetTracked(id) is { JellyfinItemId: { } item } && Guid.TryParse(item, out var itemId)
@@ -673,18 +683,26 @@ public sealed class Promoter : IDisposable
         foreach (var user in saved)
         {
             var userId = Guid.Parse(user.UserId);
-            var now = await _retention.GetUserItemDataAsync(newItem, userId, ct).ConfigureAwait(false);
-            if (user.IsFavorite)
+            UserItemData? now;
+            try
             {
-                if (now is { IsFavorite: true })
-                {
-                    carried++;
-                }
-                else
+                now = await _retention.GetUserItemDataAsync(newItem, userId, ct).ConfigureAwait(false);
+                if (user.IsFavorite && now is not { IsFavorite: true })
                 {
                     await _retention.MarkFavoriteAsync(newItem, userId, ct).ConfigureAwait(false);
                     repaired++;
                 }
+                else if (user.IsFavorite)
+                {
+                    carried++;
+                }
+            }
+            catch (JellyfinException e) when (e.StatusCode is 400 or 404)
+            {
+                // The user was deleted, or cannot see the library the song moved to: nothing to carry for them. Failing here would stall a
+                // promotion whose file is already in the library, before its playlist places are restored.
+                _log.PromoteUserDataSkipped(promo.FetchedFileId, user.UserId, e.Message);
+                continue;
             }
 
             // A play count that did not carry over is only logged (the count itself is Jellyfin's).

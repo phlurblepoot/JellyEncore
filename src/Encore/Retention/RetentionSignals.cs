@@ -73,6 +73,14 @@ public sealed class SignalsSnapshot
     /// <summary>False when SmartLists is installed but its list was unreadable: no playlist can be trusted as hand-made.</summary>
     public bool PlaylistKeepsAllowed => !SmartListsInstalled || SmartListsRead;
 
+    /// <summary>
+    /// True when every user's playlists and every counted playlist's entries were read, so <see cref="MembershipsOf"/> lists every
+    /// place a song holds. A promotion records its playlist places from this (step <c>snapshot</c>), so it starts only when true:
+    /// an incomplete read would drop the song from the playlists it missed.
+    /// </summary>
+    public bool PlaylistsComplete =>
+        PlaylistKeepsAllowed && !Failures.Any(f => f.What is "users" or "playlists" or "smartlists" or "signals");
+
     public IEnumerable<SignalPlaylist> Counted => Playlists.Where(p => p.Counted);
 
     public IEnumerable<SignalPlaylist> Skipped => Playlists.Where(p => !p.Counted);

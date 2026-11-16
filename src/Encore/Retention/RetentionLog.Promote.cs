@@ -27,6 +27,10 @@ internal static partial class RetentionLog
         Message = "Row {RowId} user data for {Users} users: favorites carried {FavoritesCarried}, repaired {FavoritesRepaired}, play counts carried {PlayCountsCarried}")]
     public static partial void PromoteUserData(this ILogger logger, long rowId, int users, int favoritesCarried, int favoritesRepaired, int playCountsCarried);
 
+    [LoggerMessage(EventId = 8555, EventName = "promote.userdata_skipped", Level = LogLevel.Warning,
+        Message = "Row {RowId} user data of user {UserId} not carried: {Error}")]
+    public static partial void PromoteUserDataSkipped(this ILogger logger, long rowId, string userId, string error);
+
     [LoggerMessage(EventId = 8560, EventName = "playlist.readded", Level = LogLevel.Information,
         Message = "Row {RowId} re-added to playlist {PlaylistId} at position {Position} as user {EditorUserId}")]
     public static partial void PlaylistReadded(this ILogger logger, long rowId, string playlistId, int position, string? editorUserId);

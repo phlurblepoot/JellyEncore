@@ -480,14 +480,20 @@ public sealed class FetchStore : IDisposable
         }
     }
 
-    /// <summary>Marks a ready row deleted with the reason (age | uploads). Returns false when the row is not in state ready.</summary>
+    /// <summary>
+    /// Marks a ready row deleted with the reason (age | uploads). Returns false when the row is not in state ready, or is requested or
+    /// kept (v04 invariant 3, checked in the same statement so a request that lands during a delete still wins).
+    /// </summary>
     public bool MarkDeleted(long id, string reason, DateTimeOffset now)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(reason);
         lock (_gate)
         {
             using var cmd = _db.CreateCommand();
-            cmd.CommandText = "UPDATE fetched_files SET state = 'deleted', delete_reason = $reason, deleted_utc = $now WHERE id = $id AND state = 'ready'";
+            cmd.CommandText = """
+                UPDATE fetched_files SET state = 'deleted', delete_reason = $reason, deleted_utc = $now
+                WHERE id = $id AND state = 'ready' AND requested = 0 AND kept_reason IS NULL
+                """;
             cmd.Parameters.AddWithValue("$id", id);
             cmd.Parameters.AddWithValue("$reason", reason);
             cmd.Parameters.AddWithValue("$now", EncoreStore.FormatUtc(now));

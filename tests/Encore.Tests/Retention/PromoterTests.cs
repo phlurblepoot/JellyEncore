@@ -174,8 +174,13 @@ internal sealed class PromoterJellyfin : IJellyfinClient, IRetentionJellyfin
         return Task.CompletedTask;
     }
 
+    /// <summary>(item, user) pairs that answer 404 to user data reads and favorite marks (a deleted user, or no access to that library).</summary>
+    public Func<Guid, Guid, bool>? UserNotFound { get; set; }
+
     public Task<UserItemData?> GetUserItemDataAsync(Guid itemId, Guid userId, CancellationToken ct = default) =>
-        Task.FromResult(UserData.TryGetValue((userId, itemId), out var d) ? d : (Items.ContainsKey(itemId) ? new UserItemData(false, 0) : null));
+        UserNotFound?.Invoke(itemId, userId) == true
+            ? Task.FromException<UserItemData?>(new JellyfinRequestException("GetUserItemData", 404))
+            : Task.FromResult(UserData.TryGetValue((userId, itemId), out var d) ? d : (Items.ContainsKey(itemId) ? new UserItemData(false, 0) : null));
 
     public Task<SmartListsInfo> GetSmartListsAsync(CancellationToken ct = default) => Task.FromResult(SmartListsInfo.NotInstalled);
 
@@ -1053,6 +1058,54 @@ public sealed class PromoterTests : IDisposable
         Assert.Empty(_rig.LidarrApi.Calls);
     }
 
+    [Fact]
+    public async Task PM24_incomplete_playlist_signals_start_no_promotion_but_one_past_its_snapshot_goes_on()
+    {
+        var waiting = _rig.Ready(file: "01 - One.flac", title: "One");
+        var started = _rig.Ready(file: "02 - Two.flac", title: "Two");
+        var list = _rig.Playlist([waiting.Item, started.Item], [PromoterRig.Ann]);
+        _rig.Shares.PeersUploading = 1;
+        using var promoter = _rig.Make();
+        await promoter.PromoteAsync(started.Id, [PromoterRig.Member(list, 1, PromoterRig.Ann)]); // stops at source_removed
+        _rig.Shares.PeersUploading = 0;
+
+        // One user's playlists could not be read: the song may sit in a playlist this read missed.
+        var incomplete = new SignalsSnapshot(DateTimeOffset.UnixEpoch, 3, new HashSet<Guid>(), [], false, true, [new SignalFailure("playlists", 500, "boom")]);
+        var results = await promoter.RunPassAsync([waiting.Id, started.Id], incomplete, 20);
+
+        Assert.Equal(PromotionOutcome.Done, results.Single(r => r.RowId == started.Id).Outcome);
+        var deferred = results.Single(r => r.RowId == waiting.Id);
+        Assert.Equal((PromotionOutcome.Deferred, "signals_incomplete"), (deferred.Outcome, deferred.Reason));
+        Assert.Null(_rig.Store.GetPromotion(waiting.Id));
+        Assert.True(File.Exists(waiting.Path));
+        Assert.Equal(waiting.Item, _rig.Jellyfin.Stored[list][0]);
+
+        // SmartLists installed but unreadable also counts as incomplete; a favorites failure alone does not.
+        Assert.False(new SignalsSnapshot(DateTimeOffset.UnixEpoch, 3, new HashSet<Guid>(), [], true, false, []).PlaylistsComplete);
+        Assert.True(new SignalsSnapshot(DateTimeOffset.UnixEpoch, 3, new HashSet<Guid>(), [], false, true, [new SignalFailure("favorites", 500, "x")]).PlaylistsComplete);
+    }
+
+    [Fact]
+    public async Task PM25_a_user_who_cannot_be_read_at_verify_is_skipped_and_the_promotion_finishes()
+    {
+        var song = _rig.Ready();
+        var list = _rig.Playlist([song.Item], [PromoterRig.Ann]);
+        _rig.Jellyfin.CarryUserData = false;
+        _rig.Jellyfin.UserData[(PromoterRig.Ann, song.Item)] = new UserItemData(true, 1);
+        _rig.Jellyfin.UserData[(PromoterRig.Bob, song.Item)] = new UserItemData(true, 2);
+        _rig.Jellyfin.UserNotFound = (item, user) => item != song.Item && user == PromoterRig.Bob;
+        using var promoter = _rig.Make();
+
+        var result = await promoter.PromoteAsync(song.Id, [PromoterRig.Member(list, 0, PromoterRig.Ann)]);
+
+        Assert.Equal(PromotionOutcome.Done, result.Outcome);
+        var newItem = _rig.Jellyfin.ItemAt("/media/music/Artist/Album (2020)/01 - Song.flac")!.Value;
+        Assert.Equal([(newItem, PromoterRig.Ann)], _rig.Jellyfin.FavoriteMarks);
+        Assert.Equal([newItem], _rig.Jellyfin.Stored[list]);
+        Assert.Equal(1, _rig.Events(8555));
+        Assert.Equal(0, _rig.Store.GetPromotion(song.Id)!.Attempts);
+    }
+
     // ---- target path rules (v04 §7.1) ----
 
     [Fact]
@@ -1102,6 +1155,10 @@ public sealed class PromoterTests : IDisposable
 
         Assert.Null(paths.Plan(Path.Combine(_rig.Radio, "soulseek", "loose.flac"), null));
         Assert.Null(paths.Plan(Path.Combine(_rig.Dir, "elsewhere", "a", "b", "c.flac"), null));
+
+        // A dot folder would hide the song from Jellyfin in the library.
+        Assert.Null(paths.Plan(Path.Combine(_rig.Radio, "soulseek", ".hidden", "Album", "01 - Song.flac"), null));
+        Assert.Null(paths.Plan(Path.Combine(_rig.Radio, "soulseek", "Artist", ".Album", "01 - Song.flac"), null));
     }
 
     [Fact]

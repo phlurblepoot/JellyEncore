@@ -25,6 +25,7 @@ public static class DeleteSkip
     public const string SignalsFailed = "signals_failed";
     public const string SessionsFailed = "sessions_failed";
     public const string Changed = "changed";
+    public const string Promoting = "promoting";
     public const string StoreFailed = "store_failed";
 }
 
@@ -220,7 +221,22 @@ public sealed class Deleter
             return Outcome.Kept;
         }
 
-        // 2. Skips.
+        // 2. Skips. A row with a promotion row (any step, stalled too) is never deleted: its radio file may already be gone.
+        try
+        {
+            if (_retention.GetPromotion(id) is not null)
+            {
+                _log.DeleteSkipped(id, DeleteSkip.Promoting);
+                return Outcome.Skipped;
+            }
+        }
+        catch (Exception ex) when (ex is SqliteException or StoreException)
+        {
+            _log.StoreFailed("delete_promotion_check", ex.GetType().Name);
+            _log.DeleteSkipped(id, DeleteSkip.StoreFailed);
+            return Outcome.Skipped;
+        }
+
         if (item != Guid.Empty && nowPlaying.Contains(item))
         {
             _log.DeleteSkipped(id, DeleteSkip.NowPlaying);
@@ -263,7 +279,7 @@ public sealed class Deleter
             return Outcome.Skipped;
         }
 
-        // 3. Move to the trash (same filesystem, a rename), then tidy empty folders.
+        // 3. Move to the trash (same filesystem, a rename).
         var reason = planned.Reason ?? RetentionPlanner.ReasonAge;
         var trashFile = "";
         try
@@ -275,8 +291,6 @@ public sealed class Deleter
                 trashFile = Path.Combine(day, id.ToString(CultureInfo.InvariantCulture) + Path.GetExtension(source));
                 File.Move(source, trashFile, overwrite: true);
             }
-
-            RemoveEmptyFolders(Path.GetDirectoryName(source)!, soulseek);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -284,19 +298,39 @@ public sealed class Deleter
             return Outcome.Failed;
         }
 
-        // 4. Owned index and the row.
-        if (item != Guid.Empty)
-        {
-            _owned.Remove(item);
-        }
-
+        // 4. The row, guarded in SQL: a request or keep that landed since the re-check wins, and the file goes back (invariant 3).
+        bool marked;
         try
         {
-            _fetch.MarkDeleted(id, reason, now);
+            marked = _fetch.MarkDeleted(id, reason, now);
         }
         catch (Exception ex) when (ex is SqliteException or StoreException)
         {
+            // The file is in the trash; the next pass finds it gone and marks the row then.
             _log.StoreFailed("mark_deleted", ex.GetType().Name);
+            marked = true;
+        }
+
+        if (!marked)
+        {
+            Restore(id, row.Path, source, trashFile);
+            _log.DeleteSkipped(id, DeleteSkip.Signal);
+            return Outcome.Kept;
+        }
+
+        // 5. Empty folders (a failure here leaves a folder, never undoes the delete), then the owned index.
+        try
+        {
+            RemoveEmptyFolders(Path.GetDirectoryName(source)!, soulseek);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _log.DeleteFailed(id, Path.GetDirectoryName(row.Path) ?? row.Path, "empty folder cleanup: " + ex.GetType().Name);
+        }
+
+        if (item != Guid.Empty)
+        {
+            _owned.Remove(item);
         }
 
         var folder = AlbumFolder(row);
@@ -307,6 +341,26 @@ public sealed class Deleter
 
         _log.DeleteDone(id, row.Path, reason, trashFile);
         return Outcome.Deleted;
+    }
+
+    /// <summary>Moves a trashed file back to its radio path (the row turned out requested or kept after the re-check). Never overwrites.</summary>
+    private void Restore(long id, string rowPath, string source, string trashFile)
+    {
+        if (trashFile.Length == 0 || !File.Exists(trashFile))
+        {
+            return;
+        }
+
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(source)!);
+            File.Move(trashFile, source, overwrite: false);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Still safe in the dated trash for 7 days; the log names it so it can be moved back by hand.
+            _log.DeleteFailed(id, rowPath, $"kept after the move, but the file could not go back from {trashFile}: {ex.GetType().Name}");
+        }
     }
 
     /// <summary>The album folder as Jellyfin sees it, from the row's Jellyfin path or the radio path translated.</summary>

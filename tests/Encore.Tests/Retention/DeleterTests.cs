@@ -336,6 +336,56 @@ public sealed class DeleterTests : IDisposable
         Assert.Single(_log.Named("delete.failed"));
     }
 
+    [Fact]
+    public async Task DL21_a_row_with_a_promotion_row_is_never_deleted_even_with_a_forced_decision()
+    {
+        var song = Old("Promoting");
+        var pass = await _rig.Pass.RunAsync();
+        Assert.Equal(RetentionDecision.Delete, pass.Rows.Single().Decision);
+        _rig.Retention.StartPromotion(new NewPromotion(song.Id, song.Item.ToString("N"), _rig.Time.GetUtcNow()));
+        _rig.Retention.UpdatePromotion(song.Id, PromotionStep.OldGone, _rig.Time.GetUtcNow(), new PromotionUpdate(Stalled: true));
+
+        var result = await Act(pass: pass);
+
+        Assert.Equal((0, 1), (result.Deleted, result.Skipped));
+        Assert.True(File.Exists(song.Path));
+        Assert.Equal(FetchState.Ready, _rig.Fetch.GetTracked(song.Id)!.State);
+        Assert.Contains("promoting", _log.Named("delete.skipped").Single().Message);
+    }
+
+    [Fact]
+    public async Task DL22_a_request_that_lands_during_the_delete_puts_the_file_back_and_keeps_the_row()
+    {
+        var song = Old("LateRequest");
+        var pass = await _rig.Pass.RunAsync();
+
+        // After the re-check, before the move: the user requests the song.
+        _uploads.OnCheck = () => _rig.Fetch.MarkRequested("key-LateRequest");
+        var result = await Act(pass: pass);
+
+        Assert.Equal((0, 1), (result.Deleted, result.Kept));
+        Assert.True(File.Exists(song.Path));
+        Assert.False(File.Exists(Trash(_rig, "2026-11-20", song.Id)));
+        var row = _rig.Fetch.GetTracked(song.Id)!;
+        Assert.Equal((FetchState.Ready, true), (row.State, row.Requested));
+        Assert.NotNull(_owned.KeyOf(song.Item));
+        Assert.Empty(_dirty.Reasons);
+    }
+
+    [Fact]
+    public void DL23_the_store_refuses_to_mark_a_requested_or_kept_row_deleted()
+    {
+        var requested = Old("Req");
+        var kept = Old("Kpt");
+        _rig.Fetch.MarkRequested("key-Req");
+        _rig.Fetch.MarkKept(kept.Id, "favorite", _rig.Time.GetUtcNow());
+
+        Assert.False(_rig.Fetch.MarkDeleted(requested.Id, "age", _rig.Time.GetUtcNow()));
+        Assert.False(_rig.Fetch.MarkDeleted(kept.Id, "age", _rig.Time.GetUtcNow()));
+        Assert.Equal(FetchState.Ready, _rig.Fetch.GetTracked(requested.Id)!.State);
+        Assert.Equal(FetchState.Ready, _rig.Fetch.GetTracked(kept.Id)!.State);
+    }
+
     private void Sent(Guid item, DateTimeOffset at) =>
         _rig.Store.RecordFire(
             new TriggerRecord(at, "sess-one", PassRig.User, "Finamp", "upcoming", "topup", Guid.NewGuid(), null, "dedupe-" + Guid.NewGuid().ToString("N"), EncoreStore.SentOutcome, "run-1", 5),
@@ -345,7 +395,14 @@ public sealed class DeleterTests : IDisposable
     {
         public ActiveUploadCheck Result { get; set; } = new(true, 0);
 
-        public Task<ActiveUploadCheck> CheckActiveAsync(long rowId, string radioPath, CancellationToken ct) => Task.FromResult(Result);
+        /// <summary>Runs inside the check: after the deleter's re-check, before its move.</summary>
+        public Action? OnCheck { get; set; }
+
+        public Task<ActiveUploadCheck> CheckActiveAsync(long rowId, string radioPath, CancellationToken ct)
+        {
+            OnCheck?.Invoke();
+            return Task.FromResult(Result);
+        }
     }
 
     private sealed class FakeDirty : ISharesDirty

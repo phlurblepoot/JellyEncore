@@ -84,8 +84,9 @@ public sealed partial class PromotionPaths
         var album = segments[^2];
         var file = segments[^1];
         var dot = file.LastIndexOf('.');
-        if (dot <= 0 || dot == file.Length - 1)
+        if (dot <= 0 || dot == file.Length - 1 || artist.StartsWith('.') || album.StartsWith('.'))
         {
+            // A dot folder would hide the song from Jellyfin, Lidarr and slskd (the importer never writes one, SafeNames.Segment).
             return null;
         }
 

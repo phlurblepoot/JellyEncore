@@ -43,6 +43,7 @@ public class LidarrRetentionTests
     [InlineData("newFiles", false)]
     [InlineData("allFiles", true)]
     [InlineData("sync", true)]
+    [InlineData("someFutureMode", true)]
     public async Task Write_audio_tags_values(string value, bool retags)
     {
         var fake = new FakeLidarr().Reply(HttpStatusCode.OK, $$"""{"id":1,"writeAudioTags":"{{value}}","scrubAudioTags":false}""");
