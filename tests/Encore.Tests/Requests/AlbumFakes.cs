@@ -23,6 +23,12 @@ internal sealed class FakeLidarrApi : ILidarrClient
         public DateTimeOffset? Release { get; set; } = new DateTimeOffset(1997, 5, 21, 0, 0, 0, TimeSpan.Zero);
         public int Tracks { get; set; } = 12;
         public LidarrAlbumStatistics? Stats { get; set; }
+
+        /// <summary>
+        /// Rows GET trackfile?albumId= returns. Null follows <see cref="Stats"/>; set it apart from the statistics to play
+        /// Lidarr's per-artist statistics cache missing an import.
+        /// </summary>
+        public int? TrackFiles { get; set; }
     }
 
     public sealed class Artist
@@ -187,6 +193,9 @@ internal sealed class FakeLidarrApi : ILidarrClient
 
     public Task<LidarrAlbum?> GetAlbumAsync(int id, CancellationToken ct) => Run("album/" + id, () =>
         Albums.FirstOrDefault(a => a.Id == id) is { } a ? Map(a, true) : null);
+
+    public Task<int> CountTrackFilesAsync(int albumId, CancellationToken ct) => Run("trackfile?albumId=" + albumId, () =>
+        Albums.FirstOrDefault(a => a.Id == albumId) is { } a ? a.TrackFiles ?? a.Stats?.TrackFileCount ?? 0 : 0);
 
     public Task<LidarrAlbum> AddAlbumAsync(LidarrAddAlbum request, CancellationToken ct) => Run("post album", () =>
     {

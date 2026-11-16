@@ -39,6 +39,13 @@ public interface ILidarrClient
     /// <summary>GET /api/v1/album/{id} (full artist object, statistics); null on 404.</summary>
     Task<LidarrAlbum?> GetAlbumAsync(int id, CancellationToken ct);
 
+    /// <summary>
+    /// GET /api/v1/trackfile?albumId= : how many track files Lidarr has for the album, read straight from its database.
+    /// Album <c>statistics</c> come from a per-artist cache in Lidarr that can miss an import; this count cannot.
+    /// A 404 (album gone) gives 0.
+    /// </summary>
+    Task<int> CountTrackFilesAsync(int albumId, CancellationToken ct);
+
     /// <summary>POST /api/v1/album with monitored true, anyReleaseOk true and addType "manual", no search. 400 "already been added" is a <see cref="LidarrValidationException"/>.</summary>
     Task<LidarrAlbum> AddAlbumAsync(LidarrAddAlbum request, CancellationToken ct);
 

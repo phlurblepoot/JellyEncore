@@ -126,6 +126,20 @@ public sealed class LidarrClient : ILidarrClient
         return response is null ? null : ToAlbum(await ReadAsync<AlbumDto>(response, "GetAlbum", ct).ConfigureAwait(false));
     }
 
+    public async Task<int> CountTrackFilesAsync(int albumId, CancellationToken ct)
+    {
+        // An unknown album id is a 404 (ModelNotFoundException in Lidarr's error pipeline).
+        using var response = await SendAsync(HttpMethod.Get, $"api/v1/trackfile?albumId={albumId}", "CountTrackFiles", null, retryServerError: true, ct, allowNotFound: true).ConfigureAwait(false);
+        if (response is null)
+        {
+            return 0;
+        }
+
+        // Only the number of rows matters; each row is large (media info, tags), so nothing is bound to a type.
+        var rows = await ReadAsync<JsonArray>(response, "CountTrackFiles", ct).ConfigureAwait(false);
+        return rows.Count(r => r is JsonObject);
+    }
+
     public async Task<LidarrAlbum> AddAlbumAsync(LidarrAddAlbum request, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(request);

@@ -45,7 +45,7 @@ public static class AlbumReasons
 /// Album requests through Lidarr (v0.3 design 7). Create (daily cap, id lookup, owned -> ready, join an active request
 /// for the same album), send to Lidarr (monitor an existing album, or one POST album that also adds a missing
 /// artist with monitorNewItems "none"; switch the artist on; check both flags), poll progress every 2 min from the album's
-/// statistics, find the album in Jellyfin (one Media/Updated nudge with the artist folder), time out after 7 days with no
+/// statistics, checked against Lidarr's track-file list while they do not show the album complete, find the album in Jellyfin (one Media/Updated nudge with the artist folder), time out after 7 days with no
 /// file or 3 days stalled, cancel and retry. Lidarr writes are only those of invariant 7: never POST artist, never another
 /// album, never monitorNewItems, profiles or paths. One async lock serialises every state change; Lidarr being down keeps
 /// the state and the next poll tries again. An album whose release date is in the future or not known yet is sent the same
@@ -95,6 +95,9 @@ public sealed class AlbumRequester
 
     // Lidarr album ids that got their one Media/Updated nudge in this process.
     private readonly HashSet<long> _nudged = [];
+
+    // Failed polls in a row per request (the 9390 count); cleared by a poll whose Lidarr calls all answered.
+    private readonly Dictionary<string, int> _pollFailures = new(StringComparer.Ordinal);
 
     public AlbumRequester(
         RequestStore store,
@@ -323,7 +326,7 @@ public sealed class AlbumRequester
             return notify;
         }
 
-        var albums = new Dictionary<long, LidarrAlbum?>();
+        var albums = new Dictionary<long, AlbumSnapshot>();
         foreach (var listed in active)
         {
             var now = _time.GetUtcNow();
@@ -381,6 +384,11 @@ public sealed class AlbumRequester
             foreach (var gone in _due.Keys.Where(k => !ids.Contains(k)).ToList())
             {
                 _due.Remove(gone);
+            }
+
+            foreach (var gone in _pollFailures.Keys.Where(k => !ids.Contains(k)).ToList())
+            {
+                _pollFailures.Remove(gone);
             }
         }
         catch (StoreException ex)
@@ -571,25 +579,48 @@ public sealed class AlbumRequester
 
     // ---- progress (design 7.3) ---------------------------------------------------------------------------------
 
-    private async Task PollLockedAsync(RequestRow row, Dictionary<long, LidarrAlbum?> albums, List<RequestRow> notify, CancellationToken ct)
+    /// <summary>What one pass learned about one Lidarr album (shared by every request that holds it).</summary>
+    private sealed class AlbumSnapshot
+    {
+        public LidarrAlbum? Album { get; init; }
+
+        /// <summary>Rows of GET trackfile?albumId=; null until asked, or when asking failed.</summary>
+        public int? TrackFiles { get; set; }
+
+        public bool TrackFilesAsked { get; set; }
+
+        /// <summary>Why the track-file call failed in this pass (each request holding the album logs it).</summary>
+        public LidarrException? TrackFilesError { get; set; }
+    }
+
+    /// <summary>
+    /// One progress poll (T108). Files are the larger of the album's <c>statistics.trackFileCount</c> and the rows of GET
+    /// trackfile?albumId=, asked only while the statistics do not show the album complete. Lidarr serves album statistics
+    /// from a per-artist cache that is only cleared by some events, while the track-file list is read from its database, so
+    /// an import Lidarr's statistics missed (Soularr imports through a DownloadedAlbumsScan, with no queue entry) is still
+    /// seen. Every failed call is a 9390 warning and keeps the state; the next poll tries again.
+    /// </summary>
+    private async Task PollLockedAsync(RequestRow row, Dictionary<long, AlbumSnapshot> albums, List<RequestRow> notify, CancellationToken ct)
     {
         var albumId = row.LidarrAlbumId!.Value;
-        if (!albums.TryGetValue(albumId, out var album))
+        if (!albums.TryGetValue(albumId, out var snapshot))
         {
+            LidarrAlbum? fetched;
             try
             {
-                album = await _lidarr.GetAlbumAsync((int)albumId, ct).ConfigureAwait(false);
+                fetched = await _lidarr.GetAlbumAsync((int)albumId, ct).ConfigureAwait(false);
             }
             catch (LidarrException ex) when (!ct.IsCancellationRequested)
             {
-                // Lidarr unreachable: keep the state, the next poll tries again.
-                LogLidarr(ex);
+                PollFailed(row, albumId, ex);
                 return;
             }
 
-            albums[albumId] = album;
+            snapshot = new AlbumSnapshot { Album = fetched };
+            albums[albumId] = snapshot;
         }
 
+        var album = snapshot.Album;
         if (album is null)
         {
             await FailLockedAsync(row, AlbumReasons.LidarrRemoved, notify, unmonitor: false).ConfigureAwait(false);
@@ -608,6 +639,7 @@ public sealed class AlbumRequester
                     _store.Update(row.Id, RequestState.Upcoming, now, new RequestUpdate(Detail: waiting, Year: album.ReleaseDate?.Year));
                 }
 
+                _pollFailures.Remove(row.Id);
                 _due[row.Id] = now + RequestLimits.AlbumUpcomingPoll;
                 return;
             }
@@ -619,11 +651,33 @@ public sealed class AlbumRequester
             _due[row.Id] = now + RequestLimits.AlbumPoll;
         }
 
-        var s = album.Statistics;
-        var files = s?.TrackFileCount ?? 0;
-        var expected = s?.TrackCount ?? 0;
-        var total = s is { TotalTrackCount: > 0 } ? s.TotalTrackCount : Math.Max(expected, files);
-        var (state, detail) = (s is null || expected == 0 || files == 0)
+        var statsFiles = album.Statistics?.TrackFileCount ?? 0;
+        if (!AlbumSearch.IsComplete(album.Statistics) && !snapshot.TrackFilesAsked)
+        {
+            snapshot.TrackFilesAsked = true;
+            try
+            {
+                snapshot.TrackFiles = await _lidarr.CountTrackFilesAsync((int)albumId, ct).ConfigureAwait(false);
+            }
+            catch (LidarrException ex) when (!ct.IsCancellationRequested)
+            {
+                // Go on with the statistics alone.
+                snapshot.TrackFilesError = ex;
+            }
+        }
+
+        if (snapshot.TrackFilesError is { } trackFilesError)
+        {
+            PollFailed(row, albumId, trackFilesError);
+        }
+        else
+        {
+            _pollFailures.Remove(row.Id);
+        }
+
+        var trackFiles = snapshot.TrackFiles ?? 0;
+        var (files, expected, total) = Progress(album, statsFiles, trackFiles);
+        var (state, detail) = files == 0
             ? (RequestState.Searching, Details.Searching)
             : files < expected
                 ? (RequestState.Downloading, Details.Downloading(files, total))
@@ -640,6 +694,11 @@ public sealed class AlbumRequester
         {
             await FailLockedAsync(row, AlbumReasons.Incomplete, notify, unmonitor: false).ConfigureAwait(false);
             return;
+        }
+
+        if (files > 0 && (row.TracksDone ?? 0) == 0)
+        {
+            _log.AlbumFilesSeen(row.Id, albumId, files, total, statsFiles, trackFiles);
         }
 
         var tracksChanged = files > 0 && (row.TracksDone != files || row.TracksTotal != total);
@@ -679,6 +738,41 @@ public sealed class AlbumRequester
             {
                 MarkReadyLocked(_store.Get(row.Id) ?? row, found, now, notify);
             }
+        }
+    }
+
+    /// <summary>
+    /// Files, expected tracks and the display total. Expected is <c>statistics.trackCount</c> (the monitored release; 0 for
+    /// an unmonitored or unreleased album). When that is missing but files exist, the monitored release's track count, else
+    /// the files themselves (the Jellyfin match then decides).
+    /// </summary>
+    private static (int Files, int Expected, int Total) Progress(LidarrAlbum album, int statsFiles, int trackFiles)
+    {
+        var s = album.Statistics;
+        var files = Math.Max(statsFiles, trackFiles);
+        var expected = s?.TrackCount ?? 0;
+        if (expected == 0 && files > 0)
+        {
+            expected = album.Releases.Where(r => r.Monitored).Select(r => r.TrackCount).FirstOrDefault();
+            if (expected <= 0)
+            {
+                expected = files;
+            }
+        }
+
+        var total = s is { TotalTrackCount: > 0 } ? s.TotalTrackCount : Math.Max(expected, files);
+        return (files, expected, Math.Max(total, files));
+    }
+
+    /// <summary>A failed Lidarr call in a poll: 9390 with ids and counts only, plus 9320 when the key was rejected.</summary>
+    private void PollFailed(RequestRow row, long albumId, LidarrException ex)
+    {
+        var failures = _pollFailures.TryGetValue(row.Id, out var n) ? n + 1 : 1;
+        _pollFailures[row.Id] = failures;
+        _log.AlbumPollFailed(row.Id, albumId, ex.Operation, ex.StatusCode ?? 0, failures);
+        if (ex is LidarrAuthException)
+        {
+            _log.LidarrAuthFailed(ex.Operation, ex.StatusCode ?? 0);
         }
     }
 

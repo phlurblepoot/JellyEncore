@@ -654,7 +654,7 @@ public sealed class AlbumRequestTests
         rig.Lidarr.Down = new LidarrRequestException("GetAlbum", 503);
         await rig.PollAsync();
         Assert.Equal(RequestState.Searching, rig.Row(row.Id).State);
-        Assert.NotEmpty(rig.Log.Named("lidarr.request_failed"));
+        Assert.Single(rig.Log.Named("lidarr.album_poll_failed"));
 
         rig.Lidarr.Down = null;
         await rig.PollAsync();
