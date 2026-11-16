@@ -59,12 +59,14 @@ public sealed class FetchWorker : BackgroundService
     private readonly SemaphoreSlim _requestSlots = new(FetchLimits.RequestSlots, FetchLimits.RequestSlots);
     private readonly ConcurrentDictionary<Task, byte> _running = new();
     private string? _lastSlskdState;
+    private readonly Encore.Retention.ISharesDirty? _shares;
 
     public FetchWorker(
         FetchCoordinator coordinator, ISoulseekFetcher fetcher, IImporter importer, IJellyfinIngest ingest, IOwnedIndex owned,
         IJellyfinClient jellyfin, ISlskdClient slskd, FetchStore store, IFreeSpace freeSpace, FetchWorkerSettings settings,
-        ILogger<FetchWorker> log, TimeProvider? time = null)
+        ILogger<FetchWorker> log, TimeProvider? time = null, Encore.Retention.ISharesDirty? shares = null)
     {
+        _shares = shares;
         _coordinator = coordinator ?? throw new ArgumentNullException(nameof(coordinator));
         _fetcher = fetcher ?? throw new ArgumentNullException(nameof(fetcher));
         _importer = importer ?? throw new ArgumentNullException(nameof(importer));
@@ -367,6 +369,7 @@ public sealed class FetchWorker : BackgroundService
                 _coordinator.SetScanned(true);
                 await AddOwnedAsync(itemId, jellyfinPath, job.Candidate, stopping).ConfigureAwait(false);
                 UpdateRow(job, FetchState.Ready, new FetchedUpdate(JellyfinItemId: itemId.ToString("N"), ReadyUtc: _time.GetUtcNow()));
+                _shares?.MarkDirty("import");
                 _coordinator.Complete(job, itemId);
                 break;
             case IngestOutcome.NotScanned:
@@ -619,6 +622,7 @@ public sealed class FetchWorker : BackgroundService
             {
                 await AddOwnedAsync(itemId, jellyfinPath, null, stopping).ConfigureAwait(false);
                 _store.UpdateFetched(row.Id, FetchState.Ready, new FetchedUpdate(JellyfinItemId: itemId.ToString("N"), ReadyUtc: _time.GetUtcNow()));
+                _shares?.MarkDirty("import");
                 if (TrackKey.TryParse(row.TrackKey, out var readyKey))
                 {
                     _coordinator.ClearImportedPending(readyKey);
