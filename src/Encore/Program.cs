@@ -8,6 +8,7 @@ using Encore.Logging;
 using Encore.Orchestration;
 using Encore.Picks;
 using Encore.Requests.Api;
+using Encore.Retention;
 using Encore.Store;
 using Encore.Watch;
 
@@ -80,6 +81,24 @@ if (options.RequestsEnabled)
     }
 }
 
+// The retention store (v0.4, only with ENCORE_RETENTION_MODE dry_run or live) is another connection to the same file.
+RetentionStore? retentionStore = null;
+if (options.RetentionMode != RetentionMode.Off)
+{
+    try
+    {
+        retentionStore = RetentionStore.Open(store.Path);
+    }
+    catch (StoreException ex)
+    {
+        storeLogger.StoreError("open_retention", ex.Message);
+        requestStore?.Dispose();
+        fetchStore?.Dispose();
+        store.Dispose();
+        return 3;
+    }
+}
+
 // Live mode: the radio dir gets its soulseek folder now, so Jellyfin never scans an empty music-radio.
 if (options.FetchMode == FetchMode.Live)
 {
@@ -116,6 +135,12 @@ if (requestStore is not null)
     builder.Services.AddRequestsApi(options, requestStore, version);
 }
 
+if (retentionStore is not null)
+{
+    // ENCORE_RETENTION_MODE=off registers nothing of v0.4. PlayTally is registered once there; the Orchestrator takes that instance.
+    builder.Services.AddRetention(options, retentionStore);
+}
+
 builder.Services.AddSingleton<Orchestrator>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<Orchestrator>());
 
@@ -129,6 +154,7 @@ foreach (var warning in config.Warnings)
 
 app.Lifetime.ApplicationStopped.Register(() =>
 {
+    retentionStore?.Dispose();
     requestStore?.Dispose();
     fetchStore?.Dispose();
     store.Dispose();
@@ -137,6 +163,11 @@ if (requestStore is not null)
 {
     app.UseRequestsApi(options);
     app.MapRequestsApi();
+}
+
+if (retentionStore is not null)
+{
+    RetentionReportEndpoint.Map(app);
 }
 
 HealthEndpoint.Map(app, version);

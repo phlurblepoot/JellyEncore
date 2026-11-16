@@ -66,7 +66,7 @@ public static class FetchServiceCollectionExtensions
             sp.GetRequiredService<FetchCoordinator>(), sp.GetRequiredService<ISoulseekFetcher>(), sp.GetRequiredService<IImporter>(),
             sp.GetRequiredService<IJellyfinIngest>(), sp.GetRequiredService<IOwnedIndex>(), sp.GetRequiredService<IJellyfinClient>(),
             sp.GetRequiredService<ISlskdClient>(), store, sp.GetRequiredService<IFreeSpace>(), sp.GetRequiredService<FetchWorkerSettings>(),
-            sp.GetRequiredService<ILogger<FetchWorker>>(), Time(sp)));
+            sp.GetRequiredService<ILogger<FetchWorker>>(), Time(sp), sp.GetService<Encore.Retention.ISharesDirty>()));
         services.AddHostedService(sp => sp.GetRequiredService<FetchWorker>());
         return services;
     }
