@@ -111,6 +111,9 @@ public sealed class AlbumRequester
     // Re-monitors used per request (T109; at most RequestLimits.AlbumRemonitors in this process).
     private readonly Dictionary<string, int> _remonitors = new(StringComparer.Ordinal);
 
+    // When each request was last re-monitored (T113): Soularr has not tried it since, so the first-try waiting text shows again.
+    private readonly Dictionary<string, DateTimeOffset> _remonitoredAt = new(StringComparer.Ordinal);
+
     // When each request last read its artist's monitored flag (at most hourly, T109).
     private readonly Dictionary<string, DateTimeOffset> _artistChecked = new(StringComparer.Ordinal);
 
@@ -304,6 +307,7 @@ public sealed class AlbumRequester
                 Detail: Details.Sending, Attempts: 0, ClearNextTry: true, ClearFailReason: true, Retries: row.Retries + 1));
             _log.StateChanged(row.Id, row.State, RequestState.Queued, "retry");
             _remonitors.Remove(row.Id);
+            _remonitoredAt.Remove(row.Id);
             _artistChecked.Remove(row.Id);
             row = _store.Get(row.Id)!;
             if (ActiveSibling(row) is { } sibling)
@@ -411,6 +415,11 @@ public sealed class AlbumRequester
             foreach (var gone in _remonitors.Keys.Where(k => !ids.Contains(k)).ToList())
             {
                 _remonitors.Remove(gone);
+            }
+
+            foreach (var gone in _remonitoredAt.Keys.Where(k => !ids.Contains(k)).ToList())
+            {
+                _remonitoredAt.Remove(gone);
             }
 
             foreach (var gone in _artistChecked.Keys.Where(k => !ids.Contains(k)).ToList())
@@ -714,6 +723,12 @@ public sealed class AlbumRequester
         var trackFiles = snapshot.TrackFiles ?? 0;
         var (files, expected, total) = Progress(album, statsFiles, trackFiles);
         var searchingFor = row.State == RequestState.Searching ? now - row.UpdatedUtc : TimeSpan.Zero;
+        if (_remonitoredAt.TryGetValue(row.Id, out var remonitored) && now - remonitored < searchingFor)
+        {
+            // Switched back on: Soularr's first try counts from then (updated_utc and the 7-day timer stay).
+            searchingFor = now - remonitored;
+        }
+
         var (state, detail) = files == 0
             ? (RequestState.Searching, Details.SearchingAfter(searchingFor))
             : files < expected
@@ -848,6 +863,7 @@ public sealed class AlbumRequester
             }
 
             _remonitors[row.Id] = used + 1;
+            _remonitoredAt[row.Id] = now;
             if (albumOff)
             {
                 await _lidarr.SetAlbumsMonitoredAsync([(int)albumId], true, ct).ConfigureAwait(false);

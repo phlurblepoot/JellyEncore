@@ -235,6 +235,40 @@ public sealed class AlbumRemonitorTests
     }
 
     [Fact]
+    public async Task RM10_A_re_monitor_shows_the_first_try_waiting_text_again_for_30_min_and_keeps_the_timer()
+    {
+        using var rig = new AlbumRig();
+        var row = await rig.CreateAsync(AlbumRig.OkComputer);
+        var began = rig.Row(row.Id).UpdatedUtc;
+        var album = rig.Lidarr.AlbumOf(AlbumRig.OkComputer);
+        rig.Clock.Advance(TimeSpan.FromHours(3));
+        await rig.PollAsync();
+        Assert.Equal(AlbumRequester.Details.NotFoundYet, rig.Row(row.Id).Detail);
+
+        album.Monitored = false;
+        await rig.PollAsync();
+        Assert.True(album.Monitored);
+        var after = rig.Row(row.Id);
+        Assert.Equal(AlbumRequester.Details.Searching, after.Detail);
+        Assert.Equal(began, after.UpdatedUtc);
+
+        for (var i = 0; i < 12; i++)
+        {
+            await rig.PollAsync();
+        }
+
+        Assert.Equal(AlbumRequester.Details.Searching, rig.Row(row.Id).Detail);
+        for (var i = 0; i < 4; i++)
+        {
+            await rig.PollAsync();
+        }
+
+        var later = rig.Row(row.Id);
+        Assert.Equal(AlbumRequester.Details.NotFoundYet, later.Detail);
+        Assert.Equal(began, later.UpdatedUtc);
+    }
+
+    [Fact]
     public void RM09_Waiting_text_by_time()
     {
         Assert.Equal(AlbumRequester.Details.Searching, AlbumRequester.Details.SearchingAfter(TimeSpan.Zero));

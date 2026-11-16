@@ -192,6 +192,7 @@ internal sealed class ApiRig : IDisposable
             extraServices?.Invoke(services);
         }));
         Client = _factory.CreateClient();
+        NoRedirectClient = _factory.CreateClient(new Microsoft.AspNetCore.Mvc.Testing.WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
         if (on)
         {
             Users.RefreshAsync().GetAwaiter().GetResult();
@@ -225,6 +226,8 @@ internal sealed class ApiRig : IDisposable
 
     public HttpClient Client { get; }
 
+    public HttpClient NoRedirectClient { get; }
+
     public IServiceProvider Services => _factory.Services;
 
     public static string MeJson(Guid id, string name, bool admin) =>
@@ -236,7 +239,7 @@ internal sealed class ApiRig : IDisposable
     /// <summary>One request. <paramref name="peer"/> is the connection's address; the headers are the ones a proxy would add.</summary>
     public Task<HttpResponseMessage> SendAsync(
         HttpMethod method, string path, string? peer = null, string? xff = null, string? proto = null,
-        string? bearer = null, string? origin = null, string? json = null, Action<HttpRequestMessage>? tweak = null)
+        string? bearer = null, string? origin = null, string? json = null, Action<HttpRequestMessage>? tweak = null, bool follow = true)
     {
         var request = new HttpRequestMessage(method, path);
         if (peer is not null)
@@ -270,11 +273,11 @@ internal sealed class ApiRig : IDisposable
         }
 
         tweak?.Invoke(request);
-        return Client.SendAsync(request);
+        return (follow ? Client : NoRedirectClient).SendAsync(request);
     }
 
-    public Task<HttpResponseMessage> GetAsync(string path, string? peer = null, string? xff = null, string? proto = null, string? bearer = null, string? origin = null) =>
-        SendAsync(HttpMethod.Get, path, peer, xff, proto, bearer, origin);
+    public Task<HttpResponseMessage> GetAsync(string path, string? peer = null, string? xff = null, string? proto = null, string? bearer = null, string? origin = null, bool follow = true) =>
+        SendAsync(HttpMethod.Get, path, peer, xff, proto, bearer, origin, follow: follow);
 
     public Task<HttpResponseMessage> PostAsync(string path, object body, string? peer = null, string? xff = null, string? bearer = null) =>
         SendAsync(HttpMethod.Post, path, peer, xff, null, bearer, null, JsonSerializer.Serialize(body));
@@ -679,6 +682,57 @@ public sealed class ApiHostTests
         Assert.Equal(HttpStatusCode.OK, health.StatusCode);
         using var proxiedHealth = await rig.GetAsync("/encore/health", peer: "172.21.0.5");
         Assert.Equal(HttpStatusCode.NotFound, proxiedHealth.StatusCode);
+    }
+
+    [Fact]
+    public async Task AH15b_the_bare_root_redirects_to_the_page_direct_and_proxied()
+    {
+        using var rig = new ApiRig(new Dictionary<string, string?> { ["ENCORE_TRUSTED_PROXIES"] = Proxies });
+
+        foreach (var peer in new string?[] { null, "172.21.0.5" })
+        {
+            using var get = await rig.GetAsync("/", peer: peer, follow: false);
+            Assert.Equal(HttpStatusCode.Found, get.StatusCode);
+            Assert.Equal("request", get.Headers.Location!.OriginalString);
+            using var head = await rig.SendAsync(HttpMethod.Head, "/", peer: peer, follow: false);
+            Assert.Equal(HttpStatusCode.Found, head.StatusCode);
+            using var post = await rig.SendAsync(HttpMethod.Post, "/", peer: peer, follow: false);
+            Assert.NotEqual(HttpStatusCode.Found, post.StatusCode);
+        }
+
+        // Nothing else is let through for a proxied request, and /health stays LAN-only.
+        using var other = await rig.GetAsync("/other", peer: "172.21.0.5");
+        Assert.Equal(HttpStatusCode.NotFound, other.StatusCode);
+        using var proxiedHealth = await rig.GetAsync("/health", peer: "172.21.0.5");
+        Assert.Equal(HttpStatusCode.NotFound, proxiedHealth.StatusCode);
+    }
+
+    [Fact]
+    public async Task AH15c_the_root_redirect_with_a_path_base_kept_or_stripped()
+    {
+        using var rig = new ApiRig(new Dictionary<string, string?> { ["ENCORE_PATH_BASE"] = "/encore", ["ENCORE_TRUSTED_PROXIES"] = Proxies });
+
+        foreach (var path in new[] { "/encore/", "/" })
+        {
+            using var proxied = await rig.GetAsync(path, peer: "172.21.0.5", follow: false);
+            Assert.Equal(HttpStatusCode.Found, proxied.StatusCode);
+            Assert.Equal("request", proxied.Headers.Location!.OriginalString);
+        }
+
+        using var direct = await rig.GetAsync("/encore/", follow: false);
+        Assert.Equal(HttpStatusCode.Found, direct.StatusCode);
+        using var bare = await rig.GetAsync("/", follow: false);
+        Assert.Equal(HttpStatusCode.NotFound, bare.StatusCode);
+        using var proxiedHealth = await rig.GetAsync("/encore/health", peer: "172.21.0.5");
+        Assert.Equal(HttpStatusCode.NotFound, proxiedHealth.StatusCode);
+    }
+
+    [Fact]
+    public async Task AH15d_with_requests_off_the_root_stays_a_404()
+    {
+        using var rig = new ApiRig(on: false);
+        using var root = await rig.GetAsync("/", follow: false);
+        Assert.Equal(HttpStatusCode.NotFound, root.StatusCode);
     }
 
     [Fact]

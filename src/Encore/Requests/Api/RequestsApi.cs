@@ -138,6 +138,15 @@ public static class RequestsApi
             var path = context.Request.Path;
             var ours = IsPage(path) || IsApi(path);
             var proxied = context.Items[ProxiedItem] is true;
+            if (path.Value == "/" && (HttpMethods.IsGet(context.Request.Method) || HttpMethods.IsHead(context.Request.Method))
+                && (proxied || options.PathBase.Length == 0 || context.Request.PathBase.HasValue))
+            {
+                // The bare root (T113): a relative redirect to the page, so it works under any path base the proxy keeps or strips.
+                context.Response.StatusCode = StatusCodes.Status302Found;
+                context.Response.Headers.Location = "request";
+                return Task.CompletedTask;
+            }
+
             if ((proxied && !ours) || (ours && !proxied && options.PathBase.Length > 0 && !context.Request.PathBase.HasValue))
             {
                 context.Response.StatusCode = StatusCodes.Status404NotFound;
