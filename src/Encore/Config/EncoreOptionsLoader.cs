@@ -51,7 +51,7 @@ public static class EncoreOptionsLoader
 
         var url = ParseUrl(Get(env, "JELLYFIN_URL"), errors);
         var key = ParseKey(Get(env, "JELLYFIN_API_KEY"), errors);
-        var users = ParseUsers(Get(env, "ENCORE_ALLOWED_USERS"), errors);
+        var (users, usersAll) = ParseUsers(Get(env, "ENCORE_ALLOWED_USERS"), errors);
 
         var lookahead = ParseInt(env, "ENCORE_LOOKAHEAD", 5, 1, 20, errors, out var lookaheadOk);
         var batchMax = lookaheadOk ? lookahead : 20;
@@ -199,6 +199,7 @@ public static class EncoreOptionsLoader
             JellyfinUrl = url!,
             JellyfinApiKey = key!,
             AllowedUsers = users!,
+            AllowedUsersAll = usersAll,
             Lookahead = lookahead,
             Batch = batch,
             PollSeconds = poll,
@@ -285,25 +286,30 @@ public static class EncoreOptionsLoader
         return text;
     }
 
-    private static List<string>? ParseUsers(string? text, List<ConfigError> errors)
+    private static (List<string>? Users, bool All) ParseUsers(string? text, List<ConfigError> errors)
     {
         var users = new List<string>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var all = false;
         foreach (var part in (text ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
-            if (seen.Add(part))
+            if (part == "*")
+            {
+                all = true;
+            }
+            else if (seen.Add(part))
             {
                 users.Add(part);
             }
         }
 
-        if (users.Count == 0)
+        if (users.Count == 0 && !all)
         {
-            errors.Add(new("ENCORE_ALLOWED_USERS", "ENCORE_ALLOWED_USERS must list at least one Jellyfin user name, comma separated"));
-            return null;
+            errors.Add(new("ENCORE_ALLOWED_USERS", "ENCORE_ALLOWED_USERS must list at least one Jellyfin user name, comma separated (or * for every user)"));
+            return (null, false);
         }
 
-        return users;
+        return (users, all);
     }
 
     private static int ParseInt(IDictionary<string, string?> env, string name, int fallback, int min, int max,

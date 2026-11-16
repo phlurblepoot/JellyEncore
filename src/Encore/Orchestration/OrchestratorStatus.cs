@@ -18,6 +18,9 @@ public sealed record OrchestratorStatus
 
     public IReadOnlyList<string> AllowListConfigured { get; init; } = [];
 
+    /// <summary>T117: ENCORE_ALLOWED_USERS=*, so nothing is resolved.</summary>
+    public bool AllowListEveryone { get; init; }
+
     /// <summary>Resolved user name to user id ("N" form).</summary>
     public IReadOnlyDictionary<string, string> AllowListResolved { get; init; } = new Dictionary<string, string>();
 

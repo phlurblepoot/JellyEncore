@@ -6,8 +6,8 @@ namespace Encore.Logging;
 public static partial class Log
 {
     [LoggerMessage(EventId = 1000, EventName = "startup.config", Level = LogLevel.Information,
-        Message = "Encore {Version} configured: jellyfin {Url}, users [{AllowedUsers}], lookahead {Lookahead}, batch {Batch}, poll {PollSeconds}s, window {RecentWindow}, dryRun {DryRun}, dataDir {DataDir}, deviceId {DeviceId}, apiKey {ApiKey}, fetchMode {FetchMode}, slskdUrl {SlskdUrl}, slskdApiKey {SlskdApiKey}, slskdDownloadsDir {SlskdDownloadsDir}, radioDir {RadioDir}, radioJellyfinDir {RadioJellyfinDir}, searchLimit {SearchLimit}, fetchConcurrency {FetchConcurrency}, requests {Requests}, requestUsers [{RequestUsers}], songsPerDay {SongsPerDay}, albumsPerDay {AlbumsPerDay}, origins [{Origins}], publicUrl {PublicUrl}, pathBase {PathBase}, trustedProxies [{TrustedProxies}], jellyfinPublicUrl {JellyfinPublicUrl}, lidarrUrl {LidarrUrl}, lidarrApiKey {LidarrApiKey}, lidarrRootFolder {LidarrRootFolder}, lidarrPathMap {LidarrPathMap}")]
-    private static partial void StartupConfig(ILogger logger, string version, string url, string allowedUsers,
+        Message = "Encore {Version} configured: jellyfin {Url}, users [{AllowedUsers}], everyone {AllowedEveryone}, lookahead {Lookahead}, batch {Batch}, poll {PollSeconds}s, window {RecentWindow}, dryRun {DryRun}, dataDir {DataDir}, deviceId {DeviceId}, apiKey {ApiKey}, fetchMode {FetchMode}, slskdUrl {SlskdUrl}, slskdApiKey {SlskdApiKey}, slskdDownloadsDir {SlskdDownloadsDir}, radioDir {RadioDir}, radioJellyfinDir {RadioJellyfinDir}, searchLimit {SearchLimit}, fetchConcurrency {FetchConcurrency}, requests {Requests}, requestUsers [{RequestUsers}], songsPerDay {SongsPerDay}, albumsPerDay {AlbumsPerDay}, origins [{Origins}], publicUrl {PublicUrl}, pathBase {PathBase}, trustedProxies [{TrustedProxies}], jellyfinPublicUrl {JellyfinPublicUrl}, lidarrUrl {LidarrUrl}, lidarrApiKey {LidarrApiKey}, lidarrRootFolder {LidarrRootFolder}, lidarrPathMap {LidarrPathMap}")]
+    private static partial void StartupConfig(ILogger logger, string version, string url, string allowedUsers, bool allowedEveryone,
         int lookahead, int batch, int pollSeconds, string recentWindow, bool dryRun, string dataDir, string deviceId, string apiKey,
         string fetchMode, string slskdUrl, string slskdApiKey, string slskdDownloadsDir, string radioDir, string radioJellyfinDir,
         string searchLimit, int fetchConcurrency, string requests, string requestUsers, int songsPerDay, int albumsPerDay,
@@ -24,7 +24,7 @@ public static partial class Log
 
     /// <summary>Startup summary. The key is reported only as "set".</summary>
     public static void StartupConfig(this ILogger logger, EncoreOptions o, string version) =>
-        StartupConfig(logger, version, o.JellyfinUrl.ToString(), string.Join(", ", o.AllowedUsers), o.Lookahead, o.Batch,
+        StartupConfig(logger, version, o.JellyfinUrl.ToString(), string.Join(", ", o.AllowedUsers), o.AllowedUsersAll, o.Lookahead, o.Batch,
             o.PollSeconds, o.RecentWindow.ToString(), o.DryRun, o.DataDir, o.DeviceId, "set",
             o.FetchMode.ToString(), o.SlskdUrl?.ToString() ?? "none", o.SlskdApiKey is null ? "unset" : "set", o.SlskdDownloadsDir,
             o.RadioDir, o.RadioJellyfinDir, o.SearchLimit.ToString(), o.FetchConcurrency,

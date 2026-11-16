@@ -75,7 +75,9 @@ public sealed class Orchestrator : BackgroundService
         {
             StartedUtc = now,
             LastHeartbeatUtc = now,
-            AllowListConfigured = options.AllowedUsers,
+            AllowListConfigured = options.AllowedUsersAll ? ["*"] : options.AllowedUsers,
+            AllowListEveryone = options.AllowedUsersAll,
+            AllowListResolvedUtc = options.AllowedUsersAll ? now : null,
         };
     }
 
@@ -165,6 +167,13 @@ public sealed class Orchestrator : BackgroundService
     public async Task RefreshAllowListAsync(CancellationToken ct = default)
     {
         var now = _time.GetUtcNow();
+        if (_options.AllowedUsersAll)
+        {
+            // T117: everyone is allowed; no names to resolve, so a user added later works without a restart.
+            _nextAllowListAt = now + _timing.AllowListRefresh;
+            return;
+        }
+
         try
         {
             var users = await _jellyfin.GetUsersAsync(ct).ConfigureAwait(false);
@@ -282,7 +291,7 @@ public sealed class Orchestrator : BackgroundService
     {
         var now = _time.GetUtcNow();
         var session = SessionMapping.ToTrigger(dto);
-        var allowed = session.UserId is { } user && _allowed.Contains(user);
+        var allowed = session.UserId is { } user && user != Guid.Empty && (_options.AllowedUsersAll || _allowed.Contains(user));
         if (!_sessions.TryGetValue(dto.Id, out var track))
         {
             track = new SessionTrack();
@@ -360,6 +369,7 @@ public sealed class Orchestrator : BackgroundService
         return new TriggerContext
         {
             AllowedUserIds = _allowed,
+            AllowEveryone = _options.AllowedUsersAll,
             Now = now,
             OwnDeviceId = _options.DeviceId,
             Batch = _options.Batch,

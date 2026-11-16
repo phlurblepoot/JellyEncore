@@ -12,6 +12,9 @@ public sealed record EncoreOptions
 
     public required IReadOnlyList<string> AllowedUsers { get; init; }
 
+    /// <summary>T117: ENCORE_ALLOWED_USERS contained *: every Jellyfin user gets radio and no names are resolved.</summary>
+    public bool AllowedUsersAll { get; init; }
+
     public int Lookahead { get; init; } = 5;
 
     public int Batch { get; init; } = 2;
@@ -102,7 +105,7 @@ public sealed record EncoreOptions
     // The compiler-generated printing would include the key, so replace it.
     private bool PrintMembers(StringBuilder builder)
     {
-        builder.Append($"JellyfinUrl = {JellyfinUrl}, JellyfinApiKey = <redacted>, AllowedUsers = [{string.Join(", ", AllowedUsers)}], ")
+        builder.Append($"JellyfinUrl = {JellyfinUrl}, JellyfinApiKey = <redacted>, AllowedUsers = [{(AllowedUsersAll ? "*" : string.Join(", ", AllowedUsers))}],")
             .Append($"Lookahead = {Lookahead}, Batch = {Batch}, PollSeconds = {PollSeconds}, RecentWindow = {RecentWindow}, ")
             .Append($"DryRun = {DryRun}, DataDir = {DataDir}, LogLevel = {LogLevel}, DeviceId = {DeviceId}, ")
             .Append($"FetchMode = {FetchMode}, SlskdUrl = {SlskdUrl}, SlskdApiKey = <redacted>, SlskdDownloadsDir = {SlskdDownloadsDir}, ")

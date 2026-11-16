@@ -35,7 +35,8 @@ public sealed record HealthAllowList(
     IReadOnlyDictionary<string, string> Resolved,
     IReadOnlyList<string> Unresolved,
     DateTimeOffset? ResolvedUtc,
-    string? Error);
+    string? Error,
+    bool Everyone = false);
 
 public sealed record HealthSessions(int Tracked, int AllowListedPlaying);
 
@@ -146,7 +147,7 @@ public static class HealthEvaluator
             Jellyfin: new HealthJellyfin(input.Options.JellyfinUrl.GetLeftPart(UriPartial.Path).TrimEnd('/'), o.JellyfinLastOkUtc, o.JellyfinLastError),
             Socket: new HealthSocket(w.State.ToString().ToLowerInvariant(), w.Since, w.Reconnects, w.LastMessageAt, w.LastSessionsAt),
             Poll: new HealthPoll(w.PollActive, w.LastPollAt),
-            AllowList: new HealthAllowList(o.AllowListConfigured, o.AllowListResolved, o.AllowListUnresolved, o.AllowListResolvedUtc, o.AllowListError),
+            AllowList: new HealthAllowList(o.AllowListConfigured, o.AllowListResolved, o.AllowListUnresolved, o.AllowListResolvedUtc, o.AllowListError, o.AllowListEveryone),
             Sessions: new HealthSessions(o.SessionsTracked, o.AllowListedPlaying),
             Triggers: new HealthTriggers(o.Fired, o.Sent, o.DryRun, o.NoPicks, o.Failed, o.LastFireUtc, o.LastOutcome),
             PlayLast: new HealthPlayLast(o.ItemsSent, o.Unconfirmed, o.LastSentUtc),

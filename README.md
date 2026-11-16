@@ -51,7 +51,7 @@ Invalid settings are all reported at once (one JSON log line per bad variable) a
 |---|---|---|
 | `JELLYFIN_URL` | Jellyfin base URL (http/https), required | - |
 | `JELLYFIN_API_KEY` | Jellyfin API key, required, no whitespace | - |
-| `ENCORE_ALLOWED_USERS` | Comma-separated Jellyfin user names or user ids, at least one. Only these users get radio | - |
+| `ENCORE_ALLOWED_USERS` | Comma-separated Jellyfin user names or user ids, at least one. Only these users get radio. `*` (alone or in the list) means every Jellyfin user, including users added later, with no restart; names are then not resolved. `/health` shows `allowList.configured` as `["*"]` and `allowList.everyone` as `true` | - |
 | `ENCORE_LOOKAHEAD` | Songs planned ahead (1-20) | `5` |
 | `ENCORE_BATCH` | Songs sent per trigger (1 to lookahead) | `2` |
 | `ENCORE_POLL_SECONDS` | Fallback poll interval while the socket is down (5-300) | `10` |

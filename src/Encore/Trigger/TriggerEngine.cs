@@ -39,7 +39,7 @@ public static class TriggerEngine
         var model = item is null || tracked.Instance is null ? QueueModel.Unknown : Classify(session, tracked.Instance, out webShaped);
 
         // 2. Allow-list, by user id. Reported once per session.
-        if (!context.AllowedUserIds.Contains(userId))
+        if (!context.AllowEveryone && !context.AllowedUserIds.Contains(userId))
         {
             var decision = new TriggerDecision.Skip(SkipReason.NotAllowed, model, !tracked.NotAllowedReported);
             return new(tracked with { NotAllowedReported = true }, decision, started);

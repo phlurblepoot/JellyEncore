@@ -6,6 +6,9 @@ public sealed record TriggerContext
     /// <summary>Resolved allow-list. Matching is by user id, so a renamed user still matches.</summary>
     public required IReadOnlySet<Guid> AllowedUserIds { get; init; }
 
+    /// <summary>T117: every user is allowed (ENCORE_ALLOWED_USERS=*); <see cref="AllowedUserIds"/> is not consulted.</summary>
+    public bool AllowEveryone { get; init; }
+
     public required DateTimeOffset Now { get; init; }
 
     /// <summary>Encore's own DeviceId; a session with this DeviceId is ignored.</summary>
