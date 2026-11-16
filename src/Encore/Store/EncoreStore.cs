@@ -574,15 +574,25 @@ public sealed class EncoreStore : IDisposable
     }
 
     /// <summary>
-    /// Copies the file to <c>{path}.v{old}.bak</c> before the first migration, unless that copy exists (rollback path:
-    /// the v0.1.1 build refuses a schema-2 file). VACUUM INTO makes a consistent copy through the open connection.
+    /// Writes <c>{path}.v{old}.bak</c> before a migration (rollback path: the older build refuses the newer schema). An existing backup is a
+    /// leftover of an earlier migration (a rollback restored it, the old build ran for a while, now the new build migrates again), and
+    /// the days on the old build exist only in the file about to change, so the old backup is renamed with the date it was written
+    /// (<c>.bak.yyyyMMdd-HHmmss</c>, a counter if that name is taken) and a fresh one is made. VACUUM INTO makes a consistent copy
+    /// through the open connection.
     /// </summary>
     private static void BackupBeforeMigration(SqliteConnection db, string path, int version)
     {
         var backup = $"{path}.v{version}.bak";
         if (File.Exists(backup))
         {
-            return;
+            var stamp = File.GetLastWriteTimeUtc(backup).ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
+            var renamed = $"{backup}.{stamp}";
+            for (var n = 2; File.Exists(renamed); n++)
+            {
+                renamed = $"{backup}.{stamp}-{n}";
+            }
+
+            File.Move(backup, renamed);
         }
 
         using var cmd = db.CreateCommand();

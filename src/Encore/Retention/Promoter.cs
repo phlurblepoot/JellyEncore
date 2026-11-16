@@ -72,7 +72,6 @@ public sealed record PromoterHooks(Action<string>? Checkpoint = null);
 /// </summary>
 public sealed class Promoter : IDisposable
 {
-    private const int RecentLimit = 50;
     private const string ItemFields = "Path,DateCreated";
 
     private readonly FetchStore _fetch;
@@ -318,6 +317,7 @@ public sealed class Promoter : IDisposable
 
         if (promo.Stalled)
         {
+            await RestoreStalledAsync(row, promo, ct).ConfigureAwait(false); // a promotion stalled before restore existed, or whose restore failed
             return new PromotionResult(rowId, PromotionOutcome.Stalled, promo.Step, promo.LastError);
         }
 
@@ -356,7 +356,7 @@ public sealed class Promoter : IDisposable
                 case Defer defer:
                     return new PromotionResult(rowId, PromotionOutcome.Deferred, promo.Step, defer.Reason);
                 case Fail fail:
-                    return Failed(promo, fail.Error);
+                    return await FailedAsync(promo, fail.Error, run, ct).ConfigureAwait(false);
             }
         }
     }
@@ -390,7 +390,7 @@ public sealed class Promoter : IDisposable
         return null;
     }
 
-    private PromotionResult Failed(PromotionRow promo, string error)
+    private async Task<PromotionResult> FailedAsync(PromotionRow promo, string error, Run run, CancellationToken ct)
     {
         var attempts = promo.Attempts + 1;
         var stalled = attempts >= RetentionLimits.MaxPromotionAttempts;
@@ -399,10 +399,67 @@ public sealed class Promoter : IDisposable
         if (stalled)
         {
             _log.PromoteStalled(promo.FetchedFileId, promo.Step);
+            await RestoreStalledAsync(run.Row, promo, ct).ConfigureAwait(false);
             return new PromotionResult(promo.FetchedFileId, PromotionOutcome.Stalled, promo.Step, error);
         }
 
         return new PromotionResult(promo.FetchedFileId, PromotionOutcome.Failed, promo.Step, error);
+    }
+
+    /// <summary>
+    /// A promotion that stalls after the radio copy was removed but before the song reached the library (steps <c>old_gone</c> and
+    /// <c>placed</c>) would leave the only copy in the hidden staging folder, invisible to Jellyfin. It is put back at its radio path, the row
+    /// is marked kept and 8595 is logged. The stalled promotions row stays, so nothing retries it. Later steps need no rescue: the file is
+    /// already in the library. Idempotent and safe to call again (nothing to do once the staged copy is gone).
+    /// </summary>
+    private async Task RestoreStalledAsync(TrackedFile row, PromotionRow promo, CancellationToken ct)
+    {
+        if (promo.Step is not (PromotionStep.OldGone or PromotionStep.Placed)
+            || promo.StagedPath is not { } staged || promo.Sha256 is not { } sha || row.Path is not { } radioPath
+            || !File.Exists(staged))
+        {
+            return;
+        }
+
+        try
+        {
+            if (promo.TargetPath is { } target && File.Exists(target) && await HashAsync(target, ct).ConfigureAwait(false) == sha)
+            {
+                return; // the song is already in the library
+            }
+
+            if (File.Exists(radioPath) || await HashAsync(staged, ct).ConfigureAwait(false) != sha)
+            {
+                return; // never overwrite, never restore a copy that is not the verified one
+            }
+
+            if (await CopyThenRenameAsync(staged, radioPath, sha, ct).ConfigureAwait(false) is { } copyError)
+            {
+                _log.PromoteRestoreFailed(row.Id, copyError);
+                return;
+            }
+
+            TryDelete(staged);
+            _fetch.MarkKept(row.Id, "promotion_stalled", _time.GetUtcNow());
+            _log.PromoteRestored(row.Id, promo.Step, radioPath);
+            _shares?.MarkDirty("promote_restored");
+            try
+            {
+                await _jellyfin.ReportMediaUpdatedAsync([OldJellyfinFolder(row)], ct).ConfigureAwait(false);
+            }
+            catch (JellyfinException)
+            {
+                // Jellyfin finds the file at its next scan.
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            _log.PromoteRestoreFailed(row.Id, $"{e.GetType().Name}: {e.Message}");
+        }
     }
 
     private Task<StepResult> StepAsync(Run run, PromotionRow promo, CancellationToken ct) => promo.Step switch
@@ -571,16 +628,28 @@ public sealed class Promoter : IDisposable
         {
             if (await HashAsync(target, ct).ConfigureAwait(false) != sha)
             {
-                return new Fail("target_exists"); // never overwrite (invariant 5); the staged copy stays safe
+                // A place that crashed mid-copy (an older build moved across disks) leaves a prefix of our staged copy under the target
+                // name. That is provably ours, so it may go; anything else is never overwritten (invariant 5).
+                if (stagedThere && await IsPartialCopyAsync(target, staged!, ct).ConfigureAwait(false))
+                {
+                    File.Delete(target);
+                }
+                else
+                {
+                    return new Fail("target_exists"); // the staged copy stays safe
+                }
             }
-
-            if (stagedThere)
+            else
             {
-                TryDelete(staged!); // our own staged copy of a file already placed (a move that copied, then stopped)
-            }
+                if (stagedThere)
+                {
+                    TryDelete(staged!); // our own staged copy of a file already placed
+                }
 
-            await _jellyfin.ReportMediaUpdatedAsync([Folder(targetJellyfin)], ct).ConfigureAwait(false);
-            return new Next(PromotionStep.Ingested);
+                TryDelete(target + RetentionLimits.StagedSuffix); // a leftover of our own place step
+                await _jellyfin.ReportMediaUpdatedAsync([Folder(targetJellyfin)], ct).ConfigureAwait(false);
+                return new Next(PromotionStep.Ingested);
+            }
         }
 
         if (!stagedThere)
@@ -589,17 +658,77 @@ public sealed class Promoter : IDisposable
         }
 
         await WaitForLidarrAsync(promo.FetchedFileId, ct).ConfigureAwait(false);
+        if (await CopyThenRenameAsync(staged!, target, sha, ct).ConfigureAwait(false) is { } error)
+        {
+            return new Fail(error);
+        }
+
+        TryDelete(staged!);
+        await _jellyfin.ReportMediaUpdatedAsync([Folder(targetJellyfin)], ct).ConfigureAwait(false);
+        return new Next(PromotionStep.Ingested);
+    }
+
+    /// <summary>
+    /// Writes <paramref name="source"/> to <c>{target}.encore-part</c> next to the target (a stale one is overwritten: the name is ours), checks
+    /// its hash, then renames it to <paramref name="target"/> without overwriting. The rename stays inside one folder, so it is atomic and never
+    /// crosses Unraid disks; a crash leaves only the non-audio part file. Returns an error text, or null when the target now exists.
+    /// </summary>
+    private async Task<string?> CopyThenRenameAsync(string source, string target, string sha, CancellationToken ct)
+    {
         var albumFolder = Path.GetDirectoryName(target)!;
         CreateFolder(Path.GetDirectoryName(albumFolder)!);
         CreateFolder(albumFolder);
-        File.Move(staged!, target, overwrite: false);
+        var part = target + RetentionLimits.StagedSuffix;
+        await using (var input = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.Asynchronous))
+        await using (var output = NewFile(part))
+        {
+            await input.CopyToAsync(output, 81920, ct).ConfigureAwait(false);
+            await output.FlushAsync(ct).ConfigureAwait(false);
+            output.Flush(flushToDisk: true);
+        }
+
+        _hooks.Checkpoint?.Invoke("part_written");
+        if (await HashAsync(part, ct).ConfigureAwait(false) != sha)
+        {
+            TryDelete(part);
+            return "place_copy_mismatch";
+        }
+
+        File.Move(part, target, overwrite: false);
         if (!OperatingSystem.IsWindows())
         {
             File.SetUnixFileMode(target, RetentionLimits.NewFileMode);
         }
 
-        await _jellyfin.ReportMediaUpdatedAsync([Folder(targetJellyfin)], ct).ConfigureAwait(false);
-        return new Next(PromotionStep.Ingested);
+        return null;
+    }
+
+    /// <summary>True when <paramref name="partial"/> is shorter than <paramref name="whole"/> and holds exactly its first bytes.</summary>
+    private static async Task<bool> IsPartialCopyAsync(string partial, string whole, CancellationToken ct)
+    {
+        await using var a = new FileStream(partial, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.Asynchronous);
+        await using var b = new FileStream(whole, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.Asynchronous);
+        if (a.Length >= b.Length)
+        {
+            return false;
+        }
+
+        var x = new byte[81920];
+        var y = new byte[81920];
+        while (true)
+        {
+            var read = await a.ReadAtLeastAsync(x, x.Length, throwOnEndOfStream: false, ct).ConfigureAwait(false);
+            if (read == 0)
+            {
+                return true;
+            }
+
+            await b.ReadExactlyAsync(y.AsMemory(0, read), ct).ConfigureAwait(false);
+            if (!x.AsSpan(0, read).SequenceEqual(y.AsSpan(0, read)))
+            {
+                return false;
+            }
+        }
     }
 
     /// <summary>Waits while Lidarr runs an import, rescan, rename or retag (at most 10 min), then places anyway (8510). A courtesy, not a safety rule.</summary>
@@ -659,8 +788,9 @@ public sealed class Promoter : IDisposable
         {
             try
             {
-                var recent = await _jellyfin.GetRecentAudioAsync(parent, RecentLimit, ct).ConfigureAwait(false);
-                if (recent.FirstOrDefault(i => i.Id != Guid.Empty && string.Equals(i.Path, targetJellyfin, StringComparison.Ordinal)) is { } item)
+                // By path (a targeted query, then paging), not only the newest items: a long outage or a big import since the placement
+                // would push the new item out of a fixed window.
+                if (await _jellyfin.FindAudioByPathAsync(parent, targetJellyfin, ct).ConfigureAwait(false) is { } item && item.Id != Guid.Empty)
                 {
                     return new Next(PromotionStep.Verified, new PromotionUpdate(NewItemId: item.Id.ToString("N")));
                 }
@@ -837,7 +967,7 @@ public sealed class Promoter : IDisposable
         }
         catch (Exception e)
         {
-            return Failed(promo, $"{e.GetType().Name}: {e.Message}");
+            return await FailedAsync(promo, $"{e.GetType().Name}: {e.Message}", run, ct).ConfigureAwait(false);
         }
 
         _log.PromoteStep(rowId, PromotionStep.Done, promo.TargetPath);

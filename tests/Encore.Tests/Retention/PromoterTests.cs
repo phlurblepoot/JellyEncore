@@ -120,6 +120,15 @@ internal sealed class PromoterJellyfin : IJellyfinClient, IRetentionJellyfin
         }
     }
 
+    /// <summary>Like the real client: finds the item by its exact path, however old it is (unlike <see cref="GetRecentAudioAsync"/>'s window).</summary>
+    public Task<BaseItemDto?> FindAudioByPathAsync(Guid parentId, string jellyfinPath, CancellationToken ct = default)
+    {
+        lock (_gate)
+        {
+            return Task.FromResult(Items.FirstOrDefault(i => i.Value == jellyfinPath) is { Value: not null } p ? Dto(p.Key, p.Value) : null);
+        }
+    }
+
     public Task<IReadOnlyList<BaseItemDto>> GetItemsByIdsAsync(IReadOnlyCollection<Guid> ids, string fields, CancellationToken ct = default)
     {
         lock (_gate)
@@ -1121,6 +1130,197 @@ public sealed class PromoterTests : IDisposable
         Assert.True(File.Exists(song.Path));
         Assert.Null(_rig.Store.GetPromotion(song.Id));
         Assert.False(Directory.Exists(_rig.Incoming));
+    }
+
+    // ---- review v0.4 fixes (T134) ----
+
+    [Fact]
+    public async Task PM27_the_new_item_is_found_by_path_even_when_newer_items_push_it_out_of_the_newest_50()
+    {
+        var song = _rig.Ready();
+        using var promoter = _rig.Make(p =>
+        {
+            if (p == "step:ingested")
+            {
+                // A big import (or a long outage) since the placement: 60 newer items.
+                for (var i = 0; i < 60; i++)
+                {
+                    _rig.Jellyfin.Items[Guid.NewGuid()] = $"/media/music/Flood/Album/{i:00} - Other.flac";
+                }
+            }
+        });
+
+        var result = await promoter.PromoteAsync(song.Id, []);
+
+        Assert.Equal(PromotionOutcome.Done, result.Outcome);
+        Assert.Equal(_rig.Jellyfin.ItemAt("/media/music/Artist/Album (2020)/01 - Song.flac")!.Value.ToString("N"), _rig.Fetch.GetTracked(song.Id)!.JellyfinItemId);
+    }
+
+    [Fact]
+    public async Task PM28_the_copy_is_written_next_to_the_target_as_encore_part_then_renamed_in_place()
+    {
+        var song = _rig.Ready();
+        var albumFolder = Target("Artist/Album (2020)");
+        var seen = new List<string>();
+        var targetThere = true;
+        using var promoter = _rig.Make(p =>
+        {
+            if (p == "part_written")
+            {
+                seen.AddRange(Directory.EnumerateFiles(albumFolder).Select(Path.GetFileName)!);
+                targetThere = File.Exists(Target("Artist/Album (2020)/01 - Song.flac"));
+            }
+        });
+
+        var result = await promoter.PromoteAsync(song.Id, []);
+
+        Assert.Equal(PromotionOutcome.Done, result.Outcome);
+        Assert.Equal(["01 - Song.flac.encore-part"], seen);
+        Assert.False(targetThere);
+        Assert.Equal(["Artist/Album (2020)/01 - Song.flac"], _rig.LibraryFiles());
+    }
+
+    private async Task<(Song Song, string Staged, string Target)> KilledAtPlacedAsync()
+    {
+        var song = _rig.Ready(content: new string('x', 5000));
+        using (var first = _rig.Make(p =>
+        {
+            if (p == "step:placed")
+            {
+                throw new OperationCanceledException("killed at " + p);
+            }
+        }))
+        {
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first.PromoteAsync(song.Id, []));
+        }
+
+        return (song, Path.Combine(_rig.Incoming, $"{song.Id}.flac.encore-part"), Target("Artist/Album (2020)/01 - Song.flac"));
+    }
+
+    [Fact]
+    public async Task PM29_a_partial_target_left_by_a_crashed_place_is_removed_and_the_song_placed()
+    {
+        var (song, staged, target) = await KilledAtPlacedAsync();
+        var bytes = File.ReadAllBytes(staged);
+        Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+        File.WriteAllBytes(target, bytes[..(bytes.Length / 2)]);
+
+        using var second = _rig.Make();
+        var result = await second.PromoteAsync(song.Id, []);
+
+        Assert.Equal(PromotionOutcome.Done, result.Outcome);
+        Assert.Equal(song.Sha, PromoterRig.Hash(target));
+        Assert.Equal(["Artist/Album (2020)/01 - Song.flac"], _rig.LibraryFiles());
+    }
+
+    [Fact]
+    public async Task PM30_a_stale_encore_part_next_to_the_target_is_overwritten()
+    {
+        var (song, staged, target) = await KilledAtPlacedAsync();
+        Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+        File.WriteAllText(target + ".encore-part", "half a file from a crashed copy");
+
+        using var second = _rig.Make();
+        var result = await second.PromoteAsync(song.Id, []);
+
+        Assert.Equal(PromotionOutcome.Done, result.Outcome);
+        Assert.Equal(song.Sha, PromoterRig.Hash(target));
+        Assert.Equal(["Artist/Album (2020)/01 - Song.flac"], _rig.LibraryFiles());
+        Assert.False(File.Exists(staged));
+    }
+
+    [Fact]
+    public async Task PM31_a_target_that_is_not_a_prefix_of_our_copy_is_never_touched()
+    {
+        var (song, staged, target) = await KilledAtPlacedAsync();
+        Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+        File.WriteAllText(target, "another file");
+
+        using var second = _rig.Make();
+        var result = await second.PromoteAsync(song.Id, []);
+
+        Assert.Equal(PromotionOutcome.Failed, result.Outcome);
+        Assert.Equal("target_exists", result.Reason);
+        Assert.Equal("another file", File.ReadAllText(target));
+        Assert.True(File.Exists(staged));
+    }
+
+    [Fact]
+    public async Task PM32_a_promotion_that_stalls_before_the_song_is_placed_puts_it_back_in_the_radio_folder_and_keeps_it()
+    {
+        var song = _rig.Ready();
+        _rig.Jellyfin.LingerPolls = 100000; // the old item never leaves Jellyfin
+        using var promoter = _rig.Make();
+        for (var i = 1; i <= 4; i++)
+        {
+            Assert.Equal(PromotionOutcome.Failed, (await promoter.PromoteAsync(song.Id, [])).Outcome);
+        }
+
+        var stalled = await promoter.PromoteAsync(song.Id, []);
+
+        Assert.Equal((PromotionOutcome.Stalled, PromotionStep.OldGone), (stalled.Outcome, stalled.Step));
+        Assert.True(File.Exists(song.Path));
+        Assert.Equal(song.Sha, PromoterRig.Hash(song.Path));
+        Assert.Empty(Directory.EnumerateFiles(_rig.Incoming));
+        Assert.Empty(_rig.LibraryFiles());
+        var row = _rig.Fetch.GetTracked(song.Id)!;
+        Assert.Equal(FetchState.Ready, row.State);
+        Assert.Equal("promotion_stalled", row.KeptReason);
+        Assert.Equal(1, _rig.Events(8540));
+        Assert.Equal(1, _rig.Events(8595));
+        Assert.Contains("promote_restored", _rig.Shares.Dirty);
+
+        // Not retried, and nothing more happens on later calls.
+        Assert.Equal(PromotionOutcome.Stalled, (await promoter.PromoteAsync(song.Id, [])).Outcome);
+        Assert.Equal(1, _rig.Events(8595));
+        Assert.Empty(_rig.LibraryFiles());
+    }
+
+    [Fact]
+    public async Task PM33_a_stall_at_placed_because_the_target_is_someone_elses_also_restores_the_song_and_leaves_the_library_file_alone()
+    {
+        var song = _rig.Ready();
+        var target = Target("Artist/Album (2020)/01 - Song.flac");
+        using var promoter = _rig.Make(p =>
+        {
+            if (p == "step:placed" && !File.Exists(target))
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                File.WriteAllText(target, "a different recording");
+            }
+        });
+
+        PromotionResult result = null!;
+        for (var i = 1; i <= 5; i++)
+        {
+            result = await promoter.PromoteAsync(song.Id, []);
+        }
+
+        Assert.Equal((PromotionOutcome.Stalled, PromotionStep.Placed), (result.Outcome, result.Step));
+        Assert.Equal("a different recording", File.ReadAllText(target));
+        Assert.Equal(song.Sha, PromoterRig.Hash(song.Path));
+        Assert.Empty(Directory.EnumerateFiles(_rig.Incoming));
+        Assert.Equal("promotion_stalled", _rig.Fetch.GetTracked(song.Id)!.KeptReason);
+    }
+
+    [Fact]
+    public async Task PM34_a_stall_after_the_song_is_in_the_library_is_not_restored()
+    {
+        var song = _rig.Ready();
+        var list = _rig.Playlist([song.Item], [PromoterRig.Cat]); // nobody who may edit it is a candidate: the playlist step fails
+        using var promoter = _rig.Make();
+        IReadOnlyList<PlaylistMembership> members = [PromoterRig.Member(list, 0, PromoterRig.Ann)];
+
+        PromotionResult result = null!;
+        for (var i = 1; i <= 5; i++)
+        {
+            result = await promoter.PromoteAsync(song.Id, members);
+        }
+
+        Assert.Equal((PromotionOutcome.Stalled, PromotionStep.Playlists), (result.Outcome, result.Step));
+        Assert.False(File.Exists(song.Path));
+        Assert.Equal(["Artist/Album (2020)/01 - Song.flac"], _rig.LibraryFiles());
+        Assert.Equal(0, _rig.Events(8595));
     }
 
     // ---- target path rules (v04 §7.1) ----

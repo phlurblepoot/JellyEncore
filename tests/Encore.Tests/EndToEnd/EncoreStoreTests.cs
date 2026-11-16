@@ -277,6 +277,35 @@ public class EncoreStoreTests : IDisposable
     }
 
     [Fact]
+    public void A_second_migration_renames_the_old_backup_with_its_date_and_writes_a_fresh_one()
+    {
+        // Review v0.4 issue 5: a rollback restored the backup, the old build ran for a while, the new build migrates again.
+        MakeV1File();
+        EncoreStore.Open(Path_(), _time).Dispose();
+        var backup = Path_() + ".v1.bak";
+        File.SetLastWriteTimeUtc(backup, new DateTime(2026, 11, 10, 8, 30, 15, DateTimeKind.Utc));
+
+        MakeV1File(); // back to v1 with later rows
+        using (var db = Raw())
+        {
+            Run(db, "INSERT INTO plays (session_id, user_id, item_id, kind, at_utc) VALUES ('s9', 'u9', 'i9', 'x', '2026-11-12T00:00:00.0000000Z')");
+        }
+
+        EncoreStore.Open(Path_(), _time).Dispose();
+
+        var old = Path_() + ".v1.bak.20261110-083015";
+        Assert.True(File.Exists(old));
+        Assert.True(File.Exists(backup));
+        using var fresh = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = backup, Mode = SqliteOpenMode.ReadOnly, Pooling = false }.ConnectionString);
+        fresh.Open();
+        Assert.Equal(1, Scalar(fresh, "PRAGMA user_version"));
+        Assert.Equal(1, Scalar(fresh, "SELECT COUNT(*) FROM plays WHERE session_id = 's9'"));
+        using var kept = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = old, Mode = SqliteOpenMode.ReadOnly, Pooling = false }.ConnectionString);
+        kept.Open();
+        Assert.Equal(0, Scalar(kept, "SELECT COUNT(*) FROM plays WHERE session_id = 's9'"));
+    }
+
+    [Fact]
     public void A_v2_file_is_newer_than_a_v1_only_build_accepts()
     {
         // The v0.1.1 build refuses any user_version above its own SchemaVersion (1). Here the same rule is applied

@@ -42,6 +42,9 @@ public sealed class OwnedIndex : IOwnedIndex
 
     public static readonly TimeSpan RefreshEvery = TimeSpan.FromMinutes(30);
 
+    /// <summary>How long a removed item stays out of the index: a reload before Jellyfin rescanned the folder still lists it (review v0.4 issue 7).</summary>
+    public static readonly TimeSpan RemovedHold = TimeSpan.FromHours(1);
+
     /// <summary>Until the first load succeeds, a failed load is tried again this soon (fetching waits for the index).</summary>
     public static readonly TimeSpan RetryUntilLoaded = TimeSpan.FromMinutes(1);
 
@@ -54,7 +57,7 @@ public sealed class OwnedIndex : IOwnedIndex
     private readonly object _gate = new();
     private readonly SemaphoreSlim _refreshing = new(1, 1);
     private readonly List<OwnedEntry> _addedDuringRefresh = [];
-    private readonly HashSet<Guid> _removedDuringRefresh = [];
+    private readonly Dictionary<Guid, DateTimeOffset> _removed = [];
 
     private Dictionary<TrackKey, List<OwnedEntry>> _byKey = [];
     private Dictionary<Guid, OwnedEntry> _byId = [];
@@ -194,6 +197,7 @@ public sealed class OwnedIndex : IOwnedIndex
 
         lock (_gate)
         {
+            _removed.Remove(entry.ItemId);
             Put(_byKey, _byId, entry);
             if (_refreshInProgress)
             {
@@ -215,12 +219,10 @@ public sealed class OwnedIndex : IOwnedIndex
                 }
             }
 
-            if (_refreshInProgress)
-            {
-                // A refresh that already read the item must not bring it back when it swaps.
-                _removedDuringRefresh.Add(itemId);
-                _addedDuringRefresh.RemoveAll(e => e.ItemId == itemId);
-            }
+            // Any reload that reads Jellyfin before it dropped the item (one in progress, one queued, or the next periodic one) must not
+            // bring it back: the id stays out for RemovedHold.
+            _removed[itemId] = _time.GetUtcNow();
+            _addedDuringRefresh.RemoveAll(e => e.ItemId == itemId);
         }
     }
 
@@ -234,7 +236,6 @@ public sealed class OwnedIndex : IOwnedIndex
             {
                 _refreshInProgress = true;
                 _addedDuringRefresh.Clear();
-                _removedDuringRefresh.Clear();
             }
 
             var started = Stopwatch.GetTimestamp();
@@ -285,8 +286,15 @@ public sealed class OwnedIndex : IOwnedIndex
                     }
                 }
 
-                foreach (var gone in _removedDuringRefresh)
+                var now = _time.GetUtcNow();
+                foreach (var (gone, at) in _removed.ToList())
                 {
+                    if (now - at >= RemovedHold)
+                    {
+                        _removed.Remove(gone);
+                        continue;
+                    }
+
                     if (byId.Remove(gone, out var old) && byKey.TryGetValue(old.Key, out var list))
                     {
                         list.RemoveAll(e => e.ItemId == gone);
@@ -314,7 +322,6 @@ public sealed class OwnedIndex : IOwnedIndex
             {
                 _refreshInProgress = false;
                 _addedDuringRefresh.Clear();
-                _removedDuringRefresh.Clear();
             }
 
             _refreshing.Release();

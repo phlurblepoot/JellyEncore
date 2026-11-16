@@ -223,4 +223,36 @@ public sealed class OwnedIndexTests
         Assert.Equal(new DateTimeOffset(2026, 11, 1, 10, 0, 0, TimeSpan.Zero), song.DateCreated);
         Assert.Equal("a74b1b7f-71a5-4011-9441-d0b5e4122711", Assert.Single(artists).ProviderIds!["MusicBrainzArtist"]);
     }
+
+    [Fact]
+    public async Task OI20_a_removed_item_is_not_brought_back_by_a_refresh_that_still_reads_it_from_Jellyfin()
+    {
+        // Review v0.4 issue 7: Jellyfin lists the old item until its rescan drops it, so a reload after the removal (or one queued
+        // before it) must not put it back.
+        var lib = new FakeLibrary { Audio = [Audio(1, "A", "One"), Audio(2, "B", "Two")] };
+        var (index, _) = Build(lib);
+        await index.RefreshAsync(CancellationToken.None);
+
+        index.Remove(Id(1));
+        Assert.True(await index.RefreshAsync(CancellationToken.None));
+
+        Assert.Null(index.KeyOf(Id(1)));
+        Assert.Null(index.Resolve(K("A", "One"), null));
+        Assert.Equal(1, index.Count);
+    }
+
+    [Fact]
+    public async Task OI21_a_removed_item_comes_back_only_when_added_again_or_after_the_hold()
+    {
+        var clock = new ManualClock();
+        var lib = new FakeLibrary { Audio = [Audio(1, "A", "One")] };
+        var (index, _) = Build(lib, clock);
+        await index.RefreshAsync(CancellationToken.None);
+        index.Remove(Id(1));
+
+        clock.Advance(OwnedIndex.RemovedHold + TimeSpan.FromMinutes(1));
+        await index.RefreshAsync(CancellationToken.None);
+
+        Assert.NotNull(index.KeyOf(Id(1))); // Jellyfin still lists it an hour later: it is real after all
+    }
 }

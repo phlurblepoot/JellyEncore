@@ -177,6 +177,65 @@ public sealed class JellyfinClient : IJellyfinClient, IRetentionJellyfin
         return result.Items;
     }
 
+    private const int FindPageSize = 200;
+    private const int FindMaxPages = 25;
+
+    public async Task<BaseItemDto?> FindAudioByPathAsync(Guid parentId, string jellyfinPath, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(jellyfinPath);
+
+        // 1. The targeted query. A Jellyfin that honors the path filter answers with at most that item; one that ignores it answers with
+        //    the newest items, so a full page without a match means the filter did nothing.
+        const int probe = 5;
+        var targeted = Query(
+            ("parentId", Id(parentId)),
+            ("recursive", "true"),
+            ("includeItemTypes", "Audio"),
+            ("fields", "Path,DateCreated"),
+            ("path", Uri.EscapeDataString(jellyfinPath)),
+            ("limit", probe.ToString(CultureInfo.InvariantCulture)),
+            ("enableTotalRecordCount", "false"));
+        var first = (await GetAsync<QueryResult<BaseItemDto>>($"Items?{targeted}", "FindAudioByPath", ct).ConfigureAwait(false)).Items;
+        if (first.FirstOrDefault(i => PathIs(i, jellyfinPath)) is { } hit)
+        {
+            return hit;
+        }
+
+        if (first.Count < probe)
+        {
+            return null;
+        }
+
+        // 2. Page through the library, newest first.
+        for (var page = 0; page < FindMaxPages; page++)
+        {
+            var query = Query(
+                ("parentId", Id(parentId)),
+                ("recursive", "true"),
+                ("includeItemTypes", "Audio"),
+                ("fields", "Path,DateCreated"),
+                ("sortBy", "DateCreated"),
+                ("sortOrder", "Descending"),
+                ("startIndex", (page * FindPageSize).ToString(CultureInfo.InvariantCulture)),
+                ("limit", FindPageSize.ToString(CultureInfo.InvariantCulture)),
+                ("enableTotalRecordCount", "false"));
+            var items = (await GetAsync<QueryResult<BaseItemDto>>($"Items?{query}", "FindAudioByPath", ct).ConfigureAwait(false)).Items;
+            if (items.FirstOrDefault(i => PathIs(i, jellyfinPath)) is { } found)
+            {
+                return found;
+            }
+
+            if (items.Count < FindPageSize)
+            {
+                return null;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool PathIs(BaseItemDto item, string path) => item.Id != Guid.Empty && string.Equals(item.Path, path, StringComparison.Ordinal);
+
     private static readonly JsonSerializerOptions MediaUpdatedJson = new() { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 
     public async Task PlayLastAsync(string sessionId, IReadOnlyCollection<Guid> itemIds, CancellationToken ct = default)

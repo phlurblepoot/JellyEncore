@@ -43,6 +43,14 @@ internal static partial class RetentionLog
         Message = "Row {RowId} not promoted: the library already has {TargetPath}; the song stays in music-radio, kept")]
     public static partial void PromoteDuplicate(this ILogger logger, long rowId, string targetPath);
 
+    [LoggerMessage(EventId = 8595, EventName = "promote.restored", Level = LogLevel.Warning,
+        Message = "Row {RowId} promotion stalled at step {Step}: the song was put back at {RadioPath} and kept; it is not promoted")]
+    public static partial void PromoteRestored(this ILogger logger, long rowId, string step, string radioPath);
+
+    [LoggerMessage(EventId = 8596, EventName = "promote.restore_failed", Level = LogLevel.Error,
+        Message = "Row {RowId} stalled promotion: the song could not be put back in music-radio ({Error}); the copy is still in the staging folder")]
+    public static partial void PromoteRestoreFailed(this ILogger logger, long rowId, string error);
+
     [LoggerMessage(EventId = 8590, EventName = "promote.paused", Level = LogLevel.Warning,
         Message = "Promotions paused: {Reason} ({Detail})")]
     public static partial void PromotePaused(this ILogger logger, string reason, string? detail);

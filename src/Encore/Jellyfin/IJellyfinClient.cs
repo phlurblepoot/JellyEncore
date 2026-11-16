@@ -52,6 +52,17 @@ public interface IJellyfinClient
     Task<IReadOnlyList<BaseItemDto>> GetRecentAudioAsync(Guid parentId, int limit, CancellationToken ct = default);
 
     /// <summary>
+    /// The song at one exact Jellyfin path inside one library, or null when Jellyfin does not list it (yet). The real client asks Jellyfin for
+    /// that path and falls back to paging through the library by DateCreated, so the answer does not depend on the file being among the
+    /// newest few. The default reads only the newest 50 (fakes that do not care).
+    /// </summary>
+    async Task<BaseItemDto?> FindAudioByPathAsync(Guid parentId, string jellyfinPath, CancellationToken ct = default)
+    {
+        var recent = await GetRecentAudioAsync(parentId, 50, ct).ConfigureAwait(false);
+        return recent.FirstOrDefault(i => i.Id != Guid.Empty && string.Equals(i.Path, jellyfinPath, StringComparison.Ordinal));
+    }
+
+    /// <summary>
     /// GET /Items?searchTerm=&amp;includeItemTypes=Audio,MusicAlbum&amp;recursive=true&amp;limit=&amp;userId=. The library as one user sees it (the userId keeps
     /// that user's access rules); used by request search. Songs and albums come with <c>AlbumArtist</c> and <c>ProductionYear</c> when Jellyfin has them.
     /// </summary>

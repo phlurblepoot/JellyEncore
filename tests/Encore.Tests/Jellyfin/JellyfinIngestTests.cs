@@ -131,6 +131,51 @@ public sealed class JellyfinIngestClientTests
         Assert.Equal(Guid.Parse("9d8c7b6a-5f4e-3d2c-1b0a-998877665544"), item.Id);
     }
 
+    private static string ItemJson(string id, string path) =>
+        $$"""{"Id":"{{id}}","Name":"n","Type":"Audio","Path":"{{path}}","DateCreated":"2026-11-14T12:00:00.0000000Z"}""";
+
+    [Fact]
+    public async Task JI12_Find_by_path_asks_Jellyfin_for_that_path_and_stops_when_the_filter_answers()
+    {
+        var (client, script) = Build();
+        script.Reply(HttpStatusCode.OK, "{\"Items\":[" + ItemJson("9d8c7b6a5f4e3d2c1b0a998877665544", "/media/music/A/B/01 - C.flac") + "]}");
+
+        var item = await client.FindAudioByPathAsync(Library, "/media/music/A/B/01 - C.flac");
+
+        Assert.Equal(Guid.Parse("9d8c7b6a-5f4e-3d2c-1b0a-998877665544"), item!.Id);
+        var sent = Assert.Single(script.Sent);
+        Assert.Contains("path=%2Fmedia%2Fmusic%2FA%2FB%2F01%20-%20C.flac", sent.PathAndQuery, StringComparison.Ordinal);
+        Assert.Contains("parentId=32e0aa11223344558899aabbccddeeff", sent.PathAndQuery, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task JI13_Find_by_path_answers_null_when_the_filter_returns_less_than_a_full_page_without_a_match()
+    {
+        var (client, script) = Build();
+        script.Reply(HttpStatusCode.OK, """{"Items":[]}""");
+
+        Assert.Null(await client.FindAudioByPathAsync(Library, "/media/music/A/B/01 - C.flac"));
+        Assert.Single(script.Sent);
+    }
+
+    [Fact]
+    public async Task JI14_Find_by_path_pages_through_the_library_when_the_server_ignores_the_path_filter()
+    {
+        var (client, script) = Build();
+        string Other(int n) => ItemJson($"{n:x32}", $"/media/music/X/Y/{n:00}.flac");
+        var full = "{\"Items\":[" + string.Join(",", Enumerable.Range(1, 5).Select(Other)) + "]}";
+        var page1 = "{\"Items\":[" + string.Join(",", Enumerable.Range(1, 200).Select(n => Other(n + 100))) + "]}";
+        var page2 = "{\"Items\":[" + ItemJson("9d8c7b6a5f4e3d2c1b0a998877665544", "/media/music/A/B/01 - C.flac") + "]}";
+        script.Reply(HttpStatusCode.OK, full).Reply(HttpStatusCode.OK, page1).Reply(HttpStatusCode.OK, page2);
+
+        var item = await client.FindAudioByPathAsync(Library, "/media/music/A/B/01 - C.flac");
+
+        Assert.Equal(Guid.Parse("9d8c7b6a-5f4e-3d2c-1b0a-998877665544"), item!.Id);
+        Assert.Equal(3, script.Sent.Count);
+        Assert.Contains("startIndex=0&limit=200", script.Sent[1].PathAndQuery, StringComparison.Ordinal);
+        Assert.Contains("startIndex=200&limit=200", script.Sent[2].PathAndQuery, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task JI08_Recent_audio_retries_a_5xx_like_any_get()
     {
