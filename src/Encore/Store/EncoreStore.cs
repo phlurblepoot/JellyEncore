@@ -138,6 +138,7 @@ public sealed class EncoreStore : IDisposable
           lidarr_artist_id INTEGER, lidarr_album_id INTEGER, tracks_done INTEGER, tracks_total INTEGER,
           fetched_file_id INTEGER REFERENCES fetched_files(id), jellyfin_item_id TEXT,
           attempts INTEGER NOT NULL DEFAULT 0, next_try_utc TEXT, cancelled_by TEXT,
+          retries INTEGER NOT NULL DEFAULT 0, album_was_monitored INTEGER, artist_was_monitored INTEGER,
           created_utc TEXT NOT NULL, updated_utc TEXT NOT NULL, ready_utc TEXT, notified_utc TEXT);
         CREATE INDEX ix_requests_user ON requests(user_id, created_utc);
         CREATE INDEX ix_requests_state ON requests(state, updated_utc);

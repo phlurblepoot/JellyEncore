@@ -154,3 +154,12 @@ test('the card shows the upcoming badge next to a Request button, and 409 no lon
   assert.match(js, /encore-request-upcoming/);
   assert.doesNotMatch(js, /not_released|Not released yet/);
 });
+
+test('the retry time is shown in the browser time zone from nextTryUtc', () => {
+  const next = '2026-11-20T19:00:00Z';
+  const local = new Date(next).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  assert.equal(h.detailText({ detail: 'Not found yet, trying again later', nextTryUtc: next }), 'Not found yet, trying again at ' + local);
+  assert.equal(h.detailText({ detail: 'Searching', nextTryUtc: next }), 'Searching');
+  assert.equal(h.detailText({ detail: 'Not found yet, trying again later', nextTryUtc: null }), 'Not found yet, trying again later');
+  assert.equal(h.detailText(null), '');
+});

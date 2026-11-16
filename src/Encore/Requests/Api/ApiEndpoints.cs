@@ -3,6 +3,7 @@ using System.Text.Json;
 using Encore.Config;
 using Encore.Requests.Auth;
 using Encore.Requests.Search;
+using Encore.Requests.Songs;
 using Encore.Store;
 
 namespace Encore.Requests.Api;
@@ -28,6 +29,7 @@ public sealed class ApiEndpoints
     private readonly JellyfinServerInfo _serverInfo;
     private readonly SearchService _search;
     private readonly TimeProvider _time;
+    private readonly SearchRateLimiter _searchRate;
     private readonly object _quickGate = new();
     private (bool? Value, DateTimeOffset At)? _quickConnect;
 
@@ -48,6 +50,7 @@ public sealed class ApiEndpoints
         _store = store;
         _serverInfo = serverInfo;
         _time = time;
+        _searchRate = new SearchRateLimiter(time);
         _version = version;
     }
 
@@ -141,6 +144,11 @@ public sealed class ApiEndpoints
             || SearchService.ParseKinds(context.Request.Query["kinds"].ToString()) is not { } kinds)
         {
             return ApiErrors.Result(400, AuthCodes.BadRequest);
+        }
+
+        if (_searchRate.TryAcquire(RequestUserKey.Of(user.Id)) is { } wait)
+        {
+            return ApiErrors.Result(StatusCodes.Status429TooManyRequests, RequestCodes.SearchLimited, wait);
         }
 
         var response = await _search.SearchAsync(user.Id, query, kinds, context.RequestAborted).ConfigureAwait(false);

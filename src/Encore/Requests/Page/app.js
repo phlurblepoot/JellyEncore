@@ -27,6 +27,8 @@
     not_found: 'That request no longer exists.',
     conflict: 'That request cannot be changed any more.',
     daily_limit: 'You have reached your daily request limit. Try again tomorrow.',
+    search_limited: 'You are searching too fast. Try again in a moment.',
+    retry_limit: 'This request has been tried again too many times. Make a new request instead.',
     login_limited: 'Too many sign-in attempts. Please wait and try again.',
     songs_unavailable: 'Song requests are switched off.',
     albums_unavailable: 'Album requests are not available right now.',
@@ -175,6 +177,19 @@
     return Math.round(hours / 24) + ' days ago';
   }
 
+  /**
+   * The request detail with a retry time in the viewer's own time zone: the server sends "Not found yet, trying again
+   * later" and nextTryUtc (a UTC timestamp); the clock time is worked out here.
+   */
+  function detailText(request) {
+    var detail = clean(request && request.detail);
+    var next = request && request.nextTryUtc ? new Date(request.nextTryUtc) : null;
+    if (next && !isNaN(next.getTime()) && /^Not found yet/.test(detail)) {
+      return 'Not found yet, trying again at ' + next.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+    return detail;
+  }
+
   /** "artist - title" with either part optional. */
   function headline(row) {
     var artist = clean(row && row.artist);
@@ -269,6 +284,7 @@
     canCancel: canCancel,
     canRetry: canRetry,
     timeAgo: timeAgo,
+    detailText: detailText,
     headline: headline,
     errorMessage: errorMessage,
     newDeviceId: newDeviceId,
@@ -870,7 +886,7 @@
     } else if (action === 'status') {
       add(side, chip(row.request.state));
       if (row.request.detail && isActive(row.request.state)) {
-        add(text, el('div', 'sub', clean(row.request.detail)));
+        add(text, el('div', 'sub', detailText(row.request)));
       }
       if (row.request.state === 'ready') {
         add(side, openLink(row.request.itemId));
@@ -1009,7 +1025,7 @@
       sub.push(when);
     }
     add(text, el('div', 'sub', sub.join(' - ')));
-    var detail = clean(request.detail);
+    var detail = detailText(request);
     if (request.state === 'failed' && request.failReason && !detail) {
       detail = clean(request.failReason);
     }

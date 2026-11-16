@@ -54,7 +54,10 @@ public sealed record RequestUpdate(
     DateTimeOffset? ReadyUtc = null,
     DateTimeOffset? NotifiedUtc = null,
     bool ClearFailReason = false,
-    int? Year = null);
+    int? Year = null,
+    int? Retries = null,
+    bool? AlbumWasMonitored = null,
+    bool? ArtistWasMonitored = null);
 
 /// <summary>One <c>requests</c> row.</summary>
 public sealed record RequestRow(
@@ -87,7 +90,10 @@ public sealed record RequestRow(
     DateTimeOffset CreatedUtc,
     DateTimeOffset UpdatedUtc,
     DateTimeOffset? ReadyUtc,
-    DateTimeOffset? NotifiedUtc);
+    DateTimeOffset? NotifiedUtc,
+    int Retries = 0,
+    bool? AlbumWasMonitored = null,
+    bool? ArtistWasMonitored = null);
 
 /// <summary>
 /// The request feature's part of the database (v0.3 design section 8): its own connection to the same file as
@@ -100,7 +106,7 @@ public sealed class RequestStore : IDisposable
         id, kind, user_id, user_name, state, detail, fail_reason, artist, title, album, year, cover_url, track_key,
         deezer_track_id, duration_s, foreign_album_id, foreign_artist_id, lidarr_artist_id, lidarr_album_id,
         tracks_done, tracks_total, fetched_file_id, jellyfin_item_id, attempts, next_try_utc, cancelled_by,
-        created_utc, updated_utc, ready_utc, notified_utc
+        created_utc, updated_utc, ready_utc, notified_utc, retries, album_was_monitored, artist_was_monitored
         """;
 
     private const string ActiveClause = "state IN ('queued','upcoming','searching','downloading','importing')";
@@ -204,7 +210,9 @@ public sealed class RequestStore : IDisposable
                   next_try_utc = CASE WHEN $clearNext = 1 THEN NULL ELSE COALESCE($next, next_try_utc) END,
                   cancelled_by = COALESCE($cancelledBy, cancelled_by),
                   ready_utc = COALESCE($ready, ready_utc), notified_utc = COALESCE($notified, notified_utc),
-                  year = COALESCE($year, year)
+                  year = COALESCE($year, year), retries = COALESCE($retries, retries),
+                  album_was_monitored = COALESCE($albumWas, album_was_monitored),
+                  artist_was_monitored = COALESCE($artistWas, artist_was_monitored)
                 WHERE id = $id
                 """;
             cmd.Parameters.AddWithValue("$id", id);
@@ -226,6 +234,9 @@ public sealed class RequestStore : IDisposable
             cmd.Parameters.AddWithValue("$ready", Db(fields.ReadyUtc));
             cmd.Parameters.AddWithValue("$notified", Db(fields.NotifiedUtc));
             cmd.Parameters.AddWithValue("$year", Db(fields.Year));
+            cmd.Parameters.AddWithValue("$retries", Db(fields.Retries));
+            cmd.Parameters.AddWithValue("$albumWas", Db(fields.AlbumWasMonitored));
+            cmd.Parameters.AddWithValue("$artistWas", Db(fields.ArtistWasMonitored));
             return cmd.ExecuteNonQuery() > 0;
         }
     }
@@ -343,7 +354,8 @@ public sealed class RequestStore : IDisposable
                     Str(r, 5), Str(r, 6), r.GetString(7), Str(r, 8), Str(r, 9), Int(r, 10), Str(r, 11), Str(r, 12),
                     Long(r, 13), Int(r, 14), Str(r, 15), Str(r, 16), Long(r, 17), Long(r, 18), Int(r, 19), Int(r, 20),
                     Long(r, 21), Str(r, 22), r.GetInt32(23), Time(r, 24), Str(r, 25),
-                    ParseUtc(r.GetString(26)), ParseUtc(r.GetString(27)), Time(r, 28), Time(r, 29)));
+                    ParseUtc(r.GetString(26)), ParseUtc(r.GetString(27)), Time(r, 28), Time(r, 29),
+                    r.GetInt32(30), Flag(r, 31), Flag(r, 32)));
             }
 
             return rows;
@@ -352,6 +364,8 @@ public sealed class RequestStore : IDisposable
 
     private static DateTimeOffset ParseUtc(string s) =>
         DateTimeOffset.Parse(s, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal);
+
+    private static bool? Flag(SqliteDataReader r, int i) => r.IsDBNull(i) ? null : r.GetInt32(i) != 0;
 
     private static string? Str(SqliteDataReader r, int i) => r.IsDBNull(i) ? null : r.GetString(i);
 
@@ -364,6 +378,8 @@ public sealed class RequestStore : IDisposable
     private static object Db(string? value) => value is null ? DBNull.Value : value;
 
     private static object Db(int? value) => value is { } v ? v : DBNull.Value;
+
+    private static object Db(bool? value) => value is { } v ? (v ? 1 : 0) : DBNull.Value;
 
     private static object Db(long? value) => value is { } v ? v : DBNull.Value;
 

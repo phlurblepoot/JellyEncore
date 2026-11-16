@@ -26,7 +26,8 @@ public sealed record RequestDto(
     string? ItemId,
     string? FailReason,
     int Attempts,
-    RequestProgress? Progress)
+    RequestProgress? Progress,
+    DateTimeOffset? NextTryUtc = null)
 {
     public static RequestDto From(RequestRow row)
     {
@@ -34,7 +35,8 @@ public sealed record RequestDto(
         return new RequestDto(
             row.Id, row.Kind, row.State, row.Detail, row.Artist, row.Title, row.Album, row.Year, row.CoverUrl,
             row.CreatedUtc, row.UpdatedUtc, row.ReadyUtc, row.UserName, row.JellyfinItemId, row.FailReason, row.Attempts,
-            row.TracksTotal is > 0 and var of ? new RequestProgress(row.TracksDone ?? 0, of) : null);
+            row.TracksTotal is > 0 and var of ? new RequestProgress(row.TracksDone ?? 0, of) : null,
+            row.NextTryUtc);
     }
 }
 

@@ -173,6 +173,7 @@ public static class RequestsApi
             if (HttpMethods.IsOptions(context.Request.Method) && requestedMethod.Length > 0)
             {
                 // Preflight: answered here, never reaches the routes.
+                headers.CacheControl = "no-store";
                 if (AllowedMethods.Contains(requestedMethod, StringComparer.OrdinalIgnoreCase))
                 {
                     headers.AccessControlAllowMethods = string.Join(", ", AllowedMethods);

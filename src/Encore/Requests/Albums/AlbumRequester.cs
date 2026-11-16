@@ -241,7 +241,7 @@ public sealed class AlbumRequester
             _log.Cancelled(row.Id, by);
             if (row.LidarrAlbumId is { } albumId)
             {
-                await UnmonitorIfFreeAsync(row.Id, albumId, "cancelled").ConfigureAwait(false);
+                await UnmonitorIfFreeAsync(row, albumId, "cancelled").ConfigureAwait(false);
             }
 
             return new RequestOutcome(StatusCodes.Status200OK, _store.Get(row.Id));
@@ -252,7 +252,7 @@ public sealed class AlbumRequester
         }
     }
 
-    /// <summary>POST /requests/{id}/retry for a failed album: back to queued, attempts reset, sent to Lidarr again (counts toward the cap for non-admins).</summary>
+    /// <summary>POST /requests/{id}/retry for a failed album: back to queued, attempts reset, sent to Lidarr again (a non-admin may retry a request 3 times).</summary>
     public async Task<(RequestOutcome Outcome, IReadOnlyList<RequestRow> Notify)> RetryAsync(RequestUser user, string id, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(user);
@@ -276,9 +276,14 @@ public sealed class AlbumRequester
                 return (RequestOutcome.Fail(StatusCodes.Status429TooManyRequests, RequestCodes.DailyLimit), []);
             }
 
+            if (!user.IsAdmin && row.Retries >= RequestLimits.RetriesPerRequest)
+            {
+                return (RequestOutcome.Fail(StatusCodes.Status429TooManyRequests, RequestCodes.RetryLimit), []);
+            }
+
             var now = _time.GetUtcNow();
             _store.Update(row.Id, RequestState.Queued, now, new RequestUpdate(
-                Detail: Details.Sending, Attempts: 0, ClearNextTry: true, ClearFailReason: true));
+                Detail: Details.Sending, Attempts: 0, ClearNextTry: true, ClearFailReason: true, Retries: row.Retries + 1));
             _log.StateChanged(row.Id, row.State, RequestState.Queued, "retry");
             row = _store.Get(row.Id)!;
             if (ActiveSibling(row) is { } sibling)
@@ -407,8 +412,11 @@ public sealed class AlbumRequester
 
             int albumId;
             string via;
+            bool albumWas;
             if (lookup.Id > 0)
             {
+                // Remember what the album was before Encore touched it, so a cancel or failure only undoes what Encore turned on (review-v03 issue 5).
+                albumWas = HolderOf(row, lookup.Id)?.AlbumWasMonitored ?? lookup.Monitored;
                 await _lidarr.SetAlbumsMonitoredAsync([lookup.Id], true, ct).ConfigureAwait(false);
                 albumId = lookup.Id;
                 via = "existing";
@@ -421,13 +429,15 @@ public sealed class AlbumRequester
                     return;
                 }
 
-                (albumId, via) = added.Value;
+                (albumId, via, albumWas) = added.Value;
             }
 
             // Artist on (design 7.2 step 4): only `monitored` changes; other albums stay as they are.
             var album = await _lidarr.GetAlbumAsync(albumId, ct).ConfigureAwait(false);
+            bool? artistWas = HolderOf(row, albumId)?.ArtistWasMonitored;
             if (album is { Artist.Monitored: false, ArtistId: > 0 })
             {
+                artistWas = false;
                 var now0 = _time.GetUtcNow();
                 var others = await _lidarr.GetAlbumsByArtistAsync(album.ArtistId, ct).ConfigureAwait(false);
                 var wanted = others.Count(o => o.Id != albumId && o.Monitored && AlbumSearch.IsReleased(o, now0)
@@ -447,7 +457,8 @@ public sealed class AlbumRequester
                 // The after-check (design 7.2 step 5): Soularr only sees an album whose album AND artist are monitored.
                 _log.LidarrRequestFailed("after_check", null,
                     $"album monitored {album?.Monitored.ToString() ?? "missing"}, artist monitored {album?.Artist?.Monitored.ToString() ?? "missing"}");
-                _store.Update(row.Id, row.State, now, new RequestUpdate(LidarrAlbumId: albumId, LidarrArtistId: album is { ArtistId: > 0 } ? album.ArtistId : (long?)null));
+                _store.Update(row.Id, row.State, now, new RequestUpdate(LidarrAlbumId: albumId, LidarrArtistId: album is { ArtistId: > 0 } ? album.ArtistId : (long?)null,
+                    AlbumWasMonitored: albumWas, ArtistWasMonitored: album?.Artist?.Monitored == true ? artistWas : null));
                 await FailLockedAsync(_store.Get(row.Id) ?? row, AlbumReasons.LidarrRejected, notify, unmonitor: true).ConfigureAwait(false);
                 return;
             }
@@ -457,7 +468,8 @@ public sealed class AlbumRequester
                 ? (RequestState.Upcoming, Details.Upcoming(album.ReleaseDate))
                 : (RequestState.Searching, Details.Searching);
             _store.Update(row.Id, state, now, new RequestUpdate(
-                Detail: detail, LidarrAlbumId: albumId, LidarrArtistId: album.ArtistId, ClearNextTry: true, Year: album.ReleaseDate?.Year));
+                Detail: detail, LidarrAlbumId: albumId, LidarrArtistId: album.ArtistId, ClearNextTry: true, Year: album.ReleaseDate?.Year,
+                AlbumWasMonitored: albumWas, ArtistWasMonitored: artistWas));
             _log.AlbumMonitored(row.Id, albumId, true, via);
             if (row.State != state)
             {
@@ -488,7 +500,7 @@ public sealed class AlbumRequester
     }
 
     /// <summary>The album is not in Lidarr: one POST album with the artist object (as GET returned it, or a new monitored one). Null when the request failed.</summary>
-    private async Task<(int AlbumId, string Via)?> AddAlbumAsync(RequestRow row, LidarrAlbum lookup, List<RequestRow> notify, CancellationToken ct)
+    private async Task<(int AlbumId, string Via, bool AlbumWasMonitored)?> AddAlbumAsync(RequestRow row, LidarrAlbum lookup, List<RequestRow> notify, CancellationToken ct)
     {
         var foreignArtistId = lookup.Artist?.ForeignArtistId;
         var artistName = lookup.Artist?.ArtistName ?? row.Artist;
@@ -529,7 +541,7 @@ public sealed class AlbumRequester
                 _log.ArtistAdded(row.Id, added.ArtistId, artistName);
             }
 
-            return (added.Id, "add_album");
+            return (added.Id, "add_album", false);
         }
         catch (LidarrValidationException ex) when (ex.IsAlreadyAdded)
         {
@@ -541,7 +553,7 @@ public sealed class AlbumRequester
             }
 
             await _lidarr.SetAlbumsMonitoredAsync([found.Id], true, ct).ConfigureAwait(false);
-            return (found.Id, "existing");
+            return (found.Id, "existing", found.Monitored);
         }
     }
 
@@ -706,7 +718,7 @@ public sealed class AlbumRequester
         _log.Failed(row.Id, reason, attempts);
         if (unmonitor && row.LidarrAlbumId is { } albumId)
         {
-            await UnmonitorIfFreeAsync(row.Id, albumId, reason).ConfigureAwait(false);
+            await UnmonitorIfFreeAsync(row, albumId, reason).ConfigureAwait(false);
         }
 
         if (_store.Get(row.Id) is { } failed)
@@ -715,24 +727,49 @@ public sealed class AlbumRequester
         }
     }
 
-    /// <summary>PUT album/monitor false unless another active request holds the same Lidarr album. A Lidarr failure is logged only.</summary>
-    private async Task UnmonitorIfFreeAsync(string requestId, long albumId, string reason)
+    /// <summary>
+    /// Undoes only what Encore turned on (review-v03 issue 5): PUT album/monitor false unless another active request holds the
+    /// same Lidarr album or the album was monitored before Encore touched it; PUT artist monitored false only when Encore
+    /// switched the artist on and no other active album request uses that artist. A Lidarr failure is logged only.
+    /// </summary>
+    private async Task UnmonitorIfFreeAsync(RequestRow row, long albumId, string reason)
     {
-        if (_store.Active().Any(r => r.Id != requestId && r.Kind == "album" && r.LidarrAlbumId == albumId))
+        var active = _store.Active();
+        if (active.Any(r => r.Id != row.Id && r.Kind == "album" && r.LidarrAlbumId == albumId))
         {
             return;
         }
 
-        try
+        if (row.AlbumWasMonitored != true)
         {
-            await _lidarr.SetAlbumsMonitoredAsync([(int)albumId], false, CancellationToken.None).ConfigureAwait(false);
-            _log.AlbumUnmonitored(requestId, reason);
+            try
+            {
+                await _lidarr.SetAlbumsMonitoredAsync([(int)albumId], false, CancellationToken.None).ConfigureAwait(false);
+                _log.AlbumUnmonitored(row.Id, reason);
+            }
+            catch (LidarrException ex)
+            {
+                LogLidarr(ex);
+            }
         }
-        catch (LidarrException ex)
+
+        if (row.ArtistWasMonitored == false && row.LidarrArtistId is { } artistId
+            && !active.Any(r => r.Id != row.Id && r.Kind == "album" && r.LidarrArtistId == artistId))
         {
-            LogLidarr(ex);
+            try
+            {
+                await _lidarr.SetArtistMonitoredAsync((int)artistId, false, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (LidarrException ex)
+            {
+                LogLidarr(ex);
+            }
         }
     }
+
+    /// <summary>Another active request that already holds this Lidarr album: it knows what the album and artist were before Encore.</summary>
+    private RequestRow? HolderOf(RequestRow row, long albumId) =>
+        _store.Active().FirstOrDefault(o => o.Id != row.Id && o.Kind == "album" && o.LidarrAlbumId == albumId);
 
     private RequestRow MarkReadyLocked(RequestRow row, Guid? itemId, DateTimeOffset now, List<RequestRow> notify)
     {
@@ -752,7 +789,8 @@ public sealed class AlbumRequester
     {
         _store.Update(row.Id, sibling.State, now, new RequestUpdate(
             Detail: sibling.Detail, LidarrAlbumId: sibling.LidarrAlbumId, LidarrArtistId: sibling.LidarrArtistId,
-            TracksDone: sibling.TracksDone, TracksTotal: sibling.TracksTotal, ClearNextTry: true));
+            TracksDone: sibling.TracksDone, TracksTotal: sibling.TracksTotal, ClearNextTry: true,
+            AlbumWasMonitored: sibling.AlbumWasMonitored, ArtistWasMonitored: sibling.ArtistWasMonitored));
         if (row.State != sibling.State)
         {
             _log.StateChanged(row.Id, row.State, sibling.State, sibling.Detail);

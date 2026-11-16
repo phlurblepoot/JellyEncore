@@ -33,6 +33,8 @@ internal static class ApiErrors
         [MethodNotAllowed] = "This method is not allowed here.",
         [Internal] = "Something went wrong on the server.",
         ["daily_limit"] = "You have reached your daily request limit. Try again tomorrow.",
+        ["search_limited"] = "You are searching too fast. Try again in a moment.",
+        ["retry_limit"] = "This request has been tried again too many times. Make a new request instead.",
         ["songs_unavailable"] = "Song requests are switched off.",
         ["albums_unavailable"] = "Album requests are not available right now.",
         ["deezer_unavailable"] = "The song catalog could not be reached. Try again in a moment.",

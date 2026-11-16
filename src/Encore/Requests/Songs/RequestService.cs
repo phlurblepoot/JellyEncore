@@ -12,6 +12,8 @@ namespace Encore.Requests.Songs;
 public static class RequestCodes
 {
     public const string DailyLimit = "daily_limit";
+    public const string SearchLimited = "search_limited";
+    public const string RetryLimit = "retry_limit";
     public const string SongsUnavailable = "songs_unavailable";
     public const string AlbumsUnavailable = "albums_unavailable";
     public const string DeezerUnavailable = "deezer_unavailable";
@@ -286,9 +288,14 @@ public sealed class RequestService
                 return (RequestOutcome.Fail(StatusCodes.Status429TooManyRequests, RequestCodes.DailyLimit), []);
             }
 
+            if (!user.IsAdmin && row.Retries >= RequestLimits.RetriesPerRequest)
+            {
+                return (RequestOutcome.Fail(StatusCodes.Status429TooManyRequests, RequestCodes.RetryLimit), []);
+            }
+
             var now = _time.GetUtcNow();
             _store.Update(row.Id, RequestState.Queued, now, new RequestUpdate(
-                Detail: Details.Queued, Attempts: 0, ClearNextTry: true, ClearFailReason: true));
+                Detail: Details.Queued, Attempts: 0, ClearNextTry: true, ClearFailReason: true, Retries: row.Retries + 1));
             _log.StateChanged(row.Id, row.State, RequestState.Queued, "retry");
             row = _store.Get(row.Id)!;
             if (TrackKey.TryParse(row.TrackKey, out var key))
@@ -476,7 +483,7 @@ public sealed class RequestService
         var state = ingest ? RequestState.Importing : RequestState.Queued;
         var detail = ingest
             ? "Downloaded; waiting for Jellyfin to list it"
-            : string.Create(CultureInfo.InvariantCulture, $"Not found yet, trying again at {at.UtcDateTime:HH:mm} UTC");
+            : "Not found yet, trying again later";
         _store.Update(row.Id, state, now, new RequestUpdate(Detail: detail, FailReason: reason, Attempts: attempts, NextTryUtc: at));
         if (row.State != state)
         {

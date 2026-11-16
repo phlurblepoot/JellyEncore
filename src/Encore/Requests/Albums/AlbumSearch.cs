@@ -120,7 +120,7 @@ public sealed class AlbumSearch(ILidarrClient lidarr, ILogger<AlbumSearch> logge
             if (!owned && activeRequests.FirstOrDefault(r => r.Kind == "album"
                     && string.Equals(r.ForeignAlbumId, album.ForeignAlbumId, StringComparison.OrdinalIgnoreCase)) is { } active)
             {
-                request = new ActiveRequestRef(active.Id, active.State, active.Detail, active.UserId == userKey);
+                request = new ActiveRequestRef(active.Id, active.State, active.Detail, active.UserId == userKey, active.NextTryUtc);
             }
 
             rows.Add(new AlbumRow(

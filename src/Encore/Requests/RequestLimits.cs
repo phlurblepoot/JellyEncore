@@ -40,6 +40,12 @@ public static class RequestLimits
     public static readonly TimeSpan TokenBlock = TimeSpan.FromMinutes(15);
 
     /// <summary>Search (design 5): query length, rows asked for from each source, and each source's own timeout.</summary>
+    /// <summary>One person may search this often (per minute); more is 429 <c>search_limited</c>.</summary>
+    public const int SearchesPerMinute = 30;
+
+    /// <summary>A failed request may be retried by its owner this many times (an admin has no limit); more is 429 <c>retry_limit</c>.</summary>
+    public const int RetriesPerRequest = 3;
+
     public const int SearchQueryMin = 2;
     public const int SearchQueryMax = 100;
     public const int SearchLibraryLimit = 20;

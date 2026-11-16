@@ -358,7 +358,7 @@ public sealed class SongRequestTests
         rig.Tick();
         var waiting = rig.Row(row.Id);
         Assert.Equal((RequestState.Queued, 1, start.AddHours(1)), (waiting.State, waiting.Attempts, waiting.NextTryUtc));
-        Assert.Equal("Not found yet, trying again at 19:00 UTC", waiting.Detail);
+        Assert.Equal("Not found yet, trying again later", waiting.Detail);
         Assert.Equal(FetchFailure.NoResults, waiting.FailReason);
         Assert.Single(rig.Log.Named("request.retry_scheduled"));
 

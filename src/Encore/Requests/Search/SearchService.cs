@@ -22,7 +22,7 @@ public sealed record LibrarySong(string ItemId, string Artist, string Title, str
 public sealed record LibraryAlbum(string ItemId, string Artist, string Title, int? Year);
 
 /// <summary>An in-progress request for a song. <see cref="Mine"/> is true when the signed-in person made it (only then can they open or cancel it).</summary>
-public sealed record ActiveRequestRef(string Id, string State, string? Detail, bool Mine);
+public sealed record ActiveRequestRef(string Id, string State, string? Detail, bool Mine, DateTimeOffset? NextTryUtc = null);
 
 /// <summary>
 /// One Deezer song. <see cref="Owned"/> rows carry <see cref="ItemId"/> and are shown as "In your library", not requestable.
@@ -234,7 +234,7 @@ public sealed class SearchService(
             {
                 if (store.ActiveForKey(key.Value).FirstOrDefault() is { } active)
                 {
-                    request = new ActiveRequestRef(active.Id, active.State, active.Detail, active.UserId == Key(userId));
+                    request = new ActiveRequestRef(active.Id, active.State, active.Detail, active.UserId == Key(userId), active.NextTryUtc);
                 }
             }
             catch (StoreException)

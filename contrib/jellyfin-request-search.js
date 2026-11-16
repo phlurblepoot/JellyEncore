@@ -119,6 +119,16 @@
     return cards;
   }
 
+  // The request detail with a retry time in the viewer's own time zone (the server sends nextTryUtc, a UTC timestamp).
+  function detailText(req) {
+    var detail = req && req.detail != null ? String(req.detail) : '';
+    var next = req && req.nextTryUtc ? new Date(req.nextTryUtc) : null;
+    if (next && !isNaN(next.getTime()) && /^Not found yet/.test(detail)) {
+      return 'Not found yet, trying again at ' + next.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+    return detail;
+  }
+
   function cardLabel(c) {
     return (c.artist ? c.artist + ' - ' : '') + c.title;
   }
@@ -127,7 +137,7 @@
     chooseMode: chooseMode, normalizeQuery: normalizeQuery, queryOk: queryOk, searchUrl: searchUrl,
     requestsUrl: requestsUrl, activeRequestsUrl: activeRequestsUrl, fallbackUrl: fallbackUrl,
     tokenAllowed: tokenAllowed, stateLabel: stateLabel, isActive: isActive, buildCards: buildCards, cardLabel: cardLabel,
-    upcomingLabel: upcomingLabel
+    upcomingLabel: upcomingLabel, detailText: detailText
   };
   if (typeof module !== 'undefined' && module.exports) { module.exports = helpers; }
   if (typeof window === 'undefined' || typeof document === 'undefined') return;
@@ -251,7 +261,7 @@
     if (req && req.state && (isActive(req.state) || req.state === 'ready')) {
       var chip = el('div', 'encore-request-chip', stateLabel(req.state));
       chip.style.cssText = 'font-size:.85em;padding:.3em .6em;border-radius:1em;background:rgba(128,128,128,.3);align-self:flex-start;';
-      if (req.detail) chip.setAttribute('title', String(req.detail));
+      if (detailText(req)) chip.setAttribute('title', detailText(req));
       box.appendChild(chip);
     } else {
       if (c.upcoming) {
@@ -394,7 +404,7 @@
         if (!c.request || c.request.id == null || !isActive(c.request.state)) return;
         var fresh = byId[c.request.id];
         if (fresh) {
-          if (fresh.state !== c.request.state || fresh.detail !== c.request.detail) changed = true;
+          if (fresh.state !== c.request.state || fresh.detail !== c.request.detail || fresh.nextTryUtc !== c.request.nextTryUtc) changed = true;
           c.request = fresh;
         } else if (c.request.mine !== false) {
           // no longer active: read the single request for its final state (only my own requests can be read)
