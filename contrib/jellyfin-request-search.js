@@ -83,14 +83,16 @@
   }
 
   // Search rows -> cards the section shows: only what is not already in the library.
+  // Song rows (GET /api/v1/search): { deezerTrackId, title, artist, album, durationS, coverUrl, explicit, owned, itemId,
+  // requestable, request: { id, state, detail, mine } | null }. Owned or not requestable rows are left out.
   function buildCards(data) {
     var cards = [];
     if (!data || typeof data !== 'object') return cards;
     var songs = Array.isArray(data.songs) ? data.songs : [];
     var albums = Array.isArray(data.albums) ? data.albums : [];
     songs.forEach(function (r) {
-      if (!r || r.itemId || r.inLibrary || r.owned) return;
-      var id = r.deezerTrackId != null ? r.deezerTrackId : r.id;
+      if (!r || r.owned || r.itemId || r.requestable === false) return;
+      var id = r.deezerTrackId;
       if (id == null) return;
       cards.push({ kind: 'song', key: 'song:' + id, body: { kind: 'song', deezerTrackId: id },
         artist: r.artist || '', title: r.title || '', cover: r.coverUrl || '', request: r.request || null, released: true });
@@ -378,8 +380,8 @@
         if (fresh) {
           if (fresh.state !== c.request.state || fresh.detail !== c.request.detail) changed = true;
           c.request = fresh;
-        } else {
-          // no longer active: read the single request for its final state
+        } else if (c.request.mine !== false) {
+          // no longer active: read the single request for its final state (only my own requests can be read)
           api('GET', requestsUrl(choice.base) + '/' + encodeURIComponent(c.request.id), null, null).then(function (one) {
             if (one) { c.request = one; render(); }
           }).catch(function () { /* quiet */ });

@@ -45,9 +45,9 @@ internal sealed class FakeFetchRequests : IFetchRequests
         EndedSessions.Enqueue(sessionId);
     }
 
-    public void Forget(string pickId)
-    {
-    }
+    public ConcurrentQueue<string> Forgotten { get; } = new();
+
+    public void Forget(string pickId) => Forgotten.Enqueue(pickId);
 
     public FetchStatus Status => FetchStatus.Off;
 

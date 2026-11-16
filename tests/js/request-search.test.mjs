@@ -90,12 +90,17 @@ test('state labels and active states', () => {
 
 test('buildCards keeps only what is not in the library', () => {
   const cards = h.buildCards({
+    // Song rows exactly as GET /api/v1/search returns them (T85 SongRow).
     songs: [
-      { deezerTrackId: 1, artist: 'A', title: 'One', coverUrl: 'c1' },
-      { deezerTrackId: 2, artist: 'A', title: 'Owned', itemId: 'abc' },
-      { deezerTrackId: 3, title: 'Lib', inLibrary: true },
-      { artist: 'A', title: 'No id' },
-      { deezerTrackId: 4, artist: 'B', title: 'Busy', request: { id: 9, state: 'downloading' } },
+      { deezerTrackId: 1, title: 'One', artist: 'A', album: 'X', durationS: 200, coverUrl: 'c1', explicit: false,
+        owned: false, itemId: null, requestable: true, request: null },
+      { deezerTrackId: 2, title: 'Owned', artist: 'A', album: 'X', durationS: 200, coverUrl: null, explicit: false,
+        owned: true, itemId: 'abc', requestable: false, request: null },
+      { deezerTrackId: 3, title: 'Not requestable', artist: 'A', album: 'X', durationS: 200, coverUrl: null, explicit: false,
+        owned: false, itemId: null, requestable: false, request: null },
+      { title: 'No id', artist: 'A', owned: false, requestable: true },
+      { deezerTrackId: 4, title: 'Busy', artist: 'B', album: 'Y', durationS: 100, coverUrl: null, explicit: true,
+        owned: false, itemId: null, requestable: true, request: { id: 'r9', state: 'downloading', detail: 'Downloading from a peer', mine: true } },
     ],
     albums: [
       { foreignAlbumId: 'mb-1', artist: 'C', title: 'Album', released: false },
@@ -106,7 +111,7 @@ test('buildCards keeps only what is not in the library', () => {
   assert.deepEqual(cards.map(c => c.key), ['song:1', 'song:4', 'album:mb-1']);
   assert.deepEqual(cards[0].body, { kind: 'song', deezerTrackId: 1 });
   assert.equal(cards[0].cover, 'c1');
-  assert.deepEqual(cards[1].request, { id: 9, state: 'downloading' });
+  assert.deepEqual(cards[1].request, { id: 'r9', state: 'downloading', detail: 'Downloading from a peer', mine: true });
   assert.deepEqual(cards[2].body, { kind: 'album', foreignAlbumId: 'mb-1' });
   assert.equal(cards[2].released, false);
   assert.equal(h.cardLabel(cards[0]), 'A - One');

@@ -33,7 +33,7 @@ public sealed record NewRequest(
     string? ForeignAlbumId = null,
     string? ForeignArtistId = null);
 
-/// <summary>Fields to change on a request. A null field is left as it is; <see cref="ClearNextTry"/> empties <c>next_try_utc</c>.</summary>
+/// <summary>Fields to change on a request. A null field is left as it is; <see cref="ClearNextTry"/> empties <c>next_try_utc</c>, <see cref="ClearFailReason"/> empties <c>fail_reason</c>.</summary>
 public sealed record RequestUpdate(
     string? Detail = null,
     string? FailReason = null,
@@ -48,7 +48,8 @@ public sealed record RequestUpdate(
     bool ClearNextTry = false,
     string? CancelledBy = null,
     DateTimeOffset? ReadyUtc = null,
-    DateTimeOffset? NotifiedUtc = null);
+    DateTimeOffset? NotifiedUtc = null,
+    bool ClearFailReason = false);
 
 /// <summary>One <c>requests</c> row.</summary>
 public sealed record RequestRow(
@@ -190,7 +191,7 @@ public sealed class RequestStore : IDisposable
             cmd.CommandText = """
                 UPDATE requests SET
                   state = $state, updated_utc = $now,
-                  detail = COALESCE($detail, detail), fail_reason = COALESCE($fail, fail_reason),
+                  detail = COALESCE($detail, detail), fail_reason = CASE WHEN $clearFail = 1 THEN NULL ELSE COALESCE($fail, fail_reason) END,
                   lidarr_artist_id = COALESCE($lArtist, lidarr_artist_id), lidarr_album_id = COALESCE($lAlbum, lidarr_album_id),
                   tracks_done = COALESCE($done, tracks_done), tracks_total = COALESCE($total, tracks_total),
                   fetched_file_id = COALESCE($file, fetched_file_id), jellyfin_item_id = COALESCE($jitem, jellyfin_item_id),
@@ -205,6 +206,7 @@ public sealed class RequestStore : IDisposable
             cmd.Parameters.AddWithValue("$now", EncoreStore.FormatUtc(now));
             cmd.Parameters.AddWithValue("$detail", Db(fields.Detail));
             cmd.Parameters.AddWithValue("$fail", Db(fields.FailReason));
+            cmd.Parameters.AddWithValue("$clearFail", fields.ClearFailReason ? 1 : 0);
             cmd.Parameters.AddWithValue("$lArtist", Db(fields.LidarrArtistId));
             cmd.Parameters.AddWithValue("$lAlbum", Db(fields.LidarrAlbumId));
             cmd.Parameters.AddWithValue("$done", Db(fields.TracksDone));

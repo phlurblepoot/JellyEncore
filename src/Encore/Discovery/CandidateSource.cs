@@ -4,12 +4,13 @@ using Encore.Store;
 
 namespace Encore.Discovery;
 
-/// <summary>Where an outside suggestion came from. Wire names: deezer_radio, deezer_related, lb_similar.</summary>
+/// <summary>Where an outside suggestion came from. Wire names: deezer_radio, deezer_related, lb_similar, request (a user's song request, v0.3).</summary>
 public enum CandidateOrigin
 {
     DeezerRadio,
     DeezerRelated,
     ListenBrainzSimilar,
+    Request,
 }
 
 public static class CandidateOriginNames
@@ -19,6 +20,7 @@ public static class CandidateOriginNames
         CandidateOrigin.DeezerRadio => "deezer_radio",
         CandidateOrigin.DeezerRelated => "deezer_related",
         CandidateOrigin.ListenBrainzSimilar => "lb_similar",
+        CandidateOrigin.Request => "request",
         _ => throw new ArgumentOutOfRangeException(nameof(origin), origin, null),
     };
 }

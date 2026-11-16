@@ -47,7 +47,11 @@ internal sealed class FakeDeezer : IDeezerClient
     public Task<IReadOnlyList<DeezerTrack>> GetArtistTopAsync(long artistId, int limit, CancellationToken ct) =>
         Run<IReadOnlyList<DeezerTrack>>($"top:{artistId}:{limit}", () => Top.GetValueOrDefault(artistId, []).Take(limit).ToList(), ct);
 
-    public Task<DeezerTrackDetail?> GetTrackAsync(long trackId, CancellationToken ct) => throw new NotSupportedException();
+    /// <summary>What <see cref="GetTrackAsync"/> returns by id (null for an id not listed).</summary>
+    public Dictionary<long, DeezerTrackDetail> TrackDetails { get; } = [];
+
+    public Task<DeezerTrackDetail?> GetTrackAsync(long trackId, CancellationToken ct) =>
+        Run<DeezerTrackDetail?>($"track:{trackId}", () => TrackDetails.GetValueOrDefault(trackId), ct);
 
     /// <summary>What <see cref="SearchTracksAsync"/> returns (the whole list, whatever the query).</summary>
     public List<DeezerSearchTrack> SearchRows { get; } = [];

@@ -214,7 +214,34 @@
     return out;
   }
 
+  /**
+   * What a search result row shows on its right side. Song rows are the /api/v1/search rows
+   * ({deezerTrackId, title, artist, album, durationS, coverUrl, explicit, owned, itemId, requestable,
+   * request: {id, state, detail, mine} | null}); after a request is made, `request` holds the full request.
+   * Returns 'library' (owned: open it), 'status' (a request exists: show its chip), 'unreleased' (album not out yet),
+   * 'request' (a Request button) or 'none'.
+   */
+  function rowAction(row, kind, me) {
+    if (!row || typeof row !== 'object') {
+      return 'none';
+    }
+    if (row.owned || row.itemId || (kind === 'album' && row.inLibrary)) {
+      return 'library';
+    }
+    if (row.request && typeof row.request === 'object' && row.request.state) {
+      return 'status';
+    }
+    if (kind === 'album' && row.released === false) {
+      return 'unreleased';
+    }
+    if (row.requestable === false || !me || !me.canRequest) {
+      return 'none';
+    }
+    return 'request';
+  }
+
   var helpers = {
+    rowAction: rowAction,
     isActive: isActive,
     stateLabel: stateLabel,
     chipClass: chipClass,
@@ -823,18 +850,21 @@
     add(item, text);
 
     var side = el('div', 'side');
-    var active = row.request && typeof row.request === 'object' ? row.request : null;
-    if (row.itemId || row.inLibrary) {
+    var action = rowAction(row, kind, S.me);
+    if (action === 'library') {
       add(side, el('span', 'chip chip-ready', 'In your library'));
       add(side, openLink(row.itemId));
-    } else if (active) {
-      add(side, chip(active.state));
-      if (active.state === 'ready') {
-        add(side, openLink(active.itemId));
+    } else if (action === 'status') {
+      add(side, chip(row.request.state));
+      if (row.request.detail && isActive(row.request.state)) {
+        add(text, el('div', 'sub', clean(row.request.detail)));
       }
-    } else if (kind === 'album' && row.released === false) {
+      if (row.request.state === 'ready') {
+        add(side, openLink(row.request.itemId));
+      }
+    } else if (action === 'unreleased') {
       add(side, el('span', 'chip chip-unknown', 'Not released yet'));
-    } else if (S.me && S.me.canRequest) {
+    } else if (action === 'request') {
       var go = button('Request', 'btn btn-primary btn-small', function () {
         go.disabled = true;
         requestRow(row, kind, key);
@@ -911,7 +941,8 @@
     var changed = false;
     ['songs', 'albums'].forEach(function (name) {
       (S.results[name] || []).forEach(function (row) {
-        if (row.request && byId[row.request.id] && byId[row.request.id].state !== row.request.state) {
+        var fresh = row.request && byId[row.request.id];
+        if (fresh && (fresh.state !== row.request.state || fresh.detail !== row.request.detail)) {
           row.request = byId[row.request.id];
           changed = true;
         }

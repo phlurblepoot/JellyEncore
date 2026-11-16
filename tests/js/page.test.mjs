@@ -114,3 +114,21 @@ test('device ids are 32 hex digits', () => {
   assert.equal(id, '07'.repeat(16));
   assert.match(h.newDeviceId(null), /^[0-9a-f]{32}$/);
 });
+
+test('rowAction reads the real /search song rows and request objects', () => {
+  const me = { canRequest: true };
+  const song = (extra) => Object.assign({
+    deezerTrackId: 1, title: 'One', artist: 'A', album: 'X', durationS: 200, coverUrl: null, explicit: false,
+    owned: false, itemId: null, requestable: true, request: null,
+  }, extra);
+  assert.equal(h.rowAction(song(), 'song', me), 'request');
+  assert.equal(h.rowAction(song({ owned: true, itemId: 'abc', requestable: false }), 'song', me), 'library');
+  assert.equal(h.rowAction(song({ requestable: false }), 'song', me), 'none');
+  assert.equal(h.rowAction(song({ request: { id: 'r1', state: 'searching', detail: 'Searching Soulseek', mine: false } }), 'song', me), 'status');
+  assert.equal(h.rowAction(song({ request: { id: 'r1', kind: 'song', state: 'ready', itemId: 'abc' } }), 'song', me), 'status');
+  assert.equal(h.rowAction(song(), 'song', { canRequest: false }), 'none');
+  assert.equal(h.rowAction(song(), 'song', null), 'none');
+  assert.equal(h.rowAction({ foreignAlbumId: 'mb', released: false }, 'album', me), 'unreleased');
+  assert.equal(h.rowAction({ foreignAlbumId: 'mb', inLibrary: true }, 'album', me), 'library');
+  assert.equal(h.rowAction(null, 'song', me), 'none');
+});

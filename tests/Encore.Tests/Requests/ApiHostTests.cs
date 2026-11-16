@@ -96,7 +96,7 @@ internal sealed class ApiRig : IDisposable
     private readonly WebApplicationFactory<Program> _root = new();
     private readonly WebApplicationFactory<Program> _factory;
 
-    public ApiRig(Dictionary<string, string?>? env = null, bool on = true)
+    public ApiRig(Dictionary<string, string?>? env = null, bool on = true, Encore.Config.FetchMode songMode = Encore.Config.FetchMode.Live)
     {
         foreach (var name in EnvNames)
         {
@@ -174,6 +174,16 @@ internal sealed class ApiRig : IDisposable
             services.RemoveAll<Encore.Requests.Search.SearchService>();
             services.AddSingleton(sp => new Encore.Requests.Search.SearchService(
                 Fake, Deezer, Owned, sp.GetRequiredService<RequestStore>(), sp.GetRequiredService<ILogger<Encore.Requests.Search.SearchService>>(), SearchTimeouts));
+            // Song requests over the fakes; the worker runs only its start pass (tests drive the lifecycle through the service).
+            services.RemoveAll<Encore.Requests.Songs.RequestService>();
+            services.RemoveAll<Encore.Requests.Songs.RequestWorker>();
+            services.AddSingleton(sp => new Encore.Requests.Songs.RequestService(
+                sp.GetRequiredService<RequestStore>(), Fetch, Owned, Deezer, null,
+                new Encore.Requests.Songs.SongRequestSettings(songMode, sp.GetRequiredService<Encore.Config.EncoreOptions>().RequestSongsPerDay),
+                sp.GetRequiredService<ILogger<Encore.Requests.Songs.RequestService>>(), TimeProvider.System));
+            services.AddSingleton(sp => new Encore.Requests.Songs.RequestWorker(
+                sp.GetRequiredService<Encore.Requests.Songs.RequestService>(), Encore.Requests.Songs.NullRequestNotifier.Instance,
+                sp.GetRequiredService<ILogger<Encore.Requests.Songs.RequestWorker>>(), TimeProvider.System, Timeout.InfiniteTimeSpan));
         }));
         Client = _factory.CreateClient();
         if (on)
@@ -189,6 +199,9 @@ internal sealed class ApiRig : IDisposable
     public Encore.Tests.Discovery.FakeDeezer Deezer { get; } = new();
 
     public Encore.Tests.Picks.TestOwned Owned { get; } = new();
+
+    /// <summary>The fetch side behind song requests (accepts every request; readiness is set by the test).</summary>
+    public Encore.Tests.Picks.FakeFetchRequests Fetch { get; } = new();
 
     public Encore.Requests.Search.SearchOptions SearchTimeouts { get; set; } = new();
 
@@ -259,6 +272,9 @@ internal sealed class ApiRig : IDisposable
 
     public Task<HttpResponseMessage> PostAsync(string path, object body, string? peer = null, string? xff = null, string? bearer = null) =>
         SendAsync(HttpMethod.Post, path, peer, xff, null, bearer, null, JsonSerializer.Serialize(body));
+
+    public Task<HttpResponseMessage> DeleteAsync(string path, string? bearer = null) =>
+        SendAsync(HttpMethod.Delete, path, bearer: bearer);
 
     public static async Task<JsonElement> JsonOf(HttpResponseMessage response)
     {

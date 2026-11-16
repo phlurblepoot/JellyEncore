@@ -228,7 +228,7 @@ public sealed class ApiEndpoints
     /// Reads a small JSON body. Null when it is missing, too big, not JSON or not an object: the caller answers 400.
     /// The body is never logged (it can hold a password).
     /// </summary>
-    private static async Task<T?> ReadBodyAsync<T>(HttpContext context) where T : class
+    internal static async Task<T?> ReadBodyAsync<T>(HttpContext context) where T : class
     {
         var request = context.Request;
         if (request.ContentLength is > RequestLimits.ApiBodyMaxBytes)

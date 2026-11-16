@@ -32,6 +32,13 @@ internal static class ApiErrors
         [NotFound] = "There is nothing here.",
         [MethodNotAllowed] = "This method is not allowed here.",
         [Internal] = "Something went wrong on the server.",
+        ["daily_limit"] = "You have reached your daily request limit. Try again tomorrow.",
+        ["songs_unavailable"] = "Song requests are switched off.",
+        ["albums_unavailable"] = "Album requests are not available right now.",
+        ["deezer_unavailable"] = "The song catalog could not be reached. Try again in a moment.",
+        ["conflict"] = "This request cannot be changed in its current state.",
+        ["admin_only"] = "Only an administrator can do this.",
+        ["not_released"] = "This album is not released yet.",
     };
 
     public static string MessageFor(string code) => Messages.TryGetValue(code, out var text) ? text : "The request failed.";

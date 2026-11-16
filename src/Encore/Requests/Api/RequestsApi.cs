@@ -5,6 +5,9 @@ using Encore.Jellyfin;
 using Encore.Requests.Search;
 using Encore.Requests.Auth;
 using Encore.Requests.Page;
+using Encore.Requests.Songs;
+using Encore.Fetch;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Encore.Store;
 using Microsoft.Net.Http.Headers;
 
@@ -77,6 +80,18 @@ public static class RequestsApi
         services.AddSingleton(sp => new ApiEndpoints(
             options, sp.GetRequiredService<UserAuth>(), sp.GetRequiredService<RequestUsers>(), sp.GetRequiredService<RequestStore>(),
             sp.GetRequiredService<JellyfinServerInfo>(), sp.GetRequiredService<SearchService>(), sp.GetRequiredService<TimeProvider>(), version));
+
+        // Song requests (T87). The notifier is a no-op until T88 registers the Jellyfin message one.
+        services.TryAddSingleton<IRequestNotifier>(NullRequestNotifier.Instance);
+        services.AddSingleton(sp => new RequestService(
+            sp.GetRequiredService<RequestStore>(), sp.GetRequiredService<IFetchRequests>(), sp.GetService<IOwnedIndex>(),
+            sp.GetRequiredService<IDeezerClient>(), sp.GetService<FetchStore>(), SongRequestSettings.From(options),
+            sp.GetRequiredService<ILogger<RequestService>>(), sp.GetRequiredService<TimeProvider>()));
+        services.AddSingleton(sp => new RequestWorker(
+            sp.GetRequiredService<RequestService>(), sp.GetRequiredService<IRequestNotifier>(), sp.GetRequiredService<ILogger<RequestWorker>>(),
+            sp.GetRequiredService<TimeProvider>()));
+        services.AddHostedService(sp => sp.GetRequiredService<RequestWorker>());
+        services.AddSingleton<RequestEndpoints>();
         return services;
     }
 
@@ -257,7 +272,8 @@ public static class RequestsApi
     public static WebApplication MapRequestsApi(this WebApplication app)
     {
         ArgumentNullException.ThrowIfNull(app);
-        app.Services.GetRequiredService<ApiEndpoints>().Map(app);
+        var api = app.Services.GetRequiredService<ApiEndpoints>().Map(app);
+        app.Services.GetRequiredService<RequestEndpoints>().Map(api);
         app.MapRequestPage();
         return app;
     }

@@ -5,7 +5,8 @@ namespace Encore.Discovery;
 
 public sealed record DeezerArtist(long Id, string Name, int NbFan, bool Radio);
 
-public sealed record DeezerAlbumRef(long Id, string Title, string? ReleaseDate);
+/// <summary><see cref="CoverUrl"/> is <c>cover_medium</c> when it is an https link (v0.3 song requests show it), else null.</summary>
+public sealed record DeezerAlbumRef(long Id, string Title, string? ReleaseDate, string? CoverUrl = null);
 
 public sealed record DeezerTrack(long Id, string Title, string TitleShort, string? TitleVersion, int DurationS,
     long Rank, DeezerArtist Artist, DeezerAlbumRef Album);
@@ -285,7 +286,9 @@ public sealed class DeezerClient(HttpClient http, DiscoveryRuntime runtime, ILog
     {
         if (e.TryGetProperty("album", out var a) && a.ValueKind == JsonValueKind.Object)
         {
-            return new DeezerAlbumRef(Long(a, "id") ?? 0, Text(a, "title") ?? string.Empty, Text(a, "release_date"));
+            var cover = Text(a, "cover_medium");
+            var https = Uri.TryCreate(cover, UriKind.Absolute, out var coverUri) && coverUri.Scheme == Uri.UriSchemeHttps;
+            return new DeezerAlbumRef(Long(a, "id") ?? 0, Text(a, "title") ?? string.Empty, Text(a, "release_date"), https ? coverUri!.AbsoluteUri : null);
         }
 
         return new DeezerAlbumRef(0, string.Empty, null);
