@@ -85,6 +85,33 @@ public sealed record EncoreOptions
 
     public PathMapping LidarrPathMap { get; init; } = new("/media/music", "/media/music");
 
+    public RetentionMode RetentionMode { get; init; } = RetentionMode.Off;
+
+    public int RetentionDays { get; init; } = 30;
+
+    public int RetentionUploads { get; init; } = 3;
+
+    public int RetentionPlays { get; init; } = 3;
+
+    /// <summary>Hour of day (container local time) of the daily pass.</summary>
+    public int RetentionHour { get; init; } = 4;
+
+    public int RetentionMaxPromotions { get; init; } = 20;
+
+    public int RetentionMaxDeletes { get; init; } = 100;
+
+    /// <summary>Playlist ids (32 lower-case hex, no dashes) never counted nor re-added.</summary>
+    public IReadOnlyList<string> RetentionIgnorePlaylists { get; init; } = [];
+
+    /// <summary>Encore's writable view of the music library.</summary>
+    public string LibraryDir { get; init; } = "/library";
+
+    /// <summary>The library folder as Jellyfin sees it.</summary>
+    public string LibraryJellyfinDir { get; init; } = "/media/music";
+
+    /// <summary>slskd's view of the music-radio folder.</summary>
+    public string SlskdRadioDir { get; init; } = "/music-radio";
+
     /// <summary>Stable per-install device id (<c>encore-</c> plus 12 hex digits), set once the data dir is validated.</summary>
     public string DeviceId { get; init; } = "";
 
@@ -114,7 +141,11 @@ public sealed record EncoreOptions
             .Append($"RequestSongsPerDay = {RequestSongsPerDay}, RequestAlbumsPerDay = {RequestAlbumsPerDay}, ")
             .Append($"RequestOrigins = [{string.Join(", ", RequestOrigins)}], PublicUrl = {PublicUrl}, PathBase = {PathBase}, ")
             .Append($"TrustedProxies = [{string.Join(", ", TrustedProxies)}], JellyfinPublicUrl = {JellyfinPublicUrl}, ")
-            .Append($"LidarrUrl = {LidarrUrl}, LidarrApiKey = <redacted>, LidarrRootFolder = {LidarrRootFolder}, LidarrPathMap = {LidarrPathMap}");
+            .Append($"LidarrUrl = {LidarrUrl}, LidarrApiKey = <redacted>, LidarrRootFolder = {LidarrRootFolder}, LidarrPathMap = {LidarrPathMap}, ")
+            .Append($"RetentionMode = {RetentionMode}, RetentionDays = {RetentionDays}, RetentionUploads = {RetentionUploads}, RetentionPlays = {RetentionPlays}, ")
+            .Append($"RetentionHour = {RetentionHour}, RetentionMaxPromotions = {RetentionMaxPromotions}, RetentionMaxDeletes = {RetentionMaxDeletes}, ")
+            .Append($"RetentionIgnorePlaylists = [{string.Join(", ", RetentionIgnorePlaylists)}], LibraryDir = {LibraryDir}, ")
+            .Append($"LibraryJellyfinDir = {LibraryJellyfinDir}, SlskdRadioDir = {SlskdRadioDir}");
         return true;
     }
 }

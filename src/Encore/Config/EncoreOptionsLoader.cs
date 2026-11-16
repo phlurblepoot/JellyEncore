@@ -27,6 +27,9 @@ public static class EncoreOptionsLoader
         "ENCORE_REQUESTS", "ENCORE_REQUEST_USERS", "ENCORE_REQUEST_SONGS_PER_DAY", "ENCORE_REQUEST_ALBUMS_PER_DAY",
         "ENCORE_REQUEST_ORIGINS", "ENCORE_PUBLIC_URL", "ENCORE_PATH_BASE", "ENCORE_TRUSTED_PROXIES", "ENCORE_JELLYFIN_PUBLIC_URL",
         "ENCORE_LIDARR_URL", "ENCORE_LIDARR_API_KEY", "ENCORE_LIDARR_ROOT_FOLDER", "ENCORE_LIDARR_PATH_MAP",
+        "ENCORE_RETENTION_MODE", "ENCORE_RETENTION_DAYS", "ENCORE_RETENTION_UPLOADS", "ENCORE_RETENTION_PLAYS", "ENCORE_RETENTION_HOUR",
+        "ENCORE_RETENTION_MAX_PROMOTIONS", "ENCORE_RETENTION_MAX_DELETES", "ENCORE_RETENTION_IGNORE_PLAYLISTS",
+        "ENCORE_LIBRARY_DIR", "ENCORE_LIBRARY_JELLYFIN_DIR", "ENCORE_SLSKD_RADIO_DIR",
     ];
 
     /// <summary>The variable names Encore reads (used by tests).</summary>
@@ -189,6 +192,32 @@ public static class EncoreOptionsLoader
                 "ENCORE_PUBLIC_URL is https but ENCORE_TRUSTED_PROXIES is empty: list the proxy (and Cloudflare's ranges), or /health is reachable through it and all visitors share one sign-in limit"));
         }
 
+        var retentionMode = ParseRetentionMode(Get(env, "ENCORE_RETENTION_MODE"), errors, out var retentionKnown);
+        var retentionDays = ParseInt(env, "ENCORE_RETENTION_DAYS", 30, 1, 365, errors, out _);
+        var retentionUploads = ParseInt(env, "ENCORE_RETENTION_UPLOADS", 3, 1, 1000, errors, out _);
+        var retentionPlays = ParseInt(env, "ENCORE_RETENTION_PLAYS", 3, 1, 50, errors, out _);
+        var retentionHour = ParseInt(env, "ENCORE_RETENTION_HOUR", 4, 0, 23, errors, out _);
+        var maxPromotions = ParseInt(env, "ENCORE_RETENTION_MAX_PROMOTIONS", 20, 0, 500, errors, out _);
+        var maxDeletes = ParseInt(env, "ENCORE_RETENTION_MAX_DELETES", 100, 0, 5000, errors, out _);
+        var ignorePlaylists = ParseIgnorePlaylists(Get(env, "ENCORE_RETENTION_IGNORE_PLAYLISTS"), errors);
+        var libraryDir = Get(env, "ENCORE_LIBRARY_DIR") ?? "/library"; // Encore's own view, like ENCORE_RADIO_DIR: not path-shape checked
+        var libraryJellyfinDir = ParseAbsoluteDir("ENCORE_LIBRARY_JELLYFIN_DIR", Get(env, "ENCORE_LIBRARY_JELLYFIN_DIR") ?? "/media/music", errors);
+        var slskdRadioDir = ParseAbsoluteDir("ENCORE_SLSKD_RADIO_DIR", Get(env, "ENCORE_SLSKD_RADIO_DIR") ?? "/music-radio", errors);
+
+        if (retentionMode != RetentionMode.Off && retentionKnown && fetchMode != FetchMode.Live && modeKnown)
+        {
+            errors.Add(new("ENCORE_RETENTION_MODE",
+                "ENCORE_RETENTION_MODE is not off but ENCORE_FETCH_MODE is not live: retention needs live fetching (set ENCORE_FETCH_MODE=live, or ENCORE_RETENTION_MODE=off)"));
+        }
+        else if (retentionMode == RetentionMode.Live)
+        {
+            CheckLibraryProbe(libraryDir, errors);
+        }
+        else if (retentionMode == RetentionMode.DryRun && !Directory.Exists(libraryDir))
+        {
+            warnings.Add(new("ENCORE_LIBRARY_DIR", $"ENCORE_LIBRARY_DIR \"{Truncate(libraryDir)}\" does not exist; the dry run cannot check library files"));
+        }
+
         if (errors.Count > 0)
         {
             return new ConfigResult(null, errors, warnings);
@@ -230,6 +259,17 @@ public static class EncoreOptionsLoader
             LidarrApiKey = lidarrKey,
             LidarrRootFolder = lidarrRoot,
             LidarrPathMap = pathMap,
+            RetentionMode = retentionMode,
+            RetentionDays = retentionDays,
+            RetentionUploads = retentionUploads,
+            RetentionPlays = retentionPlays,
+            RetentionHour = retentionHour,
+            RetentionMaxPromotions = maxPromotions,
+            RetentionMaxDeletes = maxDeletes,
+            RetentionIgnorePlaylists = ignorePlaylists,
+            LibraryDir = libraryDir,
+            LibraryJellyfinDir = libraryJellyfinDir!,
+            SlskdRadioDir = slskdRadioDir!,
         };
         return new ConfigResult(options, errors, warnings);
     }
@@ -368,6 +408,94 @@ public static class EncoreOptionsLoader
                 known = false;
                 errors.Add(new("ENCORE_FETCH_MODE", $"ENCORE_FETCH_MODE must be off, dry_run or live, got \"{Truncate(text)}\""));
                 return FetchMode.Off;
+        }
+    }
+
+    private static RetentionMode ParseRetentionMode(string? text, List<ConfigError> errors, out bool known)
+    {
+        known = true;
+        if (text is null)
+        {
+            return RetentionMode.Off;
+        }
+
+        switch (text.ToLowerInvariant())
+        {
+            case "off":
+                return RetentionMode.Off;
+            case "dry_run" or "dry-run" or "dryrun":
+                return RetentionMode.DryRun;
+            case "live":
+                return RetentionMode.Live;
+            default:
+                known = false;
+                errors.Add(new("ENCORE_RETENTION_MODE", $"ENCORE_RETENTION_MODE must be off, dry_run or live, got \"{Truncate(text)}\""));
+                return RetentionMode.Off;
+        }
+    }
+
+    /// <summary>Playlist ids, comma separated; 32 hex digits, dashes allowed. Stored as lower-case hex without dashes.</summary>
+    private static List<string> ParseIgnorePlaylists(string? text, List<ConfigError> errors)
+    {
+        var ids = new List<string>();
+        foreach (var part in (text ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var id = part.Replace("-", "").ToLowerInvariant();
+            if (id.Length != 32 || !id.All(Uri.IsHexDigit))
+            {
+                errors.Add(new("ENCORE_RETENTION_IGNORE_PLAYLISTS",
+                    $"ENCORE_RETENTION_IGNORE_PLAYLISTS must be comma separated playlist ids of 32 hex digits, got \"{Truncate(part)}\""));
+                continue;
+            }
+
+            if (!ids.Contains(id))
+            {
+                ids.Add(id);
+            }
+        }
+
+        return ids;
+    }
+
+    private static string? ParseAbsoluteDir(string name, string text, List<ConfigError> errors)
+    {
+        if (!text.StartsWith('/') || text.Contains('\\') || text.Split('/').Contains(".."))
+        {
+            errors.Add(new(name, $"{name} must be an absolute path starting with / (no .. segment, no backslash)"));
+            return null;
+        }
+
+        var trimmed = text.TrimEnd('/');
+        if (trimmed.Length == 0)
+        {
+            errors.Add(new(name, $"{name} must not be the root folder"));
+            return null;
+        }
+
+        return trimmed;
+    }
+
+    /// <summary>Live retention writes into the library: the folder must exist and a file must be created and deleted in the hidden incoming folder.</summary>
+    private static void CheckLibraryProbe(string libraryDir, List<ConfigError> errors)
+    {
+        if (!Directory.Exists(libraryDir))
+        {
+            errors.Add(new("ENCORE_LIBRARY_DIR", $"ENCORE_LIBRARY_DIR \"{Truncate(libraryDir)}\" must exist in live retention mode"));
+            return;
+        }
+
+        try
+        {
+            var incoming = Path.Combine(libraryDir, Encore.Retention.RetentionLimits.IncomingFolder);
+            Directory.CreateDirectory(incoming);
+            var probe = Path.Combine(incoming, $".encore-write-test-{Guid.NewGuid():N}");
+            File.WriteAllText(probe, "ok");
+            File.Delete(probe);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            errors.Add(new("ENCORE_LIBRARY_DIR",
+                $"ENCORE_LIBRARY_DIR \"{Truncate(libraryDir)}\" must be writable in live retention mode: a test file could not be written and deleted in {Encore.Retention.RetentionLimits.IncomingFolder} ({ex.GetType().Name})"));
         }
     }
 
