@@ -40,8 +40,11 @@ internal sealed partial class FakeJellyfin : IJellyfinClient, IRetentionJellyfin
         return MessageFailures.TryDequeue(out var failure) ? throw failure : Task.CompletedTask;
     }
 
+    /// <summary>Set to make GetUsersAsync throw this.</summary>
+    public Exception? UsersFailure { get; set; }
+
     public Task<IReadOnlyList<UserDto>> GetUsersAsync(CancellationToken ct = default) =>
-        Task.FromResult<IReadOnlyList<UserDto>>(Users.ToList());
+        UsersFailure is { } failure ? throw failure : Task.FromResult<IReadOnlyList<UserDto>>(Users.ToList());
 
     public Task PlayLastAsync(string sessionId, IReadOnlyCollection<Guid> itemIds, CancellationToken ct = default)
     {

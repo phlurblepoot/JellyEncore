@@ -390,6 +390,45 @@ public sealed class FetchStore : IDisposable
         }
     }
 
+    /// <summary>
+    /// Every row in state <c>ready</c>, kept or not, oldest ready first: what the retention pass decides about. Unlike
+    /// <see cref="TrackedForRetention"/> it includes rows already kept (dry-run keeps, promotions in progress, duplicates).
+    /// </summary>
+    public IReadOnlyList<TrackedFile> ReadyForRetention()
+    {
+        lock (_gate)
+        {
+            using var cmd = _db.CreateCommand();
+            cmd.CommandText = $"SELECT {TrackedColumns} FROM fetched_files WHERE state = 'ready' ORDER BY ready_utc, id";
+            return ReadTracked(cmd);
+        }
+    }
+
+    /// <summary>
+    /// The paths of every row that is not failed (current path and, after a promotion, the old radio path): a file under the
+    /// radio folder that none of these names is untracked.
+    /// </summary>
+    public IReadOnlyList<string> NonFailedPaths()
+    {
+        lock (_gate)
+        {
+            using var cmd = _db.CreateCommand();
+            cmd.CommandText = """
+                SELECT path FROM fetched_files WHERE state <> 'failed' AND path IS NOT NULL
+                UNION
+                SELECT radio_path FROM fetched_files WHERE state <> 'failed' AND radio_path IS NOT NULL
+                """;
+            var paths = new List<string>();
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+            {
+                paths.Add(r.GetString(0));
+            }
+
+            return paths;
+        }
+    }
+
     /// <summary>One <c>fetched_files</c> row as retention sees it, or null when the id does not exist.</summary>
     public TrackedFile? GetTracked(long id)
     {
