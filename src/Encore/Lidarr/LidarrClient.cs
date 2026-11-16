@@ -50,7 +50,8 @@ public sealed partial class LidarrClient : ILidarrClient
         var dtos = await GetJsonAsync<List<RootFolderDto>>("api/v1/rootfolder", "GetRootFolders", ct).ConfigureAwait(false);
         return dtos
             .Where(d => !string.IsNullOrEmpty(d.Path))
-            .Select(d => new LidarrRootFolder(d.Id, d.Path!, d.DefaultQualityProfileId, d.DefaultMetadataProfileId, d.Accessible))
+            .Select(d => new LidarrRootFolder(d.Id, d.Path!, d.DefaultQualityProfileId, d.DefaultMetadataProfileId, d.Accessible,
+                MonitorName(d.DefaultMonitorOption, MonitorTypeNames), MonitorName(d.DefaultNewItemMonitorOption, NewItemMonitorTypeNames)))
             .ToList();
     }
 
@@ -339,7 +340,22 @@ public sealed partial class LidarrClient : ILidarrClient
 
     private sealed record StatusDto(string? AppName, string? Version);
 
-    private sealed record RootFolderDto(int Id, string? Path, int DefaultQualityProfileId, int DefaultMetadataProfileId, bool Accessible);
+    private sealed record RootFolderDto(
+        int Id, string? Path, int DefaultQualityProfileId, int DefaultMetadataProfileId, bool Accessible,
+        JsonElement? DefaultMonitorOption = null, JsonElement? DefaultNewItemMonitorOption = null);
+
+    // Lidarr's MonitorTypes and NewItemMonitorTypes in enum order (MonitorTypes.cs, NewItemMonitorTypes.cs), for a reply that sends numbers.
+    private static readonly string[] MonitorTypeNames = ["all", "future", "missing", "existing", "latest", "first", "none", "unknown"];
+
+    private static readonly string[] NewItemMonitorTypeNames = ["all", "none", "new"];
+
+    /// <summary>The option's camelCase name: a string as sent, a number mapped by enum order; null when absent or unreadable.</summary>
+    private static string? MonitorName(JsonElement? value, string[] names) => value switch
+    {
+        { ValueKind: JsonValueKind.String } v => v.GetString(),
+        { ValueKind: JsonValueKind.Number } v when v.TryGetInt32(out var i) && i >= 0 && i < names.Length => names[i],
+        _ => null,
+    };
 
     private sealed record ImageDto(string? CoverType, string? Url, string? RemoteUrl);
 

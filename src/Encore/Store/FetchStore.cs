@@ -441,6 +441,18 @@ public sealed class FetchStore : IDisposable
         }
     }
 
+    /// <summary>The disc number of one row (<c>disc_no</c>), or null when unknown or the id does not exist. The promoter names disc 2 and up `{d}-{NN}`.</summary>
+    public int? DiscNoOf(long id)
+    {
+        lock (_gate)
+        {
+            using var cmd = _db.CreateCommand();
+            cmd.CommandText = "SELECT disc_no FROM fetched_files WHERE id = $id";
+            cmd.Parameters.AddWithValue("$id", id);
+            return cmd.ExecuteScalar() is long n ? (int)n : null;
+        }
+    }
+
     /// <summary>Marks a ready row as kept for good (<c>kept_reason</c> and <c>kept_utc</c>). Returns false when the row is not in state ready.</summary>
     public bool MarkKept(long id, string reason, DateTimeOffset now)
     {

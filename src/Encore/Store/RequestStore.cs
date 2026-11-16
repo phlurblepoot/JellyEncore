@@ -241,6 +241,24 @@ public sealed partial class RequestStore : IDisposable, IPageTokenStore
         }
     }
 
+    /// <summary>
+    /// Points every request that names <paramref name="oldItemId"/> at <paramref name="newItemId"/> (a promoted song got a new Jellyfin
+    /// item, v04 §7.2 step done). Ids are in the "N" format. Idempotent; returns the rows changed.
+    /// </summary>
+    public int ReplaceItemId(string oldItemId, string newItemId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(oldItemId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(newItemId);
+        lock (_gate)
+        {
+            using var cmd = _db.CreateCommand();
+            cmd.CommandText = "UPDATE requests SET jellyfin_item_id = $new WHERE jellyfin_item_id = $old";
+            cmd.Parameters.AddWithValue("$old", oldItemId);
+            cmd.Parameters.AddWithValue("$new", newItemId);
+            return cmd.ExecuteNonQuery();
+        }
+    }
+
     /// <summary>One request, or null when the id does not exist.</summary>
     public RequestRow? Get(string id)
     {

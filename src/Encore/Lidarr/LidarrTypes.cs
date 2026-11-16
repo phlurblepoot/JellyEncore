@@ -5,8 +5,14 @@ namespace Encore.Lidarr;
 /// <summary>GET system/status: the two fields Encore uses.</summary>
 public sealed record LidarrStatus(string AppName, string Version);
 
-/// <summary>GET rootfolder (lidarr-api.md section 4). <see cref="Path"/> has no trailing slash.</summary>
-public sealed record LidarrRootFolder(int Id, string Path, int DefaultQualityProfileId, int DefaultMetadataProfileId, bool Accessible);
+/// <summary>
+/// GET rootfolder (lidarr-api.md section 4). <see cref="Path"/> has no trailing slash. <see cref="DefaultMonitorOption"/> and
+/// <see cref="DefaultNewItemMonitorOption"/> are Lidarr's camelCase names (`all`, `none`, ...; v0.4 section 7.5 defaults guard);
+/// null when the reply lacks them.
+/// </summary>
+public sealed record LidarrRootFolder(
+    int Id, string Path, int DefaultQualityProfileId, int DefaultMetadataProfileId, bool Accessible,
+    string? DefaultMonitorOption = null, string? DefaultNewItemMonitorOption = null);
 
 /// <summary>An album's <c>statistics</c> (lidarr-api.md section 6). The whole object is null when the album has no tracks on a monitored release.</summary>
 public sealed record LidarrAlbumStatistics(int TrackFileCount, int TrackCount, int TotalTrackCount, long SizeOnDisk, double PercentOfTracks);
