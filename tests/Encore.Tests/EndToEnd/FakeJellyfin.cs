@@ -8,7 +8,7 @@ namespace Encore.Tests.EndToEnd;
 /// A fake Jellyfin for the orchestrator: users, PlayLast (recorded, or failing on demand) and the pick sources,
 /// which are delegated to the picker's fake so the picks follow the same rules as the picker tests.
 /// </summary>
-internal sealed class FakeJellyfin : IJellyfinClient
+internal sealed partial class FakeJellyfin : IJellyfinClient, IRetentionJellyfin
 {
     public List<UserDto> Users { get; set; } = [];
 

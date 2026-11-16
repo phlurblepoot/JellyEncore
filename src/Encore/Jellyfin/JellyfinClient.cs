@@ -28,7 +28,7 @@ public sealed record JellyfinClientOptions
 /// A timeout, or a transport error after the connection was open, sets <see cref="JellyfinException.OutcomeUnknown"/>.</item>
 /// </list>
 /// </summary>
-public sealed class JellyfinClient : IJellyfinClient
+public sealed class JellyfinClient : IJellyfinClient, IRetentionJellyfin
 {
     private readonly HttpClient _http;
     private readonly JellyfinClientOptions _options;
@@ -205,6 +205,167 @@ public sealed class JellyfinClient : IJellyfinClient
         using var response = await SendAsync(
             HttpMethod.Post, $"Sessions/{Uri.EscapeDataString(sessionId)}/Message", "SendMessage", maxRetries: 0, _ => false, ct,
             () => new StringContent(body, System.Text.Encoding.UTF8, "application/json")).ConfigureAwait(false);
+    }
+
+    // ---- Retention calls (IRetentionJellyfin, v04 §13) ----------------------------------------------
+
+    private const int FavoritePageSize = 500;
+
+    public async Task<IReadOnlyList<BaseItemDto>> GetFavoriteAudioAsync(Guid userId, Guid? parentId = null, CancellationToken ct = default)
+    {
+        var all = new List<BaseItemDto>();
+        for (var start = 0; ; start += FavoritePageSize)
+        {
+            var query = Query(
+                ("userId", Id(userId)),
+                ("isFavorite", "true"),
+                ("includeItemTypes", "Audio"),
+                ("recursive", "true"),
+                ("parentId", parentId is { } p ? Id(p) : null),
+                ("fields", "Path"),
+                ("enableUserData", "true"),
+                ("startIndex", start.ToString(CultureInfo.InvariantCulture)),
+                ("limit", FavoritePageSize.ToString(CultureInfo.InvariantCulture)),
+                ("enableTotalRecordCount", "true"));
+            var page = await GetAsync<QueryResult<BaseItemDto>>($"Items?{query}", "GetFavoriteAudio", ct).ConfigureAwait(false);
+            all.AddRange(page.Items);
+            if (page.Items.Count < FavoritePageSize || (page.TotalRecordCount > 0 && all.Count >= page.TotalRecordCount))
+            {
+                return all;
+            }
+        }
+    }
+
+    public async Task<IReadOnlyList<PlaylistRef>> GetPlaylistsAsync(Guid userId, CancellationToken ct = default)
+    {
+        var query = Query(("userId", Id(userId)), ("includeItemTypes", "Playlist"), ("recursive", "true"));
+        var result = await GetAsync<QueryResult<BaseItemDto>>($"Items?{query}", "GetPlaylists", ct).ConfigureAwait(false);
+        return result.Items.Select(i => new PlaylistRef(i.Id, i.Name)).ToList();
+    }
+
+    public async Task<IReadOnlyList<Guid>> GetPlaylistEntriesAsync(Guid playlistId, Guid userId, CancellationToken ct = default)
+    {
+        var query = Query(("userId", Id(userId)));
+        var result = await GetAsync<QueryResult<BaseItemDto>>($"Playlists/{Id(playlistId)}/Items?{query}", "GetPlaylistEntries", ct).ConfigureAwait(false);
+        return result.Items.Select(i => i.Id).ToList();
+    }
+
+    public Task<PlaylistWriteResult> AddToPlaylistAsync(Guid playlistId, Guid itemId, Guid userId, int position, CancellationToken ct = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(position);
+        var query = Query(("ids", Id(itemId)), ("userId", Id(userId)), ("position", position.ToString(CultureInfo.InvariantCulture)));
+        return WriteAsync(HttpMethod.Post, $"Playlists/{Id(playlistId)}/Items?{query}", "AddToPlaylist", ct);
+    }
+
+    public Task<PlaylistWriteResult> RemovePlaylistEntriesAsync(Guid playlistId, IReadOnlyCollection<Guid> entryIds, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(entryIds);
+        if (entryIds.Count == 0)
+        {
+            throw new ArgumentException("at least one entry id is required", nameof(entryIds));
+        }
+
+        var query = Query(("entryIds", string.Join(",", entryIds.Select(Id))));
+        return WriteAsync(HttpMethod.Delete, $"Playlists/{Id(playlistId)}/Items?{query}", "RemovePlaylistEntries", ct);
+    }
+
+    public async Task MarkFavoriteAsync(Guid itemId, Guid userId, CancellationToken ct = default)
+    {
+        var query = Query(("userId", Id(userId)));
+        using var response = await SendAsync(HttpMethod.Post, $"UserFavoriteItems/{Id(itemId)}?{query}", "MarkFavorite", maxRetries: 0, _ => false, ct).ConfigureAwait(false);
+    }
+
+    public async Task<UserItemData?> GetUserItemDataAsync(Guid itemId, Guid userId, CancellationToken ct = default)
+    {
+        var query = Query(("ids", Id(itemId)), ("userId", Id(userId)), ("enableUserData", "true"));
+        var result = await GetAsync<QueryResult<BaseItemDto>>($"Items?{query}", "GetUserItemData", ct).ConfigureAwait(false);
+        var item = result.Items.FirstOrDefault();
+        return item is null ? null : new UserItemData(item.UserData?.IsFavorite ?? false, item.UserData?.PlayCount ?? 0);
+    }
+
+    public async Task<bool> ItemExistsAsync(Guid itemId, CancellationToken ct = default)
+    {
+        var query = Query(("ids", Id(itemId)));
+        var result = await GetAsync<QueryResult<BaseItemDto>>($"Items?{query}", "ItemExists", ct).ConfigureAwait(false);
+        return result.Items.Count > 0;
+    }
+
+    public async Task<SmartListsInfo> GetSmartListsAsync(CancellationToken ct = default)
+    {
+        var plugins = await GetAsync<List<PluginInfoDto>>("Plugins", "GetPlugins", ct).ConfigureAwait(false);
+        if (!plugins.Any(p => p.Name?.Contains("SmartLists", StringComparison.OrdinalIgnoreCase) == true))
+        {
+            return SmartListsInfo.NotInstalled;
+        }
+
+        var failed = new SmartListsInfo(true, false, new HashSet<Guid>());
+        try
+        {
+            var lists = await GetAsync<List<SmartListDtoLite>>("Plugins/SmartLists?type=Playlist", "GetSmartLists", ct).ConfigureAwait(false);
+            var ids = new HashSet<Guid>();
+            foreach (var list in lists)
+            {
+                if (list is null)
+                {
+                    return failed;
+                }
+
+                if (!AddId(list.JellyfinPlaylistId, ids))
+                {
+                    return failed;
+                }
+
+                foreach (var mapping in list.UserPlaylists ?? [])
+                {
+                    if (mapping is null || !AddId(mapping.JellyfinPlaylistId, ids))
+                    {
+                        return failed;
+                    }
+                }
+            }
+
+            return new SmartListsInfo(true, true, ids);
+        }
+        catch (JellyfinException)
+        {
+            // A refusal, 404, 5xx, timeout, dropped connection or unreadable body: the list is unknown, so the caller must treat it as a failed read.
+            return failed;
+        }
+    }
+
+    /// <summary>Adds a plugin playlist id. True when it is absent or a valid id; false when it is present but not an id.</summary>
+    private static bool AddId(string? value, HashSet<Guid> ids)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return true;
+        }
+
+        if (!Guid.TryParse(value, out var id))
+        {
+            return false;
+        }
+
+        ids.Add(id);
+        return true;
+    }
+
+    /// <summary>A write that is never retried. 403 and 404 come back as results; 401 and every other failure throw.</summary>
+    private async Task<PlaylistWriteResult> WriteAsync(HttpMethod method, string path, string operation, CancellationToken ct)
+    {
+        try
+        {
+            using var response = await SendAsync(method, path, operation, maxRetries: 0, _ => false, ct).ConfigureAwait(false);
+            return PlaylistWriteResult.Ok;
+        }
+        catch (JellyfinAuthException e) when (e.StatusCode == 403)
+        {
+            return PlaylistWriteResult.Forbidden;
+        }
+        catch (JellyfinRequestException e) when (e.StatusCode == 404)
+        {
+            return PlaylistWriteResult.NotFound;
+        }
     }
 
     private async Task<T> GetAsync<T>(string path, string operation, CancellationToken ct) where T : class

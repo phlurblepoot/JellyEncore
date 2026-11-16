@@ -19,6 +19,8 @@ public static class JellyfinServiceCollectionExtensions
         var baseAddress = new Uri(options.JellyfinUrl.AbsoluteUri.TrimEnd('/') + "/");
 
         services.AddSingleton(client);
+        // The retention calls are the same typed client (same HttpClient, auth handler and timeouts).
+        services.AddTransient<IRetentionJellyfin>(sp => (IRetentionJellyfin)sp.GetRequiredService<IJellyfinClient>());
         return services.AddHttpClient<IJellyfinClient, JellyfinClient>(http =>
             {
                 http.BaseAddress = baseAddress;

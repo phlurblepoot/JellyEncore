@@ -109,6 +109,16 @@ public sealed record BaseItemDto
 
     /// <summary>External ids, e.g. "MusicBrainzArtist" on an artist (only when fields=ProviderIds was asked for).</summary>
     public IReadOnlyDictionary<string, string>? ProviderIds { get; init; }
+
+    /// <summary>The asking user's data (only when userId and enableUserData=true were sent).</summary>
+    public UserItemDataDto? UserData { get; init; }
+}
+
+public sealed record UserItemDataDto
+{
+    public bool IsFavorite { get; init; }
+
+    public int PlayCount { get; init; }
 }
 
 public sealed record NameGuidPair
@@ -224,4 +234,23 @@ public sealed record PublicSystemInfo
     public string? ServerName { get; init; }
 
     public string? Version { get; init; }
+}
+
+/// <summary>One entry of GET /Plugins (only the name is read).</summary>
+internal sealed record PluginInfoDto
+{
+    public string? Name { get; init; }
+}
+
+/// <summary>One list of GET /Plugins/SmartLists (SmartLists 12.1.0.0 source: SmartPlaylistDto.cs): the playlist ids Jellyfin holds for it.</summary>
+internal sealed record SmartListDtoLite
+{
+    public string? JellyfinPlaylistId { get; init; }
+
+    public IReadOnlyList<SmartListUserPlaylist?>? UserPlaylists { get; init; }
+}
+
+internal sealed record SmartListUserPlaylist
+{
+    public string? JellyfinPlaylistId { get; init; }
 }
