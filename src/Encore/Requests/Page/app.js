@@ -217,7 +217,9 @@
   /**
    * What a search result row shows on its right side. Song rows are the /api/v1/search rows
    * ({deezerTrackId, title, artist, album, durationS, coverUrl, explicit, owned, itemId, requestable,
-   * request: {id, state, detail, mine} | null}); after a request is made, `request` holds the full request.
+   * request: {id, state, detail, mine} | null}); album rows are ({foreignAlbumId, title, artist, foreignArtistId, year,
+   * albumType, secondaryTypes, trackCount, coverUrl, released, owned, itemId, requestable, request}).
+   * After a request is made, `request` holds the full request.
    * Returns 'library' (owned: open it), 'status' (a request exists: show its chip), 'unreleased' (album not out yet),
    * 'request' (a Request button) or 'none'.
    */
@@ -225,7 +227,7 @@
     if (!row || typeof row !== 'object') {
       return 'none';
     }
-    if (row.owned || row.itemId || (kind === 'album' && row.inLibrary)) {
+    if (row.owned || row.itemId) {
       return 'library';
     }
     if (row.request && typeof row.request === 'object' && row.request.state) {

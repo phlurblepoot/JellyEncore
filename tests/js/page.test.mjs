@@ -129,6 +129,14 @@ test('rowAction reads the real /search song rows and request objects', () => {
   assert.equal(h.rowAction(song(), 'song', { canRequest: false }), 'none');
   assert.equal(h.rowAction(song(), 'song', null), 'none');
   assert.equal(h.rowAction({ foreignAlbumId: 'mb', released: false }, 'album', me), 'unreleased');
-  assert.equal(h.rowAction({ foreignAlbumId: 'mb', inLibrary: true }, 'album', me), 'library');
+  // Album rows exactly as GET /api/v1/search returns them (T90 AlbumRow).
+  const album = (o = {}) => ({ foreignAlbumId: 'mb', title: 'OK Computer', artist: 'Radiohead', foreignArtistId: 'a', year: 1997,
+    albumType: 'Album', secondaryTypes: [], trackCount: 12, coverUrl: null, released: true, owned: false, itemId: null,
+    requestable: true, request: null, ...o });
+  assert.equal(h.rowAction(album(), 'album', me), 'request');
+  assert.equal(h.rowAction(album({ released: false, requestable: false }), 'album', me), 'unreleased');
+  assert.equal(h.rowAction(album({ owned: true, requestable: false }), 'album', me), 'library');
+  assert.equal(h.rowAction(album({ owned: true, itemId: 'abc', requestable: false }), 'album', me), 'library');
+  assert.equal(h.rowAction(album({ request: { id: 'r1', state: 'searching', detail: 'x', mine: true } }), 'album', me), 'status');
   assert.equal(h.rowAction(null, 'song', me), 'none');
 });

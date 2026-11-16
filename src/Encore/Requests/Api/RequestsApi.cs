@@ -76,7 +76,11 @@ public static class RequestsApi
 
         services.AddSingleton(sp => new SearchService(
             sp.GetRequiredService<IJellyfinClient>(), sp.GetRequiredService<IDeezerClient>(), sp.GetService<IOwnedIndex>(),
-            sp.GetRequiredService<RequestStore>(), sp.GetRequiredService<ILogger<SearchService>>()));
+            sp.GetRequiredService<RequestStore>(), sp.GetRequiredService<ILogger<SearchService>>(),
+            albums: sp.GetService<Encore.Requests.Albums.AlbumSearch>()));
+
+        // Album requests (T90): only with ENCORE_LIDARR_URL; otherwise album requests answer 503 albums_unavailable.
+        Encore.Requests.Albums.AlbumServiceCollectionExtensions.AddAlbumRequests(services, options);
         services.AddSingleton(sp => new ApiEndpoints(
             options, sp.GetRequiredService<UserAuth>(), sp.GetRequiredService<RequestUsers>(), sp.GetRequiredService<RequestStore>(),
             sp.GetRequiredService<JellyfinServerInfo>(), sp.GetRequiredService<SearchService>(), sp.GetRequiredService<TimeProvider>(), version));

@@ -47,4 +47,21 @@ public static class RequestLimits
     public static readonly TimeSpan SearchJellyfinTimeout = TimeSpan.FromSeconds(5);
     public static readonly TimeSpan SearchDeezerTimeout = TimeSpan.FromSeconds(6);
     public static readonly TimeSpan SearchLidarrTimeout = TimeSpan.FromSeconds(10);
+
+    /// <summary>Album search rows shown at most (Lidarr's text lookup can return many).</summary>
+    public const int SearchAlbumLimit = 25;
+
+    /// <summary>Album requests (design 7 and 11): text lookups cached 1 h; each active album polled every 2 min.</summary>
+    public static readonly TimeSpan LidarrLookupCacheTtl = TimeSpan.FromHours(1);
+    public const int LidarrLookupCacheMax = 200;
+    public static readonly TimeSpan AlbumPoll = TimeSpan.FromMinutes(2);
+
+    /// <summary>Still searching with no file after this long: failed <c>not_found</c>, album unmonitored.</summary>
+    public static readonly TimeSpan AlbumNoFileTimeout = TimeSpan.FromDays(7);
+
+    /// <summary>Partly downloaded and unchanged this long: failed <c>incomplete</c>, album left as it is.</summary>
+    public static readonly TimeSpan AlbumStalledTimeout = TimeSpan.FromDays(3);
+
+    /// <summary>In Lidarr but not in Jellyfin this long: counted for the /health warning (the request stays importing).</summary>
+    public static readonly TimeSpan AlbumJellyfinWait = TimeSpan.FromHours(2);
 }

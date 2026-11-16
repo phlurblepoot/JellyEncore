@@ -89,6 +89,7 @@ internal sealed class ApiRig : IDisposable
     [
         "ENCORE_REQUESTS", "ENCORE_REQUEST_USERS", "ENCORE_REQUEST_ORIGINS", "ENCORE_PATH_BASE", "ENCORE_TRUSTED_PROXIES",
         "ENCORE_PUBLIC_URL", "ENCORE_JELLYFIN_PUBLIC_URL", "ENCORE_REQUEST_SONGS_PER_DAY", "ENCORE_DATA_DIR", "LOG_LEVEL",
+        "ENCORE_LIDARR_URL", "ENCORE_LIDARR_API_KEY",
     ];
 
     private readonly Dictionary<string, string?> _saved = [];
@@ -96,7 +97,11 @@ internal sealed class ApiRig : IDisposable
     private readonly WebApplicationFactory<Program> _root = new();
     private readonly WebApplicationFactory<Program> _factory;
 
-    public ApiRig(Dictionary<string, string?>? env = null, bool on = true, Encore.Config.FetchMode songMode = Encore.Config.FetchMode.Live)
+    public ApiRig(
+        Dictionary<string, string?>? env = null,
+        bool on = true,
+        Encore.Config.FetchMode songMode = Encore.Config.FetchMode.Live,
+        Action<IServiceCollection>? extraServices = null)
     {
         foreach (var name in EnvNames)
         {
@@ -184,6 +189,7 @@ internal sealed class ApiRig : IDisposable
             services.AddSingleton(sp => new Encore.Requests.Songs.RequestWorker(
                 sp.GetRequiredService<Encore.Requests.Songs.RequestService>(), Encore.Requests.Songs.NullRequestNotifier.Instance,
                 sp.GetRequiredService<ILogger<Encore.Requests.Songs.RequestWorker>>(), TimeProvider.System, Timeout.InfiniteTimeSpan));
+            extraServices?.Invoke(services);
         }));
         Client = _factory.CreateClient();
         if (on)

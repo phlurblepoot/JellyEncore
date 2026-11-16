@@ -18,6 +18,7 @@ public static class RequestCodes
     public const string Conflict = "conflict";
     public const string AdminOnly = "admin_only";
     public const string NotFound = "not_found";
+    public const string NotReleased = "not_released";
 }
 
 /// <summary>The settings a <see cref="RequestService"/> needs: the fetch mode and the per-person daily song cap.</summary>

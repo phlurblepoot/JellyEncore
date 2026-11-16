@@ -102,13 +102,22 @@ test('buildCards keeps only what is not in the library', () => {
       { deezerTrackId: 4, title: 'Busy', artist: 'B', album: 'Y', durationS: 100, coverUrl: null, explicit: true,
         owned: false, itemId: null, requestable: true, request: { id: 'r9', state: 'downloading', detail: 'Downloading from a peer', mine: true } },
     ],
+    // Album rows exactly as GET /api/v1/search returns them (T90 AlbumRow).
     albums: [
-      { foreignAlbumId: 'mb-1', artist: 'C', title: 'Album', released: false },
-      { foreignAlbumId: 'mb-2', title: 'Owned album', owned: true },
+      { foreignAlbumId: 'mb-1', title: 'Album', artist: 'C', foreignArtistId: 'a', year: 2027, albumType: 'Album', secondaryTypes: [],
+        trackCount: 9, coverUrl: null, released: false, owned: false, itemId: null, requestable: false, request: null },
+      { foreignAlbumId: 'mb-2', title: 'Owned album', artist: 'C', foreignArtistId: 'a', year: 1997, albumType: 'Album', secondaryTypes: [],
+        trackCount: 12, coverUrl: null, released: true, owned: true, itemId: null, requestable: false, request: null },
+      { foreignAlbumId: 'mb-3', title: 'Wanted', artist: 'C', foreignArtistId: 'a', year: 2000, albumType: 'Album', secondaryTypes: ['Live'],
+        trackCount: 10, coverUrl: 'c3', released: true, owned: false, itemId: null, requestable: true,
+        request: { id: 'r3', state: 'searching', detail: 'Waiting for Soulseek', mine: false } },
       { title: 'No mbid' },
     ],
   });
-  assert.deepEqual(cards.map(c => c.key), ['song:1', 'song:4', 'album:mb-1']);
+  assert.deepEqual(cards.map(c => c.key), ['song:1', 'song:4', 'album:mb-1', 'album:mb-3']);
+  assert.equal(cards[3].cover, 'c3');
+  assert.equal(cards[3].released, true);
+  assert.equal(cards[3].request.state, 'searching');
   assert.deepEqual(cards[0].body, { kind: 'song', deezerTrackId: 1 });
   assert.equal(cards[0].cover, 'c1');
   assert.deepEqual(cards[1].request, { id: 'r9', state: 'downloading', detail: 'Downloading from a peer', mine: true });

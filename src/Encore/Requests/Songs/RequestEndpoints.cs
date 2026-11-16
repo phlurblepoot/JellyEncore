@@ -1,3 +1,4 @@
+using Encore.Requests.Albums;
 using Encore.Requests.Api;
 using Encore.Requests.Auth;
 using Encore.Store;
@@ -39,14 +40,16 @@ public sealed record RequestDto(
 
 /// <summary>
 /// The request routes (v0.3 design 4): POST/GET <c>/requests</c>, GET/DELETE <c>/requests/{id}</c> and POST
-/// <c>/requests/{id}/retry</c>. Albums (T90) answer 503 <c>albums_unavailable</c> until the Lidarr part exists.
+/// <c>/requests/{id}/retry</c>. Album requests go to the <see cref="AlbumRequester"/>; without Lidarr (no requester) they
+/// answer 503 <c>albums_unavailable</c>.
 /// </summary>
 public sealed class RequestEndpoints(
     ApiEndpoints api,
     RequestUsers users,
     RequestService service,
     IRequestNotifier notifier,
-    ILogger<RequestEndpoints> logger)
+    ILogger<RequestEndpoints> logger,
+    AlbumRequester? albums = null)
 {
     private sealed record CreateBody(string? Kind, long? DeezerTrackId, string? ForeignAlbumId);
 
@@ -81,7 +84,14 @@ public sealed class RequestEndpoints(
                 await NotifyAsync(notify, context.RequestAborted).ConfigureAwait(false);
                 return Answer(outcome);
             case "album" when !string.IsNullOrWhiteSpace(body.ForeignAlbumId):
-                return ApiErrors.Result(StatusCodes.Status503ServiceUnavailable, RequestCodes.AlbumsUnavailable);
+                if (albums is null)
+                {
+                    return ApiErrors.Result(StatusCodes.Status503ServiceUnavailable, RequestCodes.AlbumsUnavailable);
+                }
+
+                var (albumOutcome, albumNotify) = await albums.CreateAsync(user, body.ForeignAlbumId, context.RequestAborted).ConfigureAwait(false);
+                await NotifyAsync(albumNotify, context.RequestAborted).ConfigureAwait(false);
+                return Answer(albumOutcome);
             default:
                 return ApiErrors.Result(StatusCodes.Status400BadRequest, AuthCodes.BadRequest);
         }
@@ -122,7 +132,14 @@ public sealed class RequestEndpoints(
     private async Task<IResult> CancelAsync(HttpContext context, string id)
     {
         var (user, failure) = await api.AuthenticateAsync(context).ConfigureAwait(false);
-        return user is null ? failure! : Answer(service.Cancel(user, id));
+        if (user is null)
+        {
+            return failure!;
+        }
+
+        return albums is not null && IsAlbum(user, id)
+            ? Answer(await albums.CancelAsync(user, id, context.RequestAborted).ConfigureAwait(false))
+            : Answer(service.Cancel(user, id));
     }
 
     private async Task<IResult> RetryAsync(HttpContext context, string id)
@@ -138,10 +155,14 @@ public sealed class RequestEndpoints(
             return ApiErrors.Result(StatusCodes.Status403Forbidden, AuthCodes.NotAllowed);
         }
 
-        var (outcome, notify) = service.Retry(user, id);
+        var (outcome, notify) = albums is not null && IsAlbum(user, id)
+            ? await albums.RetryAsync(user, id, context.RequestAborted).ConfigureAwait(false)
+            : service.Retry(user, id);
         await NotifyAsync(notify, context.RequestAborted).ConfigureAwait(false);
         return Answer(outcome);
     }
+
+    private bool IsAlbum(RequestUser user, string id) => service.Get(user, id).Row?.Kind == "album";
 
     private static IResult Answer(RequestOutcome outcome) => outcome.Ok
         ? Results.Json(RequestDto.From(outcome.Row!), ApiJson.Options, statusCode: outcome.Status)

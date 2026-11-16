@@ -85,6 +85,9 @@
   // Search rows -> cards the section shows: only what is not already in the library.
   // Song rows (GET /api/v1/search): { deezerTrackId, title, artist, album, durationS, coverUrl, explicit, owned, itemId,
   // requestable, request: { id, state, detail, mine } | null }. Owned or not requestable rows are left out.
+  // Album rows (Lidarr catalog): { foreignAlbumId, title, artist, foreignArtistId, year, albumType, secondaryTypes,
+  // trackCount, coverUrl, released, owned, itemId, requestable, request }. Owned rows are left out; unreleased ones stay
+  // (they show "Not released yet").
   function buildCards(data) {
     var cards = [];
     if (!data || typeof data !== 'object') return cards;
@@ -98,8 +101,9 @@
         artist: r.artist || '', title: r.title || '', cover: r.coverUrl || '', request: r.request || null, released: true });
     });
     albums.forEach(function (r) {
-      if (!r || r.itemId || r.inLibrary || r.owned) return;
+      if (!r || r.owned || r.itemId) return;
       if (!r.foreignAlbumId) return;
+      if (r.requestable === false && r.released !== false) return;
       cards.push({ kind: 'album', key: 'album:' + r.foreignAlbumId, body: { kind: 'album', foreignAlbumId: r.foreignAlbumId },
         artist: r.artist || '', title: r.title || '', cover: r.coverUrl || '', request: r.request || null,
         released: r.released !== false });

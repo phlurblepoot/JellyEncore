@@ -1,16 +1,17 @@
 using System.Diagnostics;
 using Encore.Discovery;
 using Encore.Jellyfin;
+using Encore.Requests.Albums;
 using Encore.Requests.Api;
 using Encore.Store;
 
 namespace Encore.Requests.Search;
 
-/// <summary>What a search returns (design 5). <see cref="Albums"/> stays empty until T90 adds the Lidarr catalog.</summary>
+/// <summary>What a search returns (design 5). <see cref="Albums"/> is empty when Lidarr is not configured.</summary>
 public sealed record SearchResponse(
     SearchLibrary Library,
     IReadOnlyList<SongRow> Songs,
-    IReadOnlyList<object> Albums,
+    IReadOnlyList<AlbumRow> Albums,
     IReadOnlyList<string> Warnings);
 
 /// <summary>What the person's own Jellyfin library holds for the text (the injected script ignores it; Jellyfin web shows it).</summary>
@@ -46,6 +47,8 @@ public sealed record SearchOptions
     public TimeSpan JellyfinTimeout { get; init; } = RequestLimits.SearchJellyfinTimeout;
 
     public TimeSpan DeezerTimeout { get; init; } = RequestLimits.SearchDeezerTimeout;
+
+    public TimeSpan LidarrTimeout { get; init; } = RequestLimits.SearchLidarrTimeout;
 }
 
 /// <summary>Which sections a search asks for.</summary>
@@ -62,7 +65,7 @@ public enum SearchKinds
 /// Merges the requester's Jellyfin library and a Deezer text search (design 5 items 1, 2 and 4). A Deezer row is owned
 /// when the owned index (or, failing that, the library results) holds the song; owned rows are not requestable. A row
 /// with an in-progress request carries it. Each source has its own timeout; a source that fails or times out gives an
-/// empty part and a warning, never an error. The albums part (Lidarr) is added by T90.
+/// empty part and a warning, never an error. Albums come from Lidarr's catalog (item 3) when Lidarr is configured.
 /// </summary>
 public sealed class SearchService(
     IJellyfinClient jellyfin,
@@ -70,9 +73,9 @@ public sealed class SearchService(
     IOwnedIndex? owned,
     RequestStore store,
     ILogger<SearchService> logger,
-    SearchOptions? options = null)
+    SearchOptions? options = null,
+    AlbumSearch? albums = null)
 {
-    private static readonly IReadOnlyList<object> NoAlbums = [];
     private readonly SearchOptions _options = options ?? new SearchOptions();
 
     /// <summary>Is the text a valid query (2 to 100 characters after trimming)?</summary>
@@ -122,7 +125,10 @@ public sealed class SearchService(
             ? Source("deezer", _options.DeezerTimeout, warnings,
                 token => deezer.SearchTracksAsync(query, RequestLimits.SearchDeezerLimit, token), ct)
             : Task.FromResult<IReadOnlyList<DeezerSearchTrack>?>(null);
-        await Task.WhenAll(libraryTask, deezerTask).ConfigureAwait(false);
+        var lidarrTask = albumsWanted && albums is not null
+            ? Source("lidarr", _options.LidarrTimeout, warnings, token => albums.LookupAsync(query, token), ct)
+            : Task.FromResult<AlbumLookup?>(null);
+        await Task.WhenAll(libraryTask, deezerTask, lidarrTask).ConfigureAwait(false);
 
         var items = libraryTask.Result?.Items ?? [];
         var librarySongs = new List<LibrarySong>();
@@ -148,7 +154,7 @@ public sealed class SearchService(
                     librarySongs.Add(new LibrarySong(Key(item.Id), artist, item.Name, item.Album));
                 }
             }
-            else if (string.Equals(item.Type, "MusicAlbum", StringComparison.OrdinalIgnoreCase) && albumsWanted)
+            else if (string.Equals(item.Type, "MusicAlbum", StringComparison.OrdinalIgnoreCase))
             {
                 var artist = item.AlbumArtist ?? item.AlbumArtists?.FirstOrDefault(a => !string.IsNullOrWhiteSpace(a.Name))?.Name ?? string.Empty;
                 libraryAlbums.Add(new LibraryAlbum(Key(item.Id), artist, item.Name, item.ProductionYear));
@@ -161,8 +167,29 @@ public sealed class SearchService(
             songs.Add(ToRow(track, userId, libraryKeys));
         }
 
-        logger.Searched(userId, query, librarySongs.Count + libraryAlbums.Count, songs.Count, 0, clock.ElapsedMilliseconds);
-        return new SearchResponse(new SearchLibrary(librarySongs, libraryAlbums), songs, NoAlbums, warnings);
+        IReadOnlyList<AlbumRow> albumRows = [];
+        if (lidarrTask.Result is { } lookup)
+        {
+            IReadOnlyList<RequestRow> active = [];
+            try
+            {
+                active = store.Active();
+            }
+            catch (StoreException)
+            {
+                // The rows still show; they just do not say that a request exists.
+            }
+
+            albumRows = AlbumSearch.BuildRows(lookup, libraryAlbums, active, Key(userId), DateTimeOffset.UtcNow);
+        }
+
+        if (!albumsWanted)
+        {
+            libraryAlbums.Clear();
+        }
+
+        logger.Searched(userId, query, librarySongs.Count + libraryAlbums.Count, songs.Count, albumRows.Count, clock.ElapsedMilliseconds);
+        return new SearchResponse(new SearchLibrary(librarySongs, libraryAlbums), songs, albumRows, warnings);
     }
 
     /// <summary>The row's title as shown: Deezer's title, with the version note added in brackets when the title lacks it.</summary>
