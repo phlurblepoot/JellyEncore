@@ -2,6 +2,7 @@ using System.Net;
 using Encore.Config;
 using Encore.Jellyfin;
 using Encore.Requests.Auth;
+using Encore.Requests.Page;
 using Encore.Store;
 using Microsoft.Net.Http.Headers;
 
@@ -246,6 +247,7 @@ public static class RequestsApi
     {
         ArgumentNullException.ThrowIfNull(app);
         app.Services.GetRequiredService<ApiEndpoints>().Map(app);
+        app.MapRequestPage();
         return app;
     }
 

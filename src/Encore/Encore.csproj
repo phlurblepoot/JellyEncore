@@ -3,6 +3,11 @@
     <RootNamespace>Encore</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
+    <EmbeddedResource Include="Requests/Page/index.html" LogicalName="Encore.Page.index.html" />
+    <EmbeddedResource Include="Requests/Page/app.js" LogicalName="Encore.Page.app.js" />
+    <EmbeddedResource Include="Requests/Page/app.css" LogicalName="Encore.Page.app.css" />
+  </ItemGroup>
+  <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.1" />
     <PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" Version="2.1.12" />
     <PackageReference Include="TagLibSharp" Version="2.3.0" />
