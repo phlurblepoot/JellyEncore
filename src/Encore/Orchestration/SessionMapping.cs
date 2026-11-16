@@ -14,7 +14,7 @@ internal static class SessionMapping
         Client = dto.Client,
         DeviceId = dto.DeviceId,
         SupportsRemoteControl = dto.SupportsRemoteControl,
-        NowPlayingItem = dto.NowPlayingItem is { } item ? new NowPlaying(item.Id, item.Type, item.Name) : null,
+        NowPlayingItem = dto.NowPlayingItem is { } item ? new NowPlaying(item.Id, item.Type, item.Name, item.RunTimeTicks) : null,
         NowPlayingQueue = dto.NowPlayingQueue?.Select(q => new QueueEntry(q.Id, q.PlaylistItemId)).ToList() ?? [],
         PlaylistItemId = dto.PlaylistItemId,
         // Only the two repeat modes that stop the queue matter. Unknown or missing values count as RepeatNone.
@@ -22,6 +22,7 @@ internal static class SessionMapping
             ? dto.PlayState.RepeatMode.ToString()
             : null,
         IsPaused = dto.PlayState?.IsPaused ?? false,
+        PositionTicks = dto.PlayState?.PositionTicks,
         PlaybackOrder = dto.PlayState?.PlaybackOrder.ToString(),
     };
 }

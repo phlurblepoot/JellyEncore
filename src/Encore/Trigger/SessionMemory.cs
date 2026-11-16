@@ -34,6 +34,12 @@ public sealed record SessionMemory
     /// <summary>Number of play instances seen on this session.</summary>
     public long InstanceCount { get; init; }
 
+    /// <summary>
+    /// T110: the song whose single-song start fired (or is firing). A repeat report of that song (a duplicate or a
+    /// flip-flop that opens a new instance) does not start the radio again. Cleared when a different song plays.
+    /// </summary>
+    public Guid? SingleFiredItemId { get; init; }
+
     public static SessionMemory Create(string sessionId) => new() { SessionId = sessionId };
 }
 

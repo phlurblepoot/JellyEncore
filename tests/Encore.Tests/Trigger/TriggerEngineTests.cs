@@ -118,10 +118,12 @@ public sealed class TriggerEngineTests
     public void TR06_Finamp_that_never_reports_a_queue_never_fires()
     {
         var h = new TriggerHarness();
-        AssertSkip(h.Feed(Finamp(A, [])), SkipReason.NoHistory);
+        // T110: each song looks like a song on its own, so the single-song start waits for its near end (these
+        // snapshots carry no song length, so it never comes).
+        AssertSkip(h.Feed(Finamp(A, [])), SkipReason.SingleWaiting);
         foreach (var song in new[] { B, C, D, E1 })
         {
-            AssertSkip(h.FeedAll(FinampChange(song, [])), SkipReason.StaleQueue);
+            AssertSkip(h.FeedAll(FinampChange(song, [])), SkipReason.SingleWaiting);
         }
 
         Assert.DoesNotContain(h.Outcomes, o => o.Decision is TriggerDecision.Fire);
@@ -264,7 +266,9 @@ public sealed class TriggerEngineTests
     public void TR17_Finamp_without_history_is_skipped()
     {
         var h = new TriggerHarness();
-        AssertSkip(h.Feed(Finamp(X, [])), SkipReason.NoHistory);
+        AssertSkip(h.Feed(Finamp(X, [])), SkipReason.SingleWaiting); // T110: a song on its own waits for its near end
+        AssertSkip(new TriggerHarness().Feed(Finamp(X, [Y, Z])), SkipReason.NotLast);
+        AssertSkip(new TriggerHarness().Feed(Finamp(X, [Y])), SkipReason.NoHistory);
     }
 
     [Fact]
@@ -279,7 +283,7 @@ public sealed class TriggerEngineTests
         h.FeedAll(idle, idle, idle);
         h.Time.Advance(TimeSpan.FromMinutes(10));
 
-        AssertSkip(h.Feed(Finamp(B1, [])), SkipReason.StaleQueue);
+        AssertSkip(h.Feed(Finamp(B1, [])), SkipReason.SingleWaiting); // T110: now the single-song start
     }
 
     [Fact]
@@ -305,18 +309,22 @@ public sealed class TriggerEngineTests
         // The current entry #9 is not in the stored list.
         var h = new TriggerHarness();
         var missing = Web([A, B, C], 2, s => s with { NowPlayingItem = new NowPlaying(D, "Audio"), PlaylistItemId = "playlistItem9" });
-        var skip = AssertSkip(h.Feed(missing), SkipReason.StaleQueue);
+        var skip = AssertSkip(h.Feed(missing), SkipReason.SingleWaiting);
         Assert.Equal(QueueModel.Unknown, skip.Model);
 
         // #2 is in the list but with another item id (a list from before a page reload).
         var h2 = new TriggerHarness();
         var otherItem = Web([A, B, C], 2, s => s with { NowPlayingItem = new NowPlaying(D, "Audio") });
-        AssertSkip(h2.Feed(otherItem), SkipReason.StaleQueue);
+        AssertSkip(h2.Feed(otherItem), SkipReason.SingleWaiting);
 
         // A new web session's first song: the server still holds its initial [].
         var h3 = new TriggerHarness();
         var empty = Web([A], 0, s => s with { NowPlayingQueue = [] });
-        AssertSkip(h3.Feed(empty), SkipReason.StaleQueue);
+        AssertSkip(h3.Feed(empty), SkipReason.SingleWaiting);
+
+        // A song the run added keeps stale_queue: it is never a song on its own (T110).
+        var h4 = new TriggerHarness { Run = RunOf(D) };
+        AssertSkip(h4.Feed(missing), SkipReason.StaleQueue);
     }
 
     [Fact]
@@ -475,7 +483,7 @@ public sealed class TriggerEngineTests
         var replay = h.Feed(Finamp(X, []));
 
         Assert.True(replay.InstanceStarted);
-        AssertSkip(replay, SkipReason.StaleQueue);
+        AssertSkip(replay, SkipReason.SingleWaiting);
     }
 
     [Fact]
@@ -1013,10 +1021,10 @@ public sealed class TriggerEngineTests
     public void Wire_names_match_the_design()
     {
         Assert.Equal(
-            "not_allowed,not_audio,no_remote_control,repeat_on,unknown_client,stale_queue,no_history,not_last,duplicate,rate_limited,run_cap,already_queued,queue_first",
+            "not_allowed,not_audio,no_remote_control,repeat_on,unknown_client,stale_queue,no_history,not_last,duplicate,rate_limited,run_cap,already_queued,queue_first,single_waiting",
             string.Join(',', Enum.GetValues<SkipReason>().Select(r => r.ToWire())));
         Assert.Equal("start,topup,resend", string.Join(',', Enum.GetValues<FireKind>().Select(k => k.ToWire())));
-        Assert.Equal("near_end,last_song,resend", string.Join(',', Enum.GetValues<FireRule>().Select(r => r.ToWire())));
+        Assert.Equal("near_end,last_song,resend,single", string.Join(',', Enum.GetValues<FireRule>().Select(r => r.ToWire())));
         Assert.Equal("upcoming", QueueModel.Upcoming.ToWire());
     }
 }

@@ -23,6 +23,19 @@ public static class DedupeKey
     }
 
     /// <summary>
+    /// T110: the single-song start's key, <c>{sessionId}|single|{itemId:N}|{PlaylistItemId ?? "-"}|{bucket}</c>, where
+    /// bucket counts <see cref="TriggerLimits.SingleStartBucket"/>s since the Unix epoch at the time the song started
+    /// (now minus its position). The play's start time tells a restart in the middle of the song (same start) from a
+    /// later replay of the same song (a new start).
+    /// </summary>
+    public static string Single(string sessionId, Guid itemId, string? playlistItemId, long bucket) =>
+        $"{sessionId}|single|{itemId:N}|{playlistItemId ?? "-"}|{bucket.ToString(System.Globalization.CultureInfo.InvariantCulture)}";
+
+    /// <summary>T110: the start-time bucket for <see cref="Single"/>.</summary>
+    public static long SingleBucket(DateTimeOffset startedAt) =>
+        (long)Math.Floor(startedAt.ToUnixTimeMilliseconds() / TriggerLimits.SingleStartBucket.TotalMilliseconds);
+
+    /// <summary>
     /// "null" for null, "empty" for an empty list, otherwise the first 16 lowercase hex chars of
     /// SHA-256 over <c>Id:PlaylistItemId;</c> per entry, in order (ids in N format).
     /// </summary>

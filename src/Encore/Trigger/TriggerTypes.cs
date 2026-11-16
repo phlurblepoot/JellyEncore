@@ -38,6 +38,12 @@ public enum SkipReason
     /// the old song's instance and never fires.
     /// </summary>
     QueueFirst,
+
+    /// <summary>
+    /// T110: a song played on its own (no real queue reported) that is paused or has not reached its near-end point
+    /// yet. The single-song start waits for that point.
+    /// </summary>
+    SingleWaiting,
 }
 
 public enum FireKind
@@ -63,6 +69,9 @@ public enum FireRule
 
     /// <summary>The delivery check called for a re-send.</summary>
     Resend,
+
+    /// <summary>T110: a song started on its own (no real queue reported) reached its near-end point.</summary>
+    Single,
 }
 
 /// <summary>Per play instance state (design section 3).</summary>
@@ -93,6 +102,7 @@ public static class TriggerNames
         SkipReason.RunCap => "run_cap",
         SkipReason.AlreadyQueued => "already_queued",
         SkipReason.QueueFirst => "queue_first",
+        SkipReason.SingleWaiting => "single_waiting",
         _ => throw new ArgumentOutOfRangeException(nameof(reason), reason, null),
     };
 
@@ -117,6 +127,7 @@ public static class TriggerNames
         FireRule.NearEnd => "near_end",
         FireRule.LastSong => "last_song",
         FireRule.Resend => "resend",
+        FireRule.Single => "single",
         _ => throw new ArgumentOutOfRangeException(nameof(rule), rule, null),
     };
 

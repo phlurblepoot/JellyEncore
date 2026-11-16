@@ -8,6 +8,12 @@ When an allow-listed user's queue is down to one song after the current one (the
 
 Works with Jellyfin Web and Finamp. Other apps are skipped (reason `unknown_client`). Nothing is added while a session has repeat on (`repeat_on`) or does not allow remote control (`no_remote_control`).
 
+### When the radio starts
+
+- **A queue running out.** When one song is left after the current one, the radio starts (rule `near_end`). If that moment was missed, the last song starts it (rule `last_song`).
+- **A song played on its own** (v0.3.3). A song started from a stopped player, with no other songs queued, starts the radio when about 90 seconds of it are left (rule `single`), once per play. Jellyfin 12.4 does not report the app's queue until the first song change, so Encore cannot tell a song on its own from the first song of an album started from a stopped player. In that case the radio's songs are added after the album's last track, while the first track plays; the album still plays in full first, and the radio carries on after it. A song that is paused, or has more than 90 seconds left, waits (`single_waiting` in the debug log).
+- **Never:** with repeat on, in an app that does not allow remote control, or in another app than Jellyfin Web or Finamp.
+
 ## Requirements
 
 - Jellyfin 12.4. The queue rules depend on how 12.4 stores the queue.
@@ -276,11 +282,11 @@ JSON lines on stdout. Set `LOG_LEVEL` to see more. The events an operator looks 
 | `request.search_no_albums` | Information | A search where Lidarr returned no albums (9111; counts only, no search text) |
 | `notify.sent`, `notify.failed` | Info, Warning | A "Ready" or "Could not get" message went to the requester, or could not be delivered (9400, 9410) |
 
-`trigger.skipped` reasons: `not_allowed`, `not_audio` (a video or episode), `no_remote_control`, `repeat_on`, `unknown_client`, `stale_queue`, `no_history`, `not_last` (two or more songs still to come), `duplicate`, `rate_limited`, `run_cap`, `already_queued` (songs sent at the previous song have not shown up yet; the delivery check handles them).
+`trigger.skipped` reasons: `not_allowed`, `not_audio` (a video or episode), `no_remote_control`, `repeat_on`, `unknown_client`, `stale_queue`, `no_history`, `not_last` (two or more songs still to come), `duplicate`, `rate_limited`, `run_cap`, `already_queued` (songs sent at the previous song have not shown up yet; the delivery check handles them), `queue_first` (debug), `single_waiting` (debug: a song played on its own that is paused or has more than 90 s left). `trigger.fired` rules: `near_end`, `last_song`, `resend`, `single`.
 
 ## Troubleshooting
 
-- **Nothing happens.** Read the `trigger.skipped` reasons. `repeat_on` means repeat is on for that session. `no_remote_control` means the app does not allow remote control. `unknown_client` means the app is not Jellyfin Web or Finamp. `stale_queue` and `no_history` are normal for the first song after a restart or a song started from idle.
+- **Nothing happens.** Read the `trigger.skipped` reasons. `repeat_on` means repeat is on for that session. `no_remote_control` means the app does not allow remote control. `unknown_client` means the app is not Jellyfin Web or Finamp. `stale_queue` and `no_history` are normal for the first song after a restart, or a song started from idle with other songs still listed from before; a song started on its own waits for its last 90 seconds (`single_waiting`).
 - **`jellyfin.auth_failed`, or `/health` shows `unauthorized`.** The key was revoked or mistyped. Create a new key in Jellyfin and update the `.env` file.
 - **`allowlist.unresolved`.** A user name is mistyped, or the user does not exist. Use the user's exact name, or the user's id so that a rename does not break it. Each unresolved name is checked again every 5 minutes.
 - **Songs never show up.** `queue.unconfirmed` means Jellyfin accepted the command but the songs were not in the queue the app reported next; it is normally followed by `queue.resent`. Two `queue.unconfirmed` in a row for one queue end (the second with `already_resent`) mean the app is not taking commands, and Encore stops for that queue end. Check the app's own queue screen.

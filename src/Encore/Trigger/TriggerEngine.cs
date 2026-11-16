@@ -7,6 +7,7 @@ namespace Encore.Trigger;
 /// the context, it decides whether Encore should add songs now. No I/O, no clock, no state of its own.
 /// Since T28 it fires when one song is left after the current one (near-end), keeps the last-song rule as a
 /// fallback, and judges pending sends at each new play instance (re-sending a missing one once).
+/// Since T110 a song played on its own (no real queue reported) starts the radio near its end (rule <c>single</c>).
 /// </summary>
 public static class TriggerEngine
 {
@@ -90,10 +91,13 @@ public static class TriggerEngine
             return Skip(tracked, SkipReason.RepeatOn, model, started);
         }
 
-        // 7. Queue model.
+        // 7. Queue model. 7s (T110): a web song played from a stopped player (its list is stale or empty) may take the
+        // single-song start instead of stale_queue.
         if (model == QueueModel.Unknown)
         {
-            return Skip(tracked, webShaped ? SkipReason.StaleQueue : SkipReason.UnknownClient, model, started);
+            return webShaped && IsSingle(session, tracked, model, context.Run)
+                ? DecideSingle(session, tracked, started, model, context)
+                : Skip(tracked, webShaped ? SkipReason.StaleQueue : SkipReason.UnknownClient, model, started);
         }
 
         // 7c. Re-send path: this instance's one fire is the re-send; guards 8, 9, 9b and 11 do not apply.
@@ -126,6 +130,11 @@ public static class TriggerEngine
             }
 
             rule = after == 1 ? FireRule.NearEnd : FireRule.LastSong;
+        }
+        else if (IsSingle(session, tracked, model, context.Run))
+        {
+            // 8s (T110): a Finamp song played on its own (no real list, a fresh play) takes the single-song start.
+            return DecideSingle(session, tracked, started, model, context);
         }
         else
         {
@@ -170,6 +179,107 @@ public static class TriggerEngine
         }
 
         return Firing(tracked, new TriggerDecision.Fire(kind, model, key, instance.Attempts + 1, rule), started);
+    }
+
+    /// <summary>
+    /// T110: the play looks like a song played on its own, so the single-song start decides instead of the position
+    /// rules. The current song is not one the run added, and:
+    /// - Upcoming (Finamp): the list is empty or holds only the current song, and the play is fresh (no previous
+    ///   instance since Encore started, or the previous list did not hold this song). A stale list with other songs
+    ///   cannot be told from a real queue, so it stays with the position rules.
+    /// - Unknown, web-shaped: the list does not hold the current entry (empty, or stale from an earlier queue). Web
+    ///   entry ids keep counting, so such a list is always from before this play.
+    /// An album started from a stopped player looks the same at its first track (accepted, user's choice 2026-11-16).
+    /// </summary>
+    private static bool IsSingle(TriggerSession session, SessionMemory tracked, QueueModel model, RunInfo? run)
+    {
+        var current = session.NowPlayingItem!.Id;
+        if (run?.Added(current) == true)
+        {
+            return false;
+        }
+
+        if (model == QueueModel.Unknown)
+        {
+            return true;
+        }
+
+        var entry = tracked.Instance!.EntryQueue;
+        var prev = tracked.PrevEntryQueue;
+        return model == QueueModel.Upcoming
+            && entry.All(e => e.Id == current)
+            && (prev is null || !prev.Any(e => e.Id == current));
+    }
+
+    /// <summary>
+    /// T110: the single-song start. Once per play instance, and only when the song is at its near-end point
+    /// (<see cref="TriggerLimits.SingleLead"/> or less left) and not paused. Guards 9b and 10 apply as for the
+    /// position rules; the durable dedupe uses the play's start time, so an Encore restart in the middle of the song
+    /// does not start the radio twice. It is always a start (the current song is never the run's).
+    /// </summary>
+    private static TriggerOutcome DecideSingle(TriggerSession session, SessionMemory tracked, bool started, QueueModel model, TriggerContext context)
+    {
+        var item = session.NowPlayingItem!;
+        var instance = tracked.Instance!;
+
+        // 10. One fire per instance; a failed fire waits before its retry.
+        if (Waiting(instance, context))
+        {
+            return new(tracked, TriggerDecision.None.Instance, started);
+        }
+
+        // Once per play: a new instance of the song whose single start already fired is a repeat report of it.
+        if (instance.Attempts == 0 && tracked.SingleFiredItemId == item.Id)
+        {
+            return Skip(tracked, SkipReason.Duplicate, model, started);
+        }
+
+        // 9b. The previous instance sent songs this report does not show: the delivery check owns that case.
+        if (tracked.PrevSentIds.Count > 0
+            && !tracked.PrevSentIds.Contains(item.Id)
+            && !instance.EntryQueue.Any(e => tracked.PrevSentIds.Contains(e.Id)))
+        {
+            return Skip(tracked, SkipReason.AlreadyQueued, model, started);
+        }
+
+        // The near-end point of a song on its own: never before it, and not while paused.
+        if (session.IsPaused || !NearItsEnd(session))
+        {
+            return Skip(tracked, SkipReason.SingleWaiting, model, started);
+        }
+
+        // 11s. Durable dedupe by the play's start time (the neighbouring buckets too, for report jitter).
+        var position = TimeSpan.FromTicks(Math.Max(0, session.PositionTicks ?? 0));
+        var bucket = DedupeKey.SingleBucket(context.Now - position);
+        var key = DedupeKey.Single(session.Id, item.Id, session.PlaylistItemId, bucket);
+        for (var b = bucket - 1; b <= bucket + 1; b++)
+        {
+            if (context.IsDuplicate(DedupeKey.Single(session.Id, item.Id, session.PlaylistItemId, b)))
+            {
+                return Skip(tracked, SkipReason.Duplicate, model, started);
+            }
+        }
+
+        // 13. Rate limits; no run cap (a start gets a fresh one).
+        if (Limited(context, context.Batch, applyRunCap: false) is { } limited)
+        {
+            return Skip(tracked, limited, model, started);
+        }
+
+        var fire = new TriggerDecision.Fire(FireKind.Start, model, key, instance.Attempts + 1, FireRule.Single);
+        return Firing(tracked with { SingleFiredItemId = item.Id }, fire, started);
+    }
+
+    /// <summary>T110: the song has <see cref="TriggerLimits.SingleLead"/> or less left. An unknown length never is.</summary>
+    private static bool NearItsEnd(TriggerSession session)
+    {
+        if (session.NowPlayingItem?.RunTimeTicks is not { } length || length <= 0)
+        {
+            return false;
+        }
+
+        var left = length - Math.Max(0, session.PositionTicks ?? 0);
+        return left <= TriggerLimits.SingleLead.Ticks;
     }
 
     /// <summary>The orchestrator finished a fire that sent nothing (no picks): no more fires in this instance.</summary>
@@ -389,6 +499,8 @@ public static class TriggerEngine
         var next = memory with
         {
             Idle = false,
+            // T110: the single start's once-per-play memory lasts until a different song plays.
+            SingleFiredItemId = memory.SingleFiredItemId == item.Id ? memory.SingleFiredItemId : null,
             InstanceCount = sequence,
             PrevEntryQueue = current?.EntryQueue ?? memory.PrevEntryQueue,
             PrevSentIds = current?.SentIds ?? [],
@@ -412,13 +524,25 @@ public static class TriggerEngine
     /// rules (near-end needs the previous list to hold the new song; the fallback needs it to end with it), and its
     /// <c>[]</c> at the queue's end would look like a stale list.
     /// A replay of the same song from a stopped player with the same list, or from an empty list, is still a new instance.
+    /// T110: an instance with an empty list that sent songs (a single-song start, or a last-song fire) folds a report
+    /// of the same song whose list shows any of those songs.
     /// </summary>
     private static bool IsQueueFirst(PlayInstance current, TriggerSession session)
     {
         if (current.ItemId != session.NowPlayingItem!.Id
-            || !string.Equals(session.Client, FinampClient, StringComparison.OrdinalIgnoreCase)
-            || current.EntryQueue.Count == 0
-            || session.NowPlayingQueue.Count < current.EntryQueue.Count - 1)
+            || !string.Equals(session.Client, FinampClient, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        // T110: an instance with no list (a song on its own, or a last song) that sent songs: the queue-first report
+        // is this song again with a list that shows those songs (the list after the next song).
+        if (current.EntryQueue.Count == 0)
+        {
+            return current.SentIds.Count > 0 && session.NowPlayingQueue.Any(e => current.SentIds.Contains(e.Id));
+        }
+
+        if (session.NowPlayingQueue.Count < current.EntryQueue.Count - 1)
         {
             return false;
         }

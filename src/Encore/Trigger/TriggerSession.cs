@@ -34,12 +34,18 @@ public sealed record TriggerSession
 
     public bool IsPaused { get; init; }
 
+    /// <summary>PlayState.PositionTicks: how far into the current song playback is. Null counts as the start (T110).</summary>
+    public long? PositionTicks { get; init; }
+
     /// <summary>PlayState.PlaybackOrder (Default or Shuffle). Informational: shuffle needs no special handling.</summary>
     public string? PlaybackOrder { get; init; }
 }
 
-/// <summary>The playing item: only its id and type matter to the trigger.</summary>
-public sealed record NowPlaying(Guid Id, string? Type, string? Name = null);
+/// <summary>
+/// The playing item: its id and type, and (T110) its length in ticks, which the single-song start needs to know
+/// when the song is near its end. Jellyfin sets RunTimeTicks on the session's NowPlayingItem (SessionManager.cs:422).
+/// </summary>
+public sealed record NowPlaying(Guid Id, string? Type, string? Name = null, long? RunTimeTicks = null);
 
 /// <summary>One NowPlayingQueue entry.</summary>
 public sealed record QueueEntry(Guid Id, string? PlaylistItemId);

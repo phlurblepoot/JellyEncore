@@ -30,4 +30,17 @@ public static class TriggerLimits
     /// moment after Jellyfin answers (T28). A poll report adds ENCORE_POLL_SECONDS.
     /// </summary>
     public static readonly TimeSpan DeliveryLag = TimeSpan.FromSeconds(3);
+
+    /// <summary>
+    /// T110: the near-end point of a song played on its own. The single-song start fires once this much of the song
+    /// (or less) is left, never before. It leaves room for picking (up to 25 s), one retry 15 s later and PlayLast.
+    /// A song shorter than this fires as soon as it plays.
+    /// </summary>
+    public static readonly TimeSpan SingleLead = TimeSpan.FromSeconds(90);
+
+    /// <summary>
+    /// T110: width of the time buckets in the single-song dedupe key (the song's start time). The bucket before and
+    /// after are checked too, so a restart in the middle of the song does not start the radio again.
+    /// </summary>
+    public static readonly TimeSpan SingleStartBucket = TimeSpan.FromMinutes(1);
 }
