@@ -188,7 +188,11 @@ internal sealed class FakeJellyfin : IJellyfinClient
         return Task.FromResult<IReadOnlyList<string>>(PhysicalPaths?.ToList() ?? VirtualFolders.SelectMany(f => f.Locations ?? []).ToList());
     }
 
-    public Task<QueryResult<BaseItemDto>> SearchItemsAsync(string searchTerm, Guid userId, int limit, CancellationToken ct = default) => throw new NotSupportedException();
+    /// <summary>What SearchItemsAsync returns (the requester's library hits); empty unless a test sets it.</summary>
+    public List<BaseItemDto> SearchHits { get; set; } = [];
+
+    public Task<QueryResult<BaseItemDto>> SearchItemsAsync(string searchTerm, Guid userId, int limit, CancellationToken ct = default) =>
+        Task.FromResult(new QueryResult<BaseItemDto> { Items = SearchHits.Take(limit).ToList(), TotalRecordCount = SearchHits.Count });
 
     public Task<IReadOnlyList<BaseItemDto>> GetRecentAudioAsync(Guid parentId, int limit, CancellationToken ct = default)
     {
