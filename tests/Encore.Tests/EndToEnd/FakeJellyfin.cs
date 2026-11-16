@@ -172,6 +172,8 @@ internal sealed class FakeJellyfin : IJellyfinClient
         return Task.FromResult<IReadOnlyList<string>>(PhysicalPaths?.ToList() ?? VirtualFolders.SelectMany(f => f.Locations ?? []).ToList());
     }
 
+    public Task<QueryResult<BaseItemDto>> SearchItemsAsync(string searchTerm, Guid userId, int limit, CancellationToken ct = default) => throw new NotSupportedException();
+
     public Task<IReadOnlyList<BaseItemDto>> GetRecentAudioAsync(Guid parentId, int limit, CancellationToken ct = default)
     {
         RecentCalls.Enqueue((parentId, limit));

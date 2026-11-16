@@ -38,4 +38,13 @@ public static class RequestLimits
     public const int TokenFailuresPerIp = 30;
     public static readonly TimeSpan TokenFailureWindow = TimeSpan.FromMinutes(5);
     public static readonly TimeSpan TokenBlock = TimeSpan.FromMinutes(15);
+
+    /// <summary>Search (design 5): query length, rows asked for from each source, and each source's own timeout.</summary>
+    public const int SearchQueryMin = 2;
+    public const int SearchQueryMax = 100;
+    public const int SearchLibraryLimit = 20;
+    public const int SearchDeezerLimit = 25;
+    public static readonly TimeSpan SearchJellyfinTimeout = TimeSpan.FromSeconds(5);
+    public static readonly TimeSpan SearchDeezerTimeout = TimeSpan.FromSeconds(6);
+    public static readonly TimeSpan SearchLidarrTimeout = TimeSpan.FromSeconds(10);
 }

@@ -90,6 +90,11 @@ public sealed record BaseItemDto
 
     public string? Album { get; init; }
 
+    /// <summary>The album artist's name (Jellyfin sends it on songs and albums).</summary>
+    public string? AlbumArtist { get; init; }
+
+    public int? ProductionYear { get; init; }
+
     public IReadOnlyList<NameGuidPair>? ArtistItems { get; init; }
 
     public IReadOnlyList<NameGuidPair>? AlbumArtists { get; init; }

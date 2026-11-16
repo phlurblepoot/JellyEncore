@@ -2,6 +2,7 @@ using System.Net;
 using System.Text.Json;
 using Encore.Config;
 using Encore.Requests.Auth;
+using Encore.Requests.Search;
 using Encore.Store;
 
 namespace Encore.Requests.Api;
@@ -25,6 +26,7 @@ public sealed class ApiEndpoints
     private readonly RequestUsers _users;
     private readonly RequestStore _store;
     private readonly JellyfinServerInfo _serverInfo;
+    private readonly SearchService _search;
     private readonly TimeProvider _time;
     private readonly object _quickGate = new();
     private (bool? Value, DateTimeOffset At)? _quickConnect;
@@ -35,9 +37,11 @@ public sealed class ApiEndpoints
         RequestUsers users,
         RequestStore store,
         JellyfinServerInfo serverInfo,
+        SearchService search,
         TimeProvider time,
         string version)
     {
+        _search = search;
         _options = options;
         _auth = auth;
         _users = users;
@@ -53,6 +57,7 @@ public sealed class ApiEndpoints
         var api = routes.MapGroup("/api/v1");
         api.MapGet("/config", (Delegate)ConfigAsync);
         api.MapGet("/me", (Delegate)MeAsync);
+        api.MapGet("/search", (Delegate)SearchAsync);
         api.MapPost("/auth/login", (Delegate)LoginAsync);
         api.MapPost("/auth/quickconnect", (Delegate)QuickConnectStartAsync);
         api.MapPost("/auth/quickconnect/poll", (Delegate)QuickConnectPollAsync);
@@ -121,6 +126,25 @@ public sealed class ApiEndpoints
             songsLeftToday = Left(user, canRequest, "song", _options.RequestSongsPerDay),
             albumsLeftToday = Left(user, canRequest, "album", _options.RequestAlbumsPerDay),
         }, ApiJson.Options);
+    }
+
+    /// <summary>GET /search?q=&amp;kinds=song,album: any signed-in user (design 4 and 5). A bad q or kinds is 400; a failing source is a warning, never an error.</summary>
+    private async Task<IResult> SearchAsync(HttpContext context)
+    {
+        var (user, failure) = await AuthenticateAsync(context).ConfigureAwait(false);
+        if (user is null)
+        {
+            return failure!;
+        }
+
+        if (!SearchService.TryNormalize(context.Request.Query["q"].ToString(), out var query)
+            || SearchService.ParseKinds(context.Request.Query["kinds"].ToString()) is not { } kinds)
+        {
+            return ApiErrors.Result(400, AuthCodes.BadRequest);
+        }
+
+        var response = await _search.SearchAsync(user.Id, query, kinds, context.RequestAborted).ConfigureAwait(false);
+        return Results.Json(response, ApiJson.Options);
     }
 
     /// <summary>Requests still allowed in the rolling 24 h: null = unlimited (admins), 0 when the person may not request.</summary>

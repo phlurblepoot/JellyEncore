@@ -17,8 +17,18 @@ public sealed record DeezerTrackDetail(long Id, string Title, string TitleShort,
     int? TrackPosition, int? DiskNumber, string? ReleaseDate, DeezerArtist Artist, DeezerAlbumRef Album,
     IReadOnlyList<DeezerContributor> Contributors);
 
+/// <summary>
+/// One row of a Deezer text search (v0.3 design 5): only the fields the request page shows. Search rows have no release
+/// date or genre. The signed <c>preview</c> link is never read.
+/// </summary>
+public sealed record DeezerSearchTrack(long Id, string Title, string? TitleVersion, string ArtistName, string AlbumTitle,
+    int DurationS, string? CoverUrl, bool Explicit);
+
 public interface IDeezerClient
 {
+    /// <summary>GET /search?q=&amp;limit=: songs by text, same limiter and 24 h cache as the other calls (cache key: the folded query). Rows are in Deezer's order.</summary>
+    Task<IReadOnlyList<DeezerSearchTrack>> SearchTracksAsync(string query, int limit, CancellationToken ct);
+
     /// <summary>GET /search/artist?q=&amp;limit=10: among exact (folded) name matches the highest nb_fan; none gives null.</summary>
     Task<DeezerArtist?> FindArtistAsync(string name, CancellationToken ct);
 
@@ -48,6 +58,7 @@ public sealed class DeezerClient(HttpClient http, DiscoveryRuntime runtime, ILog
 
     private static readonly IReadOnlyList<DeezerTrack> NoTracks = [];
     private static readonly IReadOnlyList<DeezerArtist> NoArtists = [];
+    private static readonly IReadOnlyList<DeezerSearchTrack> NoSearchTracks = [];
 
     public async Task<DeezerArtist?> FindArtistAsync(string name, CancellationToken ct)
     {
@@ -81,6 +92,32 @@ public sealed class DeezerClient(HttpClient http, DiscoveryRuntime runtime, ILog
 
         runtime.Cache.Set(key, best, best is null ? runtime.Options.MissTtl : runtime.Options.ArtistTtl);
         return best;
+    }
+
+    public async Task<IReadOnlyList<DeezerSearchTrack>> SearchTracksAsync(string query, int limit, CancellationToken ct)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
+        var folded = string.Join(' ', KeyText.Tokens(query));
+        if (folded.Length == 0)
+        {
+            return NoSearchTracks;
+        }
+
+        var key = string.Create(CultureInfo.InvariantCulture, $"dz:search:{limit}:{folded}");
+        if (runtime.Cache.TryGet<IReadOnlyList<DeezerSearchTrack>>(key, out var cached) && cached is not null)
+        {
+            return cached;
+        }
+
+        using var doc = await GetAsync(
+            "/search",
+            string.Create(CultureInfo.InvariantCulture, $"search?q={Uri.EscapeDataString(query.Trim())}&limit={limit}"),
+            ct).ConfigureAwait(false);
+        IReadOnlyList<DeezerSearchTrack> result = doc is null
+            ? NoSearchTracks
+            : Rows(doc).Select(ParseSearchTrack).OfType<DeezerSearchTrack>().ToList();
+        runtime.Cache.Set(key, result, runtime.Options.ListTtl);
+        return result;
     }
 
     public Task<IReadOnlyList<DeezerTrack>> GetArtistRadioAsync(long artistId, int limit, CancellationToken ct) =>
@@ -273,6 +310,48 @@ public sealed class DeezerClient(HttpClient http, DiscoveryRuntime runtime, ILog
             Long(e, "rank") ?? 0,
             artist,
             ParseAlbum(e));
+    }
+
+    /// <summary>Reads one search row. Never touches <c>preview</c> (a signed, expiring link that must not be kept).</summary>
+    private static DeezerSearchTrack? ParseSearchTrack(JsonElement e)
+    {
+        var id = Long(e, "id");
+        var title = Text(e, "title");
+        if (id is null || string.IsNullOrWhiteSpace(title))
+        {
+            return null;
+        }
+
+        string? artistName = null;
+        if (e.TryGetProperty("artist", out var a) && a.ValueKind == JsonValueKind.Object)
+        {
+            artistName = Text(a, "name");
+        }
+
+        if (string.IsNullOrWhiteSpace(artistName))
+        {
+            return null;
+        }
+
+        var albumTitle = string.Empty;
+        string? cover = null;
+        if (e.TryGetProperty("album", out var album) && album.ValueKind == JsonValueKind.Object)
+        {
+            albumTitle = Text(album, "title") ?? string.Empty;
+            cover = Text(album, "cover_medium");
+        }
+
+        var version = Text(e, "title_version");
+        var https = Uri.TryCreate(cover, UriKind.Absolute, out var coverUri) && coverUri.Scheme == Uri.UriSchemeHttps;
+        return new DeezerSearchTrack(
+            id.Value,
+            title.Trim(),
+            string.IsNullOrWhiteSpace(version) ? null : version.Trim(),
+            artistName.Trim(),
+            albumTitle,
+            (int)Math.Clamp(Long(e, "duration") ?? 0, 0, int.MaxValue),
+            https ? coverUri!.AbsoluteUri : null,
+            e.TryGetProperty("explicit_lyrics", out var x) && x.ValueKind == JsonValueKind.True);
     }
 
     private static DeezerTrackDetail? ParseDetail(JsonElement e)

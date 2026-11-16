@@ -51,6 +51,12 @@ public interface IJellyfinClient
     /// </summary>
     Task<IReadOnlyList<BaseItemDto>> GetRecentAudioAsync(Guid parentId, int limit, CancellationToken ct = default);
 
+    /// <summary>
+    /// GET /Items?searchTerm=&amp;includeItemTypes=Audio,MusicAlbum&amp;recursive=true&amp;limit=&amp;userId=. The library as one user sees it (the userId keeps
+    /// that user's access rules); used by request search. Songs and albums come with <c>AlbumArtist</c> and <c>ProductionYear</c> when Jellyfin has them.
+    /// </summary>
+    Task<QueryResult<BaseItemDto>> SearchItemsAsync(string searchTerm, Guid userId, int limit, CancellationToken ct = default);
+
     /// <summary>POST /Sessions/{sessionId}/Playing with playCommand=PlayLast and itemIds. Expects 204.</summary>
     Task PlayLastAsync(string sessionId, IReadOnlyCollection<Guid> itemIds, CancellationToken ct = default);
 }

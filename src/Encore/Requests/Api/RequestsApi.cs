@@ -1,6 +1,8 @@
 using System.Net;
 using Encore.Config;
+using Encore.Discovery;
 using Encore.Jellyfin;
+using Encore.Requests.Search;
 using Encore.Requests.Auth;
 using Encore.Requests.Page;
 using Encore.Store;
@@ -63,9 +65,18 @@ public static class RequestsApi
         services.AddSingleton(sp => new JellyfinServerInfo(
             sp.GetRequiredService<IJellyfinClient>(), sp.GetRequiredService<ILogger<JellyfinServerInfo>>(), sp.GetRequiredService<TimeProvider>()));
         services.AddHostedService(sp => sp.GetRequiredService<JellyfinServerInfo>());
+        if (!services.Any(d => d.ServiceType == typeof(IDeezerClient)))
+        {
+            // Fetch mode off registers no Discovery clients, but search still needs Deezer.
+            services.AddDiscoveryClients();
+        }
+
+        services.AddSingleton(sp => new SearchService(
+            sp.GetRequiredService<IJellyfinClient>(), sp.GetRequiredService<IDeezerClient>(), sp.GetService<IOwnedIndex>(),
+            sp.GetRequiredService<RequestStore>(), sp.GetRequiredService<ILogger<SearchService>>()));
         services.AddSingleton(sp => new ApiEndpoints(
             options, sp.GetRequiredService<UserAuth>(), sp.GetRequiredService<RequestUsers>(), sp.GetRequiredService<RequestStore>(),
-            sp.GetRequiredService<JellyfinServerInfo>(), sp.GetRequiredService<TimeProvider>(), version));
+            sp.GetRequiredService<JellyfinServerInfo>(), sp.GetRequiredService<SearchService>(), sp.GetRequiredService<TimeProvider>(), version));
         return services;
     }
 

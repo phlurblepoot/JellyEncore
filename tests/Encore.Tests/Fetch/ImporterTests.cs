@@ -506,6 +506,8 @@ public sealed class ImporterTests : IDisposable
             return Task.FromResult(Detail);
         }
 
+        public Task<IReadOnlyList<DeezerSearchTrack>> SearchTracksAsync(string query, int limit, CancellationToken ct) => throw new NotSupportedException();
+
         public Task<DeezerArtist?> FindArtistAsync(string name, CancellationToken ct) => throw new NotSupportedException();
 
         public Task<IReadOnlyList<DeezerTrack>> GetArtistRadioAsync(long artistId, int limit, CancellationToken ct) => throw new NotSupportedException();

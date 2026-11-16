@@ -148,6 +148,19 @@ public sealed class JellyfinClient : IJellyfinClient
     public async Task<IReadOnlyList<string>> GetPhysicalPathsAsync(CancellationToken ct = default) =>
         await GetAsync<List<string>>("Library/PhysicalPaths", "GetPhysicalPaths", ct).ConfigureAwait(false);
 
+    public Task<QueryResult<BaseItemDto>> SearchItemsAsync(string searchTerm, Guid userId, int limit, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(searchTerm);
+        RequirePositive(limit);
+        var query = Query(
+            ("searchTerm", Uri.EscapeDataString(searchTerm.Trim())),
+            ("includeItemTypes", "Audio,MusicAlbum"),
+            ("recursive", "true"),
+            ("limit", limit.ToString(CultureInfo.InvariantCulture)),
+            ("userId", Id(userId)));
+        return GetAsync<QueryResult<BaseItemDto>>($"Items?{query}", "SearchItems", ct);
+    }
+
     public async Task<IReadOnlyList<BaseItemDto>> GetRecentAudioAsync(Guid parentId, int limit, CancellationToken ct = default)
     {
         RequirePositive(limit);

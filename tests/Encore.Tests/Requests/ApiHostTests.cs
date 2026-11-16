@@ -171,6 +171,9 @@ internal sealed class ApiRig : IDisposable
             services.AddSingleton(Guard);
             services.AddSingleton(Auth);
             services.AddSingleton(ServerInfo);
+            services.RemoveAll<Encore.Requests.Search.SearchService>();
+            services.AddSingleton(sp => new Encore.Requests.Search.SearchService(
+                Fake, Deezer, Owned, sp.GetRequiredService<RequestStore>(), sp.GetRequiredService<ILogger<Encore.Requests.Search.SearchService>>(), SearchTimeouts));
         }));
         Client = _factory.CreateClient();
         if (on)
@@ -181,6 +184,13 @@ internal sealed class ApiRig : IDisposable
     }
 
     public AuthHandler Jellyfin { get; } = new();
+
+    /// <summary>The Deezer, owned index and search timeouts behind /api/v1/search (set before the first search).</summary>
+    public Encore.Tests.Discovery.FakeDeezer Deezer { get; } = new();
+
+    public Encore.Tests.Picks.TestOwned Owned { get; } = new();
+
+    public Encore.Requests.Search.SearchOptions SearchTimeouts { get; set; } = new();
 
     public UsersClient Fake { get; }
 

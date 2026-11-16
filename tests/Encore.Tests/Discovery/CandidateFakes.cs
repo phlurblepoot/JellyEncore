@@ -49,6 +49,12 @@ internal sealed class FakeDeezer : IDeezerClient
 
     public Task<DeezerTrackDetail?> GetTrackAsync(long trackId, CancellationToken ct) => throw new NotSupportedException();
 
+    /// <summary>What <see cref="SearchTracksAsync"/> returns (the whole list, whatever the query).</summary>
+    public List<DeezerSearchTrack> SearchRows { get; } = [];
+
+    public Task<IReadOnlyList<DeezerSearchTrack>> SearchTracksAsync(string query, int limit, CancellationToken ct) =>
+        Run<IReadOnlyList<DeezerSearchTrack>>($"search:{query}:{limit}", () => SearchRows.Take(limit).ToList(), ct);
+
     private async Task<T> Run<T>(string call, Func<T> answer, CancellationToken ct)
     {
         Calls.Enqueue(call);
@@ -113,6 +119,8 @@ internal sealed class FakeLibrary : IJellyfinClient
     public Task<IReadOnlyList<VirtualFolderInfo>> GetVirtualFoldersAsync(CancellationToken ct = default) => throw new NotSupportedException();
 
     public Task<IReadOnlyList<string>> GetPhysicalPathsAsync(CancellationToken ct = default) => throw new NotSupportedException();
+
+    public Task<QueryResult<BaseItemDto>> SearchItemsAsync(string searchTerm, Guid userId, int limit, CancellationToken ct = default) => throw new NotSupportedException();
 
     public Task<IReadOnlyList<BaseItemDto>> GetRecentAudioAsync(Guid parentId, int limit, CancellationToken ct = default) => throw new NotSupportedException();
 

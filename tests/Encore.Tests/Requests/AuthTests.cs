@@ -103,6 +103,28 @@ internal sealed class UsersClient : IJellyfinClient
 
     public Task<IReadOnlyList<string>> GetPhysicalPathsAsync(CancellationToken ct = default) => throw new NotSupportedException();
 
+    /// <summary>What <see cref="SearchItemsAsync"/> returns; <see cref="SearchFailure"/> makes it throw, <see cref="SearchHang"/> makes it wait for the caller to cancel.</summary>
+    public List<BaseItemDto> SearchResult { get; set; } = [];
+
+    public Exception? SearchFailure { get; set; }
+
+    public bool SearchHang { get; set; }
+
+    public List<(string Term, Guid UserId, int Limit)> SearchCalls { get; } = [];
+
+    public async Task<QueryResult<BaseItemDto>> SearchItemsAsync(string searchTerm, Guid userId, int limit, CancellationToken ct = default)
+    {
+        SearchCalls.Add((searchTerm, userId, limit));
+        if (SearchHang)
+        {
+            await Task.Delay(Timeout.Infinite, ct);
+        }
+
+        return SearchFailure is { } failure
+            ? throw failure
+            : new QueryResult<BaseItemDto> { Items = SearchResult, TotalRecordCount = SearchResult.Count };
+    }
+
     public Task<IReadOnlyList<BaseItemDto>> GetRecentAudioAsync(Guid parentId, int limit, CancellationToken ct = default) => throw new NotSupportedException();
 
     public Task PlayLastAsync(string sessionId, IReadOnlyCollection<Guid> itemIds, CancellationToken ct = default) => throw new NotSupportedException();
