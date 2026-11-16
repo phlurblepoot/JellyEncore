@@ -42,7 +42,7 @@ public sealed record PruneResult(int Plays, int AddedItems, int Triggers, int At
 public sealed class EncoreStore : IDisposable
 {
     /// <summary>The schema this build writes. A database with a higher user_version refuses to open.</summary>
-    public const int SchemaVersion = 4;
+    public const int SchemaVersion = 5;
 
     /// <summary>Trigger outcomes that block a repeat fire with the same dedupe key.</summary>
     public const string SentOutcome = "sent";
@@ -151,6 +151,43 @@ public sealed class EncoreStore : IDisposable
           created_utc TEXT NOT NULL,
           last_used_utc TEXT NOT NULL);
         CREATE INDEX ix_page_tokens_user ON page_tokens(user_id);
+        """,
+        """
+        ALTER TABLE fetched_files ADD COLUMN kept_utc TEXT;
+        ALTER TABLE fetched_files ADD COLUMN promoted_utc TEXT;
+        ALTER TABLE fetched_files ADD COLUMN radio_path TEXT;
+        ALTER TABLE fetched_files ADD COLUMN delete_reason TEXT;
+        ALTER TABLE fetched_files ADD COLUMN play_throughs INTEGER NOT NULL DEFAULT 0;
+        CREATE TABLE slskd_uploads (
+          transfer_id TEXT PRIMARY KEY, fetched_file_id INTEGER NOT NULL REFERENCES fetched_files(id),
+          completed_utc TEXT NOT NULL, read_utc TEXT NOT NULL);
+        CREATE INDEX ix_uploads_file ON slskd_uploads(fetched_file_id);
+        CREATE TABLE play_throughs (
+          id INTEGER PRIMARY KEY, fetched_file_id INTEGER NOT NULL REFERENCES fetched_files(id),
+          item_id TEXT NOT NULL, user_id TEXT NOT NULL, session_id TEXT NOT NULL, started_utc TEXT NOT NULL,
+          ended_utc TEXT NOT NULL, UNIQUE (session_id, item_id, started_utc));
+        CREATE TABLE promotions (
+          fetched_file_id INTEGER PRIMARY KEY REFERENCES fetched_files(id),
+          step TEXT NOT NULL CHECK (step IN ('snapshot','copied','source_removed','old_gone','placed','ingested','verified','playlists','done')),
+          stalled INTEGER NOT NULL DEFAULT 0 CHECK (stalled IN (0,1)),
+          staged_path TEXT, target_path TEXT, target_jellyfin_path TEXT, sha256 TEXT, old_item_id TEXT NOT NULL, new_item_id TEXT,
+          attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, started_utc TEXT NOT NULL, updated_utc TEXT NOT NULL);
+        CREATE TABLE promotion_entries (
+          id INTEGER PRIMARY KEY, fetched_file_id INTEGER NOT NULL REFERENCES fetched_files(id),
+          playlist_id TEXT NOT NULL,
+          candidate_user_ids TEXT NOT NULL,
+          position INTEGER NOT NULL,
+          editor_user_id TEXT,
+          readded_utc TEXT);
+        CREATE TABLE promotion_userdata (
+          fetched_file_id INTEGER NOT NULL REFERENCES fetched_files(id), user_id TEXT NOT NULL,
+          is_favorite INTEGER NOT NULL, play_count INTEGER NOT NULL, PRIMARY KEY (fetched_file_id, user_id));
+        CREATE TABLE retention_decisions (
+          id INTEGER PRIMARY KEY, pass_id TEXT NOT NULL, at_utc TEXT NOT NULL,
+          fetched_file_id INTEGER, path TEXT,
+          decision TEXT NOT NULL CHECK (decision IN ('promote','keep','delete','wait','skip','untracked')),
+          reason TEXT, age_days REAL, uploads INTEGER, plays INTEGER, target_path TEXT, dry_run INTEGER NOT NULL);
+        CREATE INDEX ix_decisions_pass ON retention_decisions(pass_id);
         """,
     ];
 
@@ -458,7 +495,7 @@ public sealed class EncoreStore : IDisposable
         return new StoredRun(runId, lastItem, ids.Count, ids);
     }
 
-    /// <summary>Deletes rows past retention: plays after 14 days, added songs, triggers and fetch attempts after 90 days, expired negative-cache rows. Never <c>fetched_files</c> or <c>requests</c>.</summary>
+    /// <summary>Deletes rows past retention: plays after 14 days, added songs, triggers and fetch attempts after 90 days, expired negative-cache rows. Never <c>fetched_files</c>, <c>requests</c>, <c>slskd_uploads</c> or <c>play_throughs</c> (the retention evidence; <see cref="RetentionStore.PruneDecisions"/> trims only the decision log).</summary>
     public PruneResult Prune(DateTimeOffset now)
     {
         using var tx = _db.BeginTransaction();

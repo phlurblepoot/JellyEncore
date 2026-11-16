@@ -79,6 +79,13 @@ public sealed record ActiveFetch(
     long Id, string JobId, string TrackKey, string State, string? Path, string? TransferId, string RunId,
     string? Peer = null, string? JellyfinPath = null);
 
+/// <summary>A <c>fetched_files</c> row as the retention pass reads it (v0.4).</summary>
+public sealed record TrackedFile(
+    long Id, string TrackKey, string Artist, string Title, string State,
+    string? Path, string? JellyfinPath, string? JellyfinItemId, bool Requested, string? KeptReason, DateTimeOffset? KeptUtc,
+    DateTimeOffset? PromotedUtc, string? RadioPath, string? DeleteReason, int Uploads, int PlayThroughs, DateTimeOffset? ReadyUtc,
+    string UserId, string? Peer, string? RemotePath);
+
 /// <summary>
 /// The fetch worker's part of the database (design section 9 of v0.2): its own connection to the same file as
 /// <see cref="EncoreStore"/>, same pragmas. Every method takes one lock, so any worker thread may call it. It never
@@ -369,6 +376,102 @@ public sealed class FetchStore : IDisposable
         }
     }
 
+    /// <summary>
+    /// The rows retention looks at: state <c>ready</c> and not yet kept (<c>kept_utc</c> empty), oldest ready first.
+    /// A row held back by a request has <c>kept_reason = 'requested'</c> but no <c>kept_utc</c>, so it shows here with its reason.
+    /// </summary>
+    public IReadOnlyList<TrackedFile> TrackedForRetention()
+    {
+        lock (_gate)
+        {
+            using var cmd = _db.CreateCommand();
+            cmd.CommandText = $"SELECT {TrackedColumns} FROM fetched_files WHERE state = 'ready' AND kept_utc IS NULL ORDER BY ready_utc, id";
+            return ReadTracked(cmd);
+        }
+    }
+
+    /// <summary>One <c>fetched_files</c> row as retention sees it, or null when the id does not exist.</summary>
+    public TrackedFile? GetTracked(long id)
+    {
+        lock (_gate)
+        {
+            using var cmd = _db.CreateCommand();
+            cmd.CommandText = $"SELECT {TrackedColumns} FROM fetched_files WHERE id = $id";
+            cmd.Parameters.AddWithValue("$id", id);
+            return ReadTracked(cmd).FirstOrDefault();
+        }
+    }
+
+    /// <summary>Marks a ready row as kept for good (<c>kept_reason</c> and <c>kept_utc</c>). Returns false when the row is not in state ready.</summary>
+    public bool MarkKept(long id, string reason, DateTimeOffset now)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+        lock (_gate)
+        {
+            using var cmd = _db.CreateCommand();
+            cmd.CommandText = "UPDATE fetched_files SET kept_reason = $reason, kept_utc = $now WHERE id = $id AND state = 'ready'";
+            cmd.Parameters.AddWithValue("$id", id);
+            cmd.Parameters.AddWithValue("$reason", reason);
+            cmd.Parameters.AddWithValue("$now", EncoreStore.FormatUtc(now));
+            return cmd.ExecuteNonQuery() > 0;
+        }
+    }
+
+    /// <summary>Marks a ready row deleted with the reason (age | uploads). Returns false when the row is not in state ready.</summary>
+    public bool MarkDeleted(long id, string reason, DateTimeOffset now)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+        lock (_gate)
+        {
+            using var cmd = _db.CreateCommand();
+            cmd.CommandText = "UPDATE fetched_files SET state = 'deleted', delete_reason = $reason, deleted_utc = $now WHERE id = $id AND state = 'ready'";
+            cmd.Parameters.AddWithValue("$id", id);
+            cmd.Parameters.AddWithValue("$reason", reason);
+            cmd.Parameters.AddWithValue("$now", EncoreStore.FormatUtc(now));
+            return cmd.ExecuteNonQuery() > 0;
+        }
+    }
+
+    /// <summary>
+    /// Marks a ready row promoted: the old radio path moves to <c>radio_path</c>, and the library path, Jellyfin path and new item id
+    /// replace the current ones. Returns false when the row is not in state ready.
+    /// </summary>
+    public bool MarkPromoted(long id, string targetPath, string? targetJellyfinPath, string? newItemId, DateTimeOffset now)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(targetPath);
+        lock (_gate)
+        {
+            using var cmd = _db.CreateCommand();
+            cmd.CommandText = """
+                UPDATE fetched_files SET
+                  state = 'promoted', radio_path = path, path = $path,
+                  jellyfin_path = COALESCE($jpath, jellyfin_path), jellyfin_item_id = COALESCE($jitem, jellyfin_item_id),
+                  promoted_utc = $now
+                WHERE id = $id AND state = 'ready'
+                """;
+            cmd.Parameters.AddWithValue("$id", id);
+            cmd.Parameters.AddWithValue("$path", targetPath);
+            cmd.Parameters.AddWithValue("$jpath", Db(targetJellyfinPath));
+            cmd.Parameters.AddWithValue("$jitem", Db(newItemId));
+            cmd.Parameters.AddWithValue("$now", EncoreStore.FormatUtc(now));
+            return cmd.ExecuteNonQuery() > 0;
+        }
+    }
+
+    /// <summary>Sets the <c>uploads</c> and <c>play_throughs</c> counters of one row (the counts the retention rules read). Returns false when the id does not exist.</summary>
+    public bool SetCounters(long id, int uploads, int playThroughs)
+    {
+        lock (_gate)
+        {
+            using var cmd = _db.CreateCommand();
+            cmd.CommandText = "UPDATE fetched_files SET uploads = $uploads, play_throughs = $plays WHERE id = $id";
+            cmd.Parameters.AddWithValue("$id", id);
+            cmd.Parameters.AddWithValue("$uploads", uploads);
+            cmd.Parameters.AddWithValue("$plays", playThroughs);
+            return cmd.ExecuteNonQuery() > 0;
+        }
+    }
+
     public void Dispose()
     {
         lock (_gate)
@@ -376,6 +479,32 @@ public sealed class FetchStore : IDisposable
             _db.Dispose();
         }
     }
+
+    private const string TrackedColumns = """
+        id, track_key, artist, title, state, path, jellyfin_path, jellyfin_item_id, requested, kept_reason, kept_utc,
+        promoted_utc, radio_path, delete_reason, uploads, play_throughs, ready_utc, user_id, peer, remote_path
+        """;
+
+    private static List<TrackedFile> ReadTracked(SqliteCommand cmd)
+    {
+        var rows = new List<TrackedFile>();
+        using var r = cmd.ExecuteReader();
+        while (r.Read())
+        {
+            rows.Add(new TrackedFile(
+                r.GetInt64(0), r.GetString(1), r.GetString(2), r.GetString(3), r.GetString(4),
+                Str(r, 5), Str(r, 6), Str(r, 7), r.GetInt32(8) != 0, Str(r, 9), Time(r, 10),
+                Time(r, 11), Str(r, 12), Str(r, 13), r.GetInt32(14), r.GetInt32(15), Time(r, 16),
+                r.GetString(17), Str(r, 18), Str(r, 19)));
+        }
+
+        return rows;
+    }
+
+    private static string? Str(SqliteDataReader r, int i) => r.IsDBNull(i) ? null : r.GetString(i);
+
+    private static DateTimeOffset? Time(SqliteDataReader r, int i) =>
+        r.IsDBNull(i) ? null : DateTimeOffset.Parse(r.GetString(i), CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal);
 
     private static object Db(string? value) => value is null ? DBNull.Value : value;
 
