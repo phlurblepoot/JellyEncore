@@ -51,7 +51,7 @@ public class HealthRequestsTests
         3, true, 1412, Now, null);
 
     private static RequestsHealthInput Req(LidarrState? lidarr, int waiting = 0) => new(
-        new Dictionary<string, int> { ["searching"] = 1, ["importing"] = 2 },
+        new Dictionary<string, int> { ["searching"] = 1, ["importing"] = 2, ["upcoming"] = 3 },
         new GuardSnapshot(1, 2, 3),
         (4, 3, 1),
         lidarr, 5, 1, waiting);
@@ -87,6 +87,7 @@ public class HealthRequestsTests
         Assert.Equal(1, r.GetProperty("active").GetProperty("searching").GetInt32());
         Assert.Equal(2, r.GetProperty("active").GetProperty("importing").GetInt32());
         Assert.Equal(0, r.GetProperty("active").GetProperty("queued").GetInt32());
+        Assert.Equal(3, r.GetProperty("active").GetProperty("upcoming").GetInt32());
         Assert.Equal(1, r.GetProperty("auth").GetProperty("blockedIps").GetInt32());
         Assert.Equal(2, r.GetProperty("auth").GetProperty("lockedNames").GetInt32());
         Assert.Equal(3, r.GetProperty("auth").GetProperty("failedLoginsLastHour").GetInt32());
@@ -208,12 +209,17 @@ public class HealthRequestsTests
             store.Insert(new NewRequest("a0000000000000000000000000000002", "song", "u1", "kim", "B", Now, Title: "Two"));
             store.Insert(new NewRequest("a0000000000000000000000000000003", "song", "u1", "kim", "C", Now.AddDays(-3), Title: "Old"));
             store.Update("a0000000000000000000000000000002", RequestState.Ready, Now, new RequestUpdate(ReadyUtc: Now));
+            store.Insert(new NewRequest("a0000000000000000000000000000004", "album", "u1", "kim", "D", Now, Title: "Next"));
+            store.Update("a0000000000000000000000000000004", RequestState.Upcoming, Now, new RequestUpdate(Detail: "Upcoming: release date not known yet", Year: 2027));
 
             var active = store.CountActiveByState();
             Assert.Equal(2, active["queued"]);
+            Assert.Equal(1, active["upcoming"]);
+            Assert.Equal(2027, store.Get("a0000000000000000000000000000004")!.Year);
+            Assert.Contains(store.Active(), r => r.State == RequestState.Upcoming);
             Assert.False(active.ContainsKey("ready"));
             var today = store.CountsSince(Now - TimeSpan.FromHours(24));
-            Assert.Equal(2, today.Created);
+            Assert.Equal(3, today.Created);
             Assert.Equal(1, today.Ready);
             Assert.Equal(0, today.Failed);
         }

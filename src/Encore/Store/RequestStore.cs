@@ -7,6 +7,10 @@ namespace Encore.Store;
 public static class RequestState
 {
     public const string Queued = "queued";
+
+    /// <summary>An album sent to Lidarr whose release date is in the future or not known yet (polled every 6 h).</summary>
+    public const string Upcoming = "upcoming";
+
     public const string Searching = "searching";
     public const string Downloading = "downloading";
     public const string Importing = "importing";
@@ -49,7 +53,8 @@ public sealed record RequestUpdate(
     string? CancelledBy = null,
     DateTimeOffset? ReadyUtc = null,
     DateTimeOffset? NotifiedUtc = null,
-    bool ClearFailReason = false);
+    bool ClearFailReason = false,
+    int? Year = null);
 
 /// <summary>One <c>requests</c> row.</summary>
 public sealed record RequestRow(
@@ -98,7 +103,7 @@ public sealed class RequestStore : IDisposable
         created_utc, updated_utc, ready_utc, notified_utc
         """;
 
-    private const string ActiveClause = "state IN ('queued','searching','downloading','importing')";
+    private const string ActiveClause = "state IN ('queued','upcoming','searching','downloading','importing')";
 
     private readonly SqliteConnection _db;
     private readonly object _gate = new();
@@ -198,7 +203,8 @@ public sealed class RequestStore : IDisposable
                   attempts = COALESCE($attempts, attempts),
                   next_try_utc = CASE WHEN $clearNext = 1 THEN NULL ELSE COALESCE($next, next_try_utc) END,
                   cancelled_by = COALESCE($cancelledBy, cancelled_by),
-                  ready_utc = COALESCE($ready, ready_utc), notified_utc = COALESCE($notified, notified_utc)
+                  ready_utc = COALESCE($ready, ready_utc), notified_utc = COALESCE($notified, notified_utc),
+                  year = COALESCE($year, year)
                 WHERE id = $id
                 """;
             cmd.Parameters.AddWithValue("$id", id);
@@ -219,6 +225,7 @@ public sealed class RequestStore : IDisposable
             cmd.Parameters.AddWithValue("$cancelledBy", Db(fields.CancelledBy));
             cmd.Parameters.AddWithValue("$ready", Db(fields.ReadyUtc));
             cmd.Parameters.AddWithValue("$notified", Db(fields.NotifiedUtc));
+            cmd.Parameters.AddWithValue("$year", Db(fields.Year));
             return cmd.ExecuteNonQuery() > 0;
         }
     }

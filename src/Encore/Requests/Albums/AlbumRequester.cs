@@ -42,13 +42,15 @@ public static class AlbumReasons
 }
 
 /// <summary>
-/// Album requests through Lidarr (v0.3 design 7). Create (daily cap, id lookup, unreleased -> 409, owned -> ready, join an
-/// active request for the same album), send to Lidarr (monitor an existing album, or one POST album that also adds a missing
+/// Album requests through Lidarr (v0.3 design 7). Create (daily cap, id lookup, owned -> ready, join an active request
+/// for the same album), send to Lidarr (monitor an existing album, or one POST album that also adds a missing
 /// artist with monitorNewItems "none"; switch the artist on; check both flags), poll progress every 2 min from the album's
 /// statistics, find the album in Jellyfin (one Media/Updated nudge with the artist folder), time out after 7 days with no
 /// file or 3 days stalled, cancel and retry. Lidarr writes are only those of invariant 7: never POST artist, never another
 /// album, never monitorNewItems, profiles or paths. One async lock serialises every state change; Lidarr being down keeps
-/// the state and the next poll tries again.
+/// the state and the next poll tries again. An album whose release date is in the future or not known yet is sent the same
+/// way and waits as <c>upcoming</c> (release date re-read every 6 h); it moves to <c>searching</c> on its release day, and only
+/// then does the 7-day <c>not_found</c> timer start.
 /// </summary>
 public sealed class AlbumRequester
 {
@@ -59,6 +61,11 @@ public sealed class AlbumRequester
         public const string Importing = "In Lidarr, waiting for Jellyfin";
         public const string LidarrDown = "Waiting: Lidarr is not reachable";
         public const string LidarrKey = "Waiting: Lidarr rejected Encore's key";
+
+        /// <summary>"Upcoming: releases YYYY-MM-DD", or "Upcoming: release date not known yet" without a date.</summary>
+        public static string Upcoming(DateTimeOffset? release) => release is { } date
+            ? "Upcoming: releases " + date.UtcDateTime.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)
+            : "Upcoming: release date not known yet";
 
         public static string Downloading(int files, int total) =>
             string.Create(CultureInfo.InvariantCulture, $"{files} of {total} tracks");
@@ -110,8 +117,7 @@ public sealed class AlbumRequester
 
     /// <summary>
     /// POST /requests {kind:"album", foreignAlbumId} (design 7.1). 201 new; 200 with the caller's own active request for it;
-    /// 400 for an id that is not a GUID; 429 at the daily cap; 404 when Lidarr's catalog lacks it; 409 <c>not_released</c>
-    /// (no row, not counted); 503 <c>albums_unavailable</c> when Lidarr cannot be reached or rejects the key.
+    /// 400 for an id that is not a GUID; 429 at the daily cap; 404 when Lidarr's catalog lacks it; 503 <c>albums_unavailable</c> when Lidarr cannot be reached or rejects the key.
     /// </summary>
     public async Task<(RequestOutcome Outcome, IReadOnlyList<RequestRow> Notify)> CreateAsync(RequestUser user, string foreignAlbumId, CancellationToken ct)
     {
@@ -149,12 +155,6 @@ public sealed class AlbumRequester
         if (album is null || string.IsNullOrEmpty(artist) || string.IsNullOrEmpty(title))
         {
             return (RequestOutcome.Fail(StatusCodes.Status404NotFound, RequestCodes.NotFound), []);
-        }
-
-        if (!AlbumSearch.IsReleased(album, _time.GetUtcNow()))
-        {
-            // Lidarr never lists an unreleased album as wanted, so Soularr would never fetch it.
-            return (RequestOutcome.Fail(StatusCodes.Status409Conflict, RequestCodes.NotReleased), []);
         }
 
         var (owned, itemId) = await OwnedAsync(user.Id, album, artist, title, ct).ConfigureAwait(false);
@@ -214,7 +214,7 @@ public sealed class AlbumRequester
         }
     }
 
-    /// <summary>DELETE for an album: owner while queued or searching, admin in any active state. The album is unmonitored unless another active request holds it; files stay.</summary>
+    /// <summary>DELETE for an album: owner while queued, upcoming or searching, admin in any active state. The album is unmonitored unless another active request holds it; files stay.</summary>
     public async Task<RequestOutcome> CancelAsync(RequestUser user, string id, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(user);
@@ -227,7 +227,7 @@ public sealed class AlbumRequester
                 return RequestOutcome.Fail(StatusCodes.Status404NotFound, RequestCodes.NotFound);
             }
 
-            var early = row.State is RequestState.Queued or RequestState.Searching;
+            var early = row.State is RequestState.Queued or RequestState.Upcoming or RequestState.Searching;
             if (!RequestService.IsActive(row.State) || (!user.IsAdmin && !early))
             {
                 return RequestOutcome.Fail(StatusCodes.Status409Conflict, RequestCodes.Conflict);
@@ -300,8 +300,8 @@ public sealed class AlbumRequester
     }
 
     /// <summary>
-    /// One lifecycle pass (the worker calls it every 2 s): every active album request whose 2-min poll is due is sent to
-    /// Lidarr (queued) or polled (one GET album per Lidarr album per pass). Returns the requests to notify. One bad row
+    /// One lifecycle pass (the worker calls it every 2 s): every active album request whose poll is due (2 min, 6 h while
+    /// upcoming) is sent to Lidarr (queued) or polled (one GET album per Lidarr album per pass). Returns the requests to notify. One bad row
     /// never stops the pass.
     /// </summary>
     public async Task<IReadOnlyList<RequestRow>> TickAsync(CancellationToken ct)
@@ -336,7 +336,7 @@ public sealed class AlbumRequester
                     continue;
                 }
 
-                _due[row.Id] = now + RequestLimits.AlbumPoll;
+                _due[row.Id] = now + (row.State == RequestState.Upcoming ? RequestLimits.AlbumUpcomingPoll : RequestLimits.AlbumPoll);
                 if (row.State == RequestState.Queued || row.LidarrAlbumId is null)
                 {
                     if (ActiveSibling(row) is { } sibling)
@@ -389,7 +389,8 @@ public sealed class AlbumRequester
     // ---- send (design 7.2) -------------------------------------------------------------------------------------
 
     /// <summary>
-    /// Monitors the album and its artist in Lidarr. Success: <c>searching</c> with the Lidarr ids. Lidarr unreachable or the
+    /// Monitors the album and its artist in Lidarr. Success: <c>searching</c> with the Lidarr ids, or <c>upcoming</c> when the
+    /// album's release date is in the future or not known yet. Lidarr unreachable or the
     /// key rejected: stays queued (the next poll tries again). Refused or not monitored afterwards: failed.
     /// </summary>
     private async Task SendLockedAsync(RequestRow row, LidarrAlbum? lookup, List<RequestRow> notify, CancellationToken ct)
@@ -451,15 +452,19 @@ public sealed class AlbumRequester
                 return;
             }
 
-            _store.Update(row.Id, RequestState.Searching, now, new RequestUpdate(
-                Detail: Details.Searching, LidarrAlbumId: albumId, LidarrArtistId: album.ArtistId, ClearNextTry: true));
+            var upcoming = IsUpcoming(album, now);
+            var (state, detail) = upcoming
+                ? (RequestState.Upcoming, Details.Upcoming(album.ReleaseDate))
+                : (RequestState.Searching, Details.Searching);
+            _store.Update(row.Id, state, now, new RequestUpdate(
+                Detail: detail, LidarrAlbumId: albumId, LidarrArtistId: album.ArtistId, ClearNextTry: true, Year: album.ReleaseDate?.Year));
             _log.AlbumMonitored(row.Id, albumId, true, via);
-            if (row.State != RequestState.Searching)
+            if (row.State != state)
             {
-                _log.StateChanged(row.Id, row.State, RequestState.Searching, Details.Searching);
+                _log.StateChanged(row.Id, row.State, state, detail);
             }
 
-            _due[row.Id] = now + RequestLimits.AlbumPoll;
+            _due[row.Id] = now + (upcoming ? RequestLimits.AlbumUpcomingPoll : RequestLimits.AlbumPoll);
         }
         catch (LidarrValidationException ex)
         {
@@ -580,6 +585,28 @@ public sealed class AlbumRequester
         }
 
         var now = _time.GetUtcNow();
+        if (row.State == RequestState.Upcoming)
+        {
+            if (IsUpcoming(album, now))
+            {
+                // Still before the release day: keep waiting, with the date Lidarr has now (it may have moved).
+                var waiting = Details.Upcoming(album.ReleaseDate);
+                if (row.Detail != waiting)
+                {
+                    _store.Update(row.Id, RequestState.Upcoming, now, new RequestUpdate(Detail: waiting, Year: album.ReleaseDate?.Year));
+                }
+
+                _due[row.Id] = now + RequestLimits.AlbumUpcomingPoll;
+                return;
+            }
+
+            // Release day: searching from now on, so the 7-day not_found timer starts here (updated_utc).
+            _store.Update(row.Id, RequestState.Searching, now, new RequestUpdate(Detail: Details.Searching, Year: album.ReleaseDate?.Year));
+            _log.StateChanged(row.Id, RequestState.Upcoming, RequestState.Searching, Details.Searching);
+            row = _store.Get(row.Id) ?? row;
+            _due[row.Id] = now + RequestLimits.AlbumPoll;
+        }
+
         var s = album.Statistics;
         var files = s?.TrackFileCount ?? 0;
         var expected = s?.TrackCount ?? 0;
@@ -740,6 +767,10 @@ public sealed class AlbumRequester
         _store.Active().FirstOrDefault(o => o.Id != row.Id && o.Kind == "album" && o.LidarrAlbumId is not null
             && o.State != RequestState.Queued
             && string.Equals(o.ForeignAlbumId, row.ForeignAlbumId, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>Not out yet: the release date is after today or not known, and Lidarr has no file for it.</summary>
+    private static bool IsUpcoming(LidarrAlbum album, DateTimeOffset now) =>
+        !AlbumSearch.IsReleased(album, now) && (album.Statistics?.TrackFileCount ?? 0) == 0;
 
     private RequestRow? MineActive(string userKey, string fid) =>
         _store.ListByUser(userKey, activeOnly: true).FirstOrDefault(r => r.Kind == "album"

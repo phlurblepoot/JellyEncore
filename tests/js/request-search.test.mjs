@@ -83,7 +83,9 @@ test('state labels and active states', () => {
   assert.equal(h.stateLabel('downloading'), 'Downloading');
   assert.equal(h.stateLabel('ready'), 'Ready');
   assert.equal(h.stateLabel('weird'), '');
+  assert.equal(h.stateLabel('upcoming'), 'Upcoming');
   assert.equal(h.isActive('queued'), true);
+  assert.equal(h.isActive('upcoming'), true);
   assert.equal(h.isActive('importing'), true);
   for (const s of ['ready', 'failed', 'cancelled', '', null]) assert.equal(h.isActive(s), false, String(s));
 });
@@ -105,16 +107,22 @@ test('buildCards keeps only what is not in the library', () => {
     // Album rows exactly as GET /api/v1/search returns them (T90 AlbumRow).
     albums: [
       { foreignAlbumId: 'mb-1', title: 'Album', artist: 'C', foreignArtistId: 'a', year: 2027, albumType: 'Album', secondaryTypes: [],
-        trackCount: 9, coverUrl: null, released: false, owned: false, itemId: null, requestable: false, request: null },
+        trackCount: 9, coverUrl: null, released: false, releaseDate: '2027-03-01', owned: false, itemId: null, requestable: true, request: null },
       { foreignAlbumId: 'mb-2', title: 'Owned album', artist: 'C', foreignArtistId: 'a', year: 1997, albumType: 'Album', secondaryTypes: [],
         trackCount: 12, coverUrl: null, released: true, owned: true, itemId: null, requestable: false, request: null },
       { foreignAlbumId: 'mb-3', title: 'Wanted', artist: 'C', foreignArtistId: 'a', year: 2000, albumType: 'Album', secondaryTypes: ['Live'],
         trackCount: 10, coverUrl: 'c3', released: true, owned: false, itemId: null, requestable: true,
         request: { id: 'r3', state: 'searching', detail: 'Waiting for Soulseek', mine: false } },
+      { foreignAlbumId: 'mb-4', title: 'Undated', artist: 'C', foreignArtistId: 'a', year: null, albumType: 'Album', secondaryTypes: [],
+        trackCount: null, coverUrl: null, released: false, releaseDate: null, owned: false, itemId: null, requestable: true, request: null },
       { title: 'No mbid' },
     ],
   });
-  assert.deepEqual(cards.map(c => c.key), ['song:1', 'song:4', 'album:mb-1', 'album:mb-3']);
+  assert.deepEqual(cards.map(c => c.key), ['song:1', 'song:4', 'album:mb-1', 'album:mb-3', 'album:mb-4']);
+  assert.equal(cards[2].upcoming, 'Upcoming: 2027-03-01');
+  assert.equal(cards[3].upcoming, '');
+  assert.equal(cards[4].upcoming, 'Upcoming: date not known yet');
+  assert.equal(cards[0].upcoming, undefined);
   assert.equal(cards[3].cover, 'c3');
   assert.equal(cards[3].released, true);
   assert.equal(cards[3].request.state, 'searching');
@@ -131,4 +139,18 @@ test('buildCards tolerates bad input', () => {
   assert.deepEqual(h.buildCards(null), []);
   assert.deepEqual(h.buildCards('x'), []);
   assert.deepEqual(h.buildCards({ songs: 'no', albums: null }), []);
+});
+
+test('upcoming label for albums not released yet', () => {
+  assert.equal(h.upcomingLabel({ released: false, releaseDate: '2027-03-01' }), 'Upcoming: 2027-03-01');
+  assert.equal(h.upcomingLabel({ released: false, releaseDate: null }), 'Upcoming: date not known yet');
+  assert.equal(h.upcomingLabel({ released: false, releaseDate: 'soon' }), 'Upcoming: date not known yet');
+  assert.equal(h.upcomingLabel({ released: true, releaseDate: '1997-05-21' }), '');
+  assert.equal(h.upcomingLabel(null), '');
+});
+
+test('the card shows the upcoming badge next to a Request button, and 409 no longer means not released', () => {
+  const js = readFileSync(scriptPath, 'utf8');
+  assert.match(js, /encore-request-upcoming/);
+  assert.doesNotMatch(js, /not_released|Not released yet/);
 });

@@ -7,10 +7,11 @@
 (function (root) {
   // ---------------------------------------------------------------- pure helpers (tested under node)
 
-  var ACTIVE_STATES = ['queued', 'searching', 'downloading', 'importing'];
+  var ACTIVE_STATES = ['queued', 'upcoming', 'searching', 'downloading', 'importing'];
 
   var STATE_LABELS = {
     queued: 'Queued',
+    upcoming: 'Upcoming',
     searching: 'Searching',
     downloading: 'Downloading',
     importing: 'Importing',
@@ -25,7 +26,6 @@
     admin_only: 'Only an administrator can do that.',
     not_found: 'That request no longer exists.',
     conflict: 'That request cannot be changed any more.',
-    not_released: 'That album has not been released yet.',
     daily_limit: 'You have reached your daily request limit. Try again tomorrow.',
     login_limited: 'Too many sign-in attempts. Please wait and try again.',
     songs_unavailable: 'Song requests are switched off.',
@@ -138,7 +138,7 @@
     return 60000;
   }
 
-  /** May this person cancel this request? Owner while queued or searching; an admin while any active state. */
+  /** May this person cancel this request? Owner while queued, upcoming or searching; an admin while any active state. */
   function canCancel(request, me) {
     if (!request || !me) {
       return false;
@@ -146,7 +146,7 @@
     if (me.isAdmin) {
       return isActive(request.state);
     }
-    return request.state === 'queued' || request.state === 'searching';
+    return request.state === 'queued' || request.state === 'upcoming' || request.state === 'searching';
   }
 
   /** Failed requests can be retried by their owner or an admin. */
@@ -218,10 +218,10 @@
    * What a search result row shows on its right side. Song rows are the /api/v1/search rows
    * ({deezerTrackId, title, artist, album, durationS, coverUrl, explicit, owned, itemId, requestable,
    * request: {id, state, detail, mine} | null}); album rows are ({foreignAlbumId, title, artist, foreignArtistId, year,
-   * albumType, secondaryTypes, trackCount, coverUrl, released, owned, itemId, requestable, request}).
+   * albumType, secondaryTypes, trackCount, coverUrl, released, releaseDate, owned, itemId, requestable, request}).
    * After a request is made, `request` holds the full request.
-   * Returns 'library' (owned: open it), 'status' (a request exists: show its chip), 'unreleased' (album not out yet),
-   * 'request' (a Request button) or 'none'.
+   * Returns 'library' (owned: open it), 'status' (a request exists: show its chip), 'request' (a Request button) or
+   * 'none'. An album that is not out yet is requestable like any other; upcomingBadge() gives its badge.
    */
   function rowAction(row, kind, me) {
     if (!row || typeof row !== 'object') {
@@ -233,17 +233,27 @@
     if (row.request && typeof row.request === 'object' && row.request.state) {
       return 'status';
     }
-    if (kind === 'album' && row.released === false) {
-      return 'unreleased';
-    }
     if (row.requestable === false || !me || !me.canRequest) {
       return 'none';
     }
     return 'request';
   }
 
+  /**
+   * The badge text of an album search row that is not released yet: 'Upcoming: YYYY-MM-DD', or
+   * 'Upcoming: date not known yet' when Lidarr has no date. Empty for released albums and song rows.
+   */
+  function upcomingBadge(row, kind) {
+    if (kind !== 'album' || !row || typeof row !== 'object' || row.released !== false) {
+      return '';
+    }
+    var date = typeof row.releaseDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(row.releaseDate) ? row.releaseDate : '';
+    return date ? 'Upcoming: ' + date : 'Upcoming: date not known yet';
+  }
+
   var helpers = {
     rowAction: rowAction,
+    upcomingBadge: upcomingBadge,
     isActive: isActive,
     stateLabel: stateLabel,
     chipClass: chipClass,
@@ -865,9 +875,13 @@
       if (row.request.state === 'ready') {
         add(side, openLink(row.request.itemId));
       }
-    } else if (action === 'unreleased') {
-      add(side, el('span', 'chip chip-unknown', 'Not released yet'));
-    } else if (action === 'request') {
+    } else {
+      var badge = upcomingBadge(row, kind);
+      if (badge) {
+        add(side, el('span', 'chip chip-upcoming', badge));
+      }
+    }
+    if (action === 'request') {
       var go = button('Request', 'btn btn-primary btn-small', function () {
         go.disabled = true;
         requestRow(row, kind, key);

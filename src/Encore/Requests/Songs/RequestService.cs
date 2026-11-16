@@ -18,7 +18,6 @@ public static class RequestCodes
     public const string Conflict = "conflict";
     public const string AdminOnly = "admin_only";
     public const string NotFound = "not_found";
-    public const string NotReleased = "not_released";
 }
 
 /// <summary>The settings a <see cref="RequestService"/> needs: the fetch mode and the per-person daily song cap.</summary>
@@ -562,7 +561,7 @@ public sealed class RequestService
     private static bool MayAccess(RequestUser user, RequestRow row) => user.IsAdmin || row.UserId == RequestUserKey.Of(user.Id);
 
     public static bool IsActive(string state) =>
-        state is RequestState.Queued or RequestState.Searching or RequestState.Downloading or RequestState.Importing;
+        state is RequestState.Queued or RequestState.Upcoming or RequestState.Searching or RequestState.Downloading or RequestState.Importing;
 
     /// <summary>The request state and UI detail for a pending fetch readiness (design 6.3).</summary>
     public static (string State, string Detail) Map(FetchReadiness.Pending pending) => pending.Stage switch

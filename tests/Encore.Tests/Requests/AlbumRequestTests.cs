@@ -106,6 +106,8 @@ public sealed class AlbumRequestTests
 {
     private static readonly Guid JellyfinAlbum = Guid.Parse("66666666666666666666666666666666");
 
+    private const string Undated = "c0000000-0000-0000-0000-0000000000ee";
+
     // ---- send to Lidarr (design 7.2) ------------------------------------------------------------------------------
 
     [Fact]
@@ -290,21 +292,151 @@ public sealed class AlbumRequestTests
     }
 
     [Fact]
-    public async Task AR11_An_unreleased_album_is_409_with_no_row_and_no_count()
+    public async Task AR11_A_future_album_is_sent_to_Lidarr_like_a_released_one_and_waits_as_upcoming()
     {
         using var rig = new AlbumRig(perDay: 1);
 
-        Assert.Equal("not_released", await rig.FailAsync(AlbumRig.Unreleased, SongRig.Kim, HttpStatusCode.Conflict));
-        Assert.Empty(rig.Store.ListAll());
-        Assert.Empty(rig.Lidarr.Writes);
+        var row = await rig.CreateAsync(AlbumRig.Unreleased);
 
-        // No release date at all is never wanted in Lidarr either.
-        rig.Lidarr.AddCatalog("c0000000-0000-0000-0000-0000000000ee", "Undated", AlbumRig.Radiohead, "Radiohead");
-        rig.Lidarr.Catalog["c0000000-0000-0000-0000-0000000000ee"] = rig.Lidarr.Catalog["c0000000-0000-0000-0000-0000000000ee"] with { Release = null };
-        Assert.Equal("not_released", await rig.FailAsync("c0000000-0000-0000-0000-0000000000ee", SongRig.Kim, HttpStatusCode.Conflict));
+        Assert.Equal(RequestState.Upcoming, row.State);
+        Assert.Equal("Upcoming: releases 2027-03-01", row.Detail);
+        Assert.Equal(2027, row.Year);
+        Assert.Equal(new[] { "POST album " + AlbumRig.Unreleased }, rig.Lidarr.Writes);
+        var album = rig.Lidarr.AlbumOf(AlbumRig.Unreleased);
+        Assert.True(album.Monitored);
+        Assert.True(rig.Lidarr.ArtistOf(album.ArtistId).Monitored);
+        Assert.Equal(album.Id, row.LidarrAlbumId);
+        Assert.Equal(album.ArtistId, row.LidarrArtistId);
 
-        // The one request of the day is still free.
-        await rig.CreateAsync(AlbumRig.OkComputer);
+        // It counts toward the daily cap like any album request.
+        Assert.Equal("daily_limit", await rig.FailAsync(AlbumRig.OkComputer, SongRig.Kim, HttpStatusCode.TooManyRequests));
+
+        // A second person's request for the same album joins it: no second write.
+        var lee = await rig.CreateAsync(AlbumRig.Unreleased, SongRig.Lee);
+        Assert.Equal(RequestState.Upcoming, lee.State);
+        Assert.Equal(row.Detail, lee.Detail);
+        Assert.Single(rig.Lidarr.Writes);
+    }
+
+    [Fact]
+    public async Task AR11b_An_album_without_a_release_date_waits_as_upcoming_with_the_date_unknown()
+    {
+        using var rig = new AlbumRig();
+        rig.Lidarr.AddCatalog(Undated, "Undated", AlbumRig.Radiohead, "Radiohead");
+        rig.Lidarr.Catalog[Undated] = rig.Lidarr.Catalog[Undated] with { Release = null };
+        var artist = rig.Lidarr.AddArtist(AlbumRig.Radiohead, "Radiohead", monitored: false);
+        var album = rig.Lidarr.AddAlbum(Undated, artist, monitored: false);
+
+        var row = await rig.CreateAsync(Undated);
+
+        Assert.Equal(RequestState.Upcoming, row.State);
+        Assert.Equal("Upcoming: release date not known yet", row.Detail);
+        Assert.Null(row.Year);
+        Assert.Equal(new[] { $"PUT album/monitor [{album.Id}] true", $"PUT artist/{artist.Id}" }, rig.Lidarr.Writes);
+        Assert.True(album.Monitored);
+        Assert.True(artist.Monitored);
+
+        // Months without a date never fail it.
+        rig.Clock.Advance(TimeSpan.FromDays(60));
+        await rig.Requester.TickAsync(CancellationToken.None);
+        Assert.Equal(RequestState.Upcoming, rig.Row(row.Id).State);
+
+        // Lidarr learns a date in the future: the detail follows it.
+        album.Release = new DateTimeOffset(2027, 5, 7, 0, 0, 0, TimeSpan.Zero);
+        rig.Clock.Advance(RequestLimits.AlbumUpcomingPoll);
+        await rig.Requester.TickAsync(CancellationToken.None);
+        Assert.Equal(RequestState.Upcoming, rig.Row(row.Id).State);
+        Assert.Equal("Upcoming: releases 2027-05-07", rig.Row(row.Id).Detail);
+        Assert.Equal(2027, rig.Row(row.Id).Year);
+    }
+
+    [Fact]
+    public async Task AR11c_Upcoming_albums_are_polled_every_6_hours_not_every_2_minutes()
+    {
+        using var rig = new AlbumRig();
+        var row = await rig.CreateAsync(AlbumRig.Unreleased);
+        var album = rig.Lidarr.AlbumOf(AlbumRig.Unreleased);
+        rig.Lidarr.Calls.Clear();
+
+        await rig.PollAsync();
+        rig.Clock.Advance(TimeSpan.FromHours(5));
+        await rig.Requester.TickAsync(CancellationToken.None);
+        Assert.DoesNotContain(rig.Lidarr.Calls, c => c == "album/" + album.Id);
+
+        rig.Clock.Advance(TimeSpan.FromHours(1));
+        await rig.Requester.TickAsync(CancellationToken.None);
+        Assert.Single(rig.Lidarr.Calls, c => c == "album/" + album.Id);
+        Assert.Equal(RequestState.Upcoming, rig.Row(row.Id).State);
+        Assert.Single(rig.Lidarr.Writes);
+    }
+
+    [Fact]
+    public async Task AR11d_On_the_release_day_an_upcoming_album_moves_to_searching_and_the_7_day_timer_starts_there()
+    {
+        using var rig = new AlbumRig();
+        var row = await rig.CreateAsync(AlbumRig.Unreleased);
+        var album = rig.Lidarr.AlbumOf(AlbumRig.Unreleased);
+
+        // Long past 7 days since the request, but still before the release day: no not_found.
+        rig.Clock.Advance(new DateTimeOffset(2027, 2, 28, 23, 0, 0, TimeSpan.Zero) - rig.Clock.GetUtcNow());
+        await rig.Requester.TickAsync(CancellationToken.None);
+        Assert.Equal(RequestState.Upcoming, rig.Row(row.Id).State);
+
+        // The release day (UTC): searching from now on.
+        rig.Clock.Advance(RequestLimits.AlbumUpcomingPoll);
+        var released = rig.Clock.GetUtcNow();
+        await rig.Requester.TickAsync(CancellationToken.None);
+        var searching = rig.Row(row.Id);
+        Assert.Equal(RequestState.Searching, searching.State);
+        Assert.Equal(AlbumRequester.Details.Searching, searching.Detail);
+        Assert.Equal(released, searching.UpdatedUtc);
+
+        // From then on the normal 2-min poll runs, and not_found comes 7 days after the release, not after the request.
+        rig.Clock.Advance(TimeSpan.FromDays(7) - TimeSpan.FromMinutes(10));
+        await rig.PollAsync();
+        Assert.Equal(RequestState.Searching, rig.Row(row.Id).State);
+        rig.Clock.Advance(TimeSpan.FromMinutes(10));
+        await rig.PollAsync();
+        var failed = rig.Row(row.Id);
+        Assert.Equal(RequestState.Failed, failed.State);
+        Assert.Equal(AlbumReasons.NotFound, failed.FailReason);
+        Assert.False(album.Monitored);
+    }
+
+    [Fact]
+    public async Task AR11e_An_upcoming_album_that_already_has_files_follows_the_normal_progress()
+    {
+        using var rig = new AlbumRig();
+        var row = await rig.CreateAsync(AlbumRig.Unreleased);
+        rig.Lidarr.AlbumOf(AlbumRig.Unreleased).Stats = AlbumRig.Stats(3, 9, 9);
+
+        rig.Clock.Advance(RequestLimits.AlbumUpcomingPoll);
+        await rig.Requester.TickAsync(CancellationToken.None);
+
+        Assert.Equal(RequestState.Downloading, rig.Row(row.Id).State);
+        Assert.Equal(3, rig.Row(row.Id).TracksDone);
+    }
+
+    [Fact]
+    public async Task AR11f_The_owner_can_cancel_an_upcoming_album_and_it_is_unmonitored()
+    {
+        using var rig = new AlbumRig();
+        var row = await rig.CreateAsync(AlbumRig.Unreleased);
+        var album = rig.Lidarr.AlbumOf(AlbumRig.Unreleased);
+
+        Assert.Equal(404, (await rig.Requester.CancelAsync(SongRig.Lee, row.Id, CancellationToken.None)).Status);
+        var cancelled = await rig.Requester.CancelAsync(SongRig.Kim, row.Id, CancellationToken.None);
+
+        Assert.Equal(200, cancelled.Status);
+        Assert.Equal(RequestState.Cancelled, cancelled.Row!.State);
+        Assert.False(album.Monitored);
+        Assert.Equal(new[] { "POST album " + AlbumRig.Unreleased, $"PUT album/monitor [{album.Id}] false" }, rig.Lidarr.Writes);
+
+        // A cancelled upcoming request is no longer polled.
+        rig.Lidarr.Calls.Clear();
+        rig.Clock.Advance(RequestLimits.AlbumUpcomingPoll);
+        await rig.Requester.TickAsync(CancellationToken.None);
+        Assert.Empty(rig.Lidarr.Calls);
     }
 
     [Fact]
@@ -673,9 +805,12 @@ public sealed class AlbumRequestTests
         Assert.Equal(leeRequest.Id, amnesiac.Request!.Id);
         Assert.False(amnesiac.Request.Mine);
 
+        // Not released yet: requestable all the same (it waits as upcoming), with the date for the badge.
         var next = rows[AlbumRig.Unreleased];
         Assert.False(next.Released);
-        Assert.False(next.Requestable);
+        Assert.True(next.Requestable);
+        Assert.Equal("2027-03-01", next.ReleaseDate);
+        Assert.Equal("2000-10-02", kid.ReleaseDate);
 
         // Lookup rows have no statistics: the rows Lidarr has get theirs from one albumIds call.
         var amnesiacId = rig.Lidarr.AlbumOf(AlbumRig.Amnesiac).Id;

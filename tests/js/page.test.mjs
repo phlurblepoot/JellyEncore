@@ -25,7 +25,9 @@ test('state labels and activity', () => {
   assert.equal(h.chipClass('failed'), 'failed');
   assert.equal(h.chipClass('x y'), 'unknown');
   assert.equal(h.chipClass('constructor'), 'unknown');
-  for (const s of ['queued', 'searching', 'downloading', 'importing']) assert.ok(h.isActive(s));
+  assert.equal(h.stateLabel('upcoming'), 'Upcoming');
+  assert.equal(h.chipClass('upcoming'), 'upcoming');
+  for (const s of ['queued', 'upcoming', 'searching', 'downloading', 'importing']) assert.ok(h.isActive(s));
   for (const s of ['ready', 'failed', 'cancelled', 'x']) assert.ok(!h.isActive(s));
 });
 
@@ -87,6 +89,7 @@ test('polling delay and who may cancel or retry', () => {
   const admin = { isAdmin: true };
   assert.ok(h.canCancel({ state: 'queued' }, user));
   assert.ok(h.canCancel({ state: 'searching' }, user));
+  assert.ok(h.canCancel({ state: 'upcoming' }, user));
   assert.ok(!h.canCancel({ state: 'downloading' }, user));
   assert.ok(h.canCancel({ state: 'downloading' }, admin));
   assert.ok(h.canCancel({ state: 'importing' }, admin));
@@ -128,15 +131,31 @@ test('rowAction reads the real /search song rows and request objects', () => {
   assert.equal(h.rowAction(song({ request: { id: 'r1', kind: 'song', state: 'ready', itemId: 'abc' } }), 'song', me), 'status');
   assert.equal(h.rowAction(song(), 'song', { canRequest: false }), 'none');
   assert.equal(h.rowAction(song(), 'song', null), 'none');
-  assert.equal(h.rowAction({ foreignAlbumId: 'mb', released: false }, 'album', me), 'unreleased');
+  // An album that is not out yet is requestable (it waits as "upcoming").
+  assert.equal(h.rowAction({ foreignAlbumId: 'mb', released: false }, 'album', me), 'request');
   // Album rows exactly as GET /api/v1/search returns them (T90 AlbumRow).
   const album = (o = {}) => ({ foreignAlbumId: 'mb', title: 'OK Computer', artist: 'Radiohead', foreignArtistId: 'a', year: 1997,
     albumType: 'Album', secondaryTypes: [], trackCount: 12, coverUrl: null, released: true, owned: false, itemId: null,
     requestable: true, request: null, ...o });
   assert.equal(h.rowAction(album(), 'album', me), 'request');
-  assert.equal(h.rowAction(album({ released: false, requestable: false }), 'album', me), 'unreleased');
+  assert.equal(h.rowAction(album({ released: false, releaseDate: '2027-03-01' }), 'album', me), 'request');
+  assert.equal(h.rowAction(album({ released: false, releaseDate: '2027-03-01' }), 'album', { canRequest: false }), 'none');
   assert.equal(h.rowAction(album({ owned: true, requestable: false }), 'album', me), 'library');
   assert.equal(h.rowAction(album({ owned: true, itemId: 'abc', requestable: false }), 'album', me), 'library');
   assert.equal(h.rowAction(album({ request: { id: 'r1', state: 'searching', detail: 'x', mine: true } }), 'album', me), 'status');
   assert.equal(h.rowAction(null, 'song', me), 'none');
+});
+
+test('upcoming badge on album rows not released yet', () => {
+  const album = (o = {}) => ({ foreignAlbumId: 'mb', title: 'Next', artist: 'Radiohead', foreignArtistId: 'a', year: 2027,
+    albumType: 'Album', secondaryTypes: [], trackCount: 9, coverUrl: null, released: false, releaseDate: '2027-03-01',
+    owned: false, itemId: null, requestable: true, request: null, ...o });
+  assert.equal(h.upcomingBadge(album(), 'album'), 'Upcoming: 2027-03-01');
+  assert.equal(h.upcomingBadge(album({ releaseDate: null, year: null }), 'album'), 'Upcoming: date not known yet');
+  assert.equal(h.upcomingBadge(album({ releaseDate: '<b>soon</b>' }), 'album'), 'Upcoming: date not known yet');
+  assert.equal(h.upcomingBadge(album({ released: true, releaseDate: '1997-05-21' }), 'album'), '');
+  assert.equal(h.upcomingBadge({ deezerTrackId: 1, released: false }, 'song'), '');
+  assert.equal(h.upcomingBadge(null, 'album'), '');
+  // The badge sits next to a Request button.
+  assert.equal(h.rowAction(album(), 'album', { canRequest: true }), 'request');
 });

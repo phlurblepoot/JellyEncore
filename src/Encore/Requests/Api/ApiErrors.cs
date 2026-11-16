@@ -38,7 +38,6 @@ internal static class ApiErrors
         ["deezer_unavailable"] = "The song catalog could not be reached. Try again in a moment.",
         ["conflict"] = "This request cannot be changed in its current state.",
         ["admin_only"] = "Only an administrator can do this.",
-        ["not_released"] = "This album is not released yet.",
     };
 
     public static string MessageFor(string code) => Messages.TryGetValue(code, out var text) ? text : "The request failed.";

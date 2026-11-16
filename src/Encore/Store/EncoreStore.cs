@@ -130,7 +130,7 @@ public sealed class EncoreStore : IDisposable
           id TEXT PRIMARY KEY,
           kind TEXT NOT NULL CHECK (kind IN ('song','album')),
           user_id TEXT NOT NULL, user_name TEXT NOT NULL,
-          state TEXT NOT NULL CHECK (state IN ('queued','searching','downloading','importing','ready','failed','cancelled')),
+          state TEXT NOT NULL CHECK (state IN ('queued','upcoming','searching','downloading','importing','ready','failed','cancelled')),
           detail TEXT, fail_reason TEXT,
           artist TEXT NOT NULL, title TEXT, album TEXT, year INTEGER, cover_url TEXT,
           track_key TEXT, deezer_track_id INTEGER, duration_s INTEGER,

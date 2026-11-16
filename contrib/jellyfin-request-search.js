@@ -68,6 +68,7 @@
   function stateLabel(state) {
     switch (state) {
       case 'queued': return 'Queued';
+      case 'upcoming': return 'Upcoming';
       case 'searching': return 'Searching';
       case 'downloading': return 'Downloading';
       case 'importing': return 'Importing';
@@ -86,8 +87,15 @@
   // Song rows (GET /api/v1/search): { deezerTrackId, title, artist, album, durationS, coverUrl, explicit, owned, itemId,
   // requestable, request: { id, state, detail, mine } | null }. Owned or not requestable rows are left out.
   // Album rows (Lidarr catalog): { foreignAlbumId, title, artist, foreignArtistId, year, albumType, secondaryTypes,
-  // trackCount, coverUrl, released, owned, itemId, requestable, request }. Owned rows are left out; unreleased ones stay
-  // (they show "Not released yet").
+  // trackCount, coverUrl, released, releaseDate, owned, itemId, requestable, request }. Owned rows are left out; albums not
+  // released yet are requestable and carry an "Upcoming" badge (with the date when Lidarr knows it).
+  // "Upcoming: YYYY-MM-DD" (or "Upcoming: date not known yet") for an album not released yet; '' otherwise.
+  function upcomingLabel(r) {
+    if (!r || r.released !== false) return '';
+    var d = typeof r.releaseDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(r.releaseDate) ? r.releaseDate : '';
+    return d ? 'Upcoming: ' + d : 'Upcoming: date not known yet';
+  }
+
   function buildCards(data) {
     var cards = [];
     if (!data || typeof data !== 'object') return cards;
@@ -103,10 +111,10 @@
     albums.forEach(function (r) {
       if (!r || r.owned || r.itemId) return;
       if (!r.foreignAlbumId) return;
-      if (r.requestable === false && r.released !== false) return;
+      if (r.requestable === false) return;
       cards.push({ kind: 'album', key: 'album:' + r.foreignAlbumId, body: { kind: 'album', foreignAlbumId: r.foreignAlbumId },
         artist: r.artist || '', title: r.title || '', cover: r.coverUrl || '', request: r.request || null,
-        released: r.released !== false });
+        released: r.released !== false, upcoming: upcomingLabel(r) });
     });
     return cards;
   }
@@ -118,7 +126,8 @@
   var helpers = {
     chooseMode: chooseMode, normalizeQuery: normalizeQuery, queryOk: queryOk, searchUrl: searchUrl,
     requestsUrl: requestsUrl, activeRequestsUrl: activeRequestsUrl, fallbackUrl: fallbackUrl,
-    tokenAllowed: tokenAllowed, stateLabel: stateLabel, isActive: isActive, buildCards: buildCards, cardLabel: cardLabel
+    tokenAllowed: tokenAllowed, stateLabel: stateLabel, isActive: isActive, buildCards: buildCards, cardLabel: cardLabel,
+    upcomingLabel: upcomingLabel
   };
   if (typeof module !== 'undefined' && module.exports) { module.exports = helpers; }
   if (typeof window === 'undefined' || typeof document === 'undefined') return;
@@ -244,17 +253,22 @@
       chip.style.cssText = 'font-size:.85em;padding:.3em .6em;border-radius:1em;background:rgba(128,128,128,.3);align-self:flex-start;';
       if (req.detail) chip.setAttribute('title', String(req.detail));
       box.appendChild(chip);
-    } else if (!c.released) {
-      box.appendChild(el('div', 'encore-request-chip', 'Not released yet'));
-    } else if (state.me && state.me.canRequest === false) {
-      // no button: the section shows the "not enabled" notice once
     } else {
-      var label = state.busy[c.key] ? 'Requesting...' : (req && req.state === 'failed' ? 'Request again' : 'Request');
-      var btn = el('button', 'emby-button raised encore-request-button', label);
-      btn.setAttribute('type', 'button');
-      if (state.busy[c.key]) btn.disabled = true;
-      btn.addEventListener('click', function () { createRequest(c); });
-      box.appendChild(btn);
+      if (c.upcoming) {
+        var badge = el('div', 'encore-request-upcoming', c.upcoming);
+        badge.style.cssText = 'font-size:.75em;padding:.2em .5em;border-radius:1em;background:rgba(128,128,128,.3);align-self:flex-start;margin-bottom:.3em;';
+        box.appendChild(badge);
+      }
+      if (state.me && state.me.canRequest === false) {
+        // no button: the section shows the "not enabled" notice once
+      } else {
+        var label = state.busy[c.key] ? 'Requesting...' : (req && req.state === 'failed' ? 'Request again' : 'Request');
+        var btn = el('button', 'emby-button raised encore-request-button', label);
+        btn.setAttribute('type', 'button');
+        if (state.busy[c.key]) btn.disabled = true;
+        btn.addEventListener('click', function () { createRequest(c); });
+        box.appendChild(btn);
+      }
     }
     if (flash) {
       var f = el('div', 'encore-request-flash', flash);
@@ -346,13 +360,11 @@
     api('POST', requestsUrl(choice.base), c.body, null).then(function (req) {
       c.request = req;
     }).catch(function (e) {
-      var err = e && e.data && e.data.error;
-      var code = err && (err.code || err);
       var msg = 'Could not request this';
       if (e && e.status === 429) msg = 'Daily request limit reached';
       else if (e && e.status === 403) { msg = 'Requests are not enabled for your account'; if (state.me) state.me.canRequest = false; }
       else if (e && e.status === 401) msg = 'Sign in to Jellyfin again';
-      else if (e && e.status === 409) msg = code === 'not_released' ? 'Not released yet' : 'Already requested';
+      else if (e && e.status === 409) msg = 'Already requested';
       else if (e && e.status === 503) msg = 'Requests unavailable right now';
       state.flash[c.key] = msg;
     }).then(function () {

@@ -94,7 +94,7 @@ body {
 .bar-progress { width: 100%; height: 6px; margin-top: 4px; }
 
 .chip { font-size: 0.78rem; padding: 3px 10px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
-.chip-queued, .chip-searching, .chip-downloading, .chip-importing { color: var(--info); }
+.chip-queued, .chip-upcoming, .chip-searching, .chip-downloading, .chip-importing { color: var(--info); }
 .chip-ready { color: var(--ok); }
 .chip-failed { color: var(--bad); }
 .chip-cancelled, .chip-unknown { color: var(--muted); }

@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Globalization;
 using Encore.Lidarr;
 using Encore.Requests.Search;
 using Encore.Store;
@@ -8,7 +9,8 @@ namespace Encore.Requests.Albums;
 /// <summary>
 /// One album from Lidarr's catalog (design 5 item 3). <see cref="Owned"/> rows (complete in Lidarr, or a matching album in
 /// the person's Jellyfin library) are not requestable; <see cref="ItemId"/> is set when the Jellyfin album is known.
-/// <see cref="Released"/> false rows show "Not released yet" and no Request button.
+/// <see cref="Released"/> false rows (release date in the future or not known yet) are still requestable: the page shows an
+/// Upcoming badge with <see cref="ReleaseDate"/> (YYYY-MM-DD, null when unknown) next to the Request button.
 /// </summary>
 public sealed record AlbumRow(
     string ForeignAlbumId,
@@ -21,6 +23,7 @@ public sealed record AlbumRow(
     int? TrackCount,
     string? CoverUrl,
     bool Released,
+    string? ReleaseDate,
     bool Owned,
     string? ItemId,
     bool Requestable,
@@ -131,17 +134,19 @@ public sealed class AlbumSearch(ILidarrClient lidarr, ILogger<AlbumSearch> logge
                 TrackCount(album),
                 CoverOf(album),
                 released,
+                album.ReleaseDate?.UtcDateTime.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
                 owned,
                 libraryHit?.ItemId,
-                !owned && released,
+                !owned,
                 request));
         }
 
         return rows;
     }
 
-    /// <summary>Released when the date is known and not in the future (Lidarr never lists an album without one as wanted).</summary>
-    public static bool IsReleased(LidarrAlbum album, DateTimeOffset now) => album.ReleaseDate is { } date && date <= now;
+    /// <summary>Released when the date is known and is today or earlier (UTC days). Lidarr never lists an album without one as wanted.</summary>
+    public static bool IsReleased(LidarrAlbum album, DateTimeOffset now) =>
+        album.ReleaseDate is { } date && date.UtcDateTime.Date <= now.UtcDateTime.Date;
 
     /// <summary>Complete in Lidarr: tracks expected and all of them have a file (design 7.1; trackCount 0 is never complete).</summary>
     public static bool IsComplete(LidarrAlbumStatistics? s) => s is { TrackCount: > 0 } && s.TrackFileCount >= s.TrackCount;

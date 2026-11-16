@@ -20,7 +20,8 @@ public sealed record HealthRequests(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] HealthRequestsLidarr? Lidarr = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] HealthRequestsNotify? Notify = null);
 
-public sealed record HealthRequestsActive(int Queued, int Searching, int Downloading, int Importing);
+/// <summary>Active requests by state; <see cref="Upcoming"/> counts albums waiting for their release date.</summary>
+public sealed record HealthRequestsActive(int Queued, int Searching, int Downloading, int Importing, int Upcoming = 0);
 
 public sealed record HealthRequestsAuth(int BlockedIps, int LockedNames, int FailedLoginsLastHour);
 
@@ -60,7 +61,7 @@ public static class HealthRequestsEvaluator
             true,
             Songs(input),
             Albums(r),
-            new HealthRequestsActive(Count("queued"), Count("searching"), Count("downloading"), Count("importing")),
+            new HealthRequestsActive(Count("queued"), Count("searching"), Count("downloading"), Count("importing"), Count("upcoming")),
             new HealthRequestsAuth(r.Auth.BlockedIps, r.Auth.LockedNames, r.Auth.FailedLoginsLastHour),
             new HealthRequestsToday(r.Today.Created, r.Today.Ready, r.Today.Failed),
             lidarr,

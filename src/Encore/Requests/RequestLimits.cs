@@ -56,7 +56,10 @@ public static class RequestLimits
     public const int LidarrLookupCacheMax = 200;
     public static readonly TimeSpan AlbumPoll = TimeSpan.FromMinutes(2);
 
-    /// <summary>Still searching with no file after this long: failed <c>not_found</c>, album unmonitored.</summary>
+    /// <summary>An upcoming album (not released yet) re-reads its release date from Lidarr this often.</summary>
+    public static readonly TimeSpan AlbumUpcomingPoll = TimeSpan.FromHours(6);
+
+    /// <summary>Still searching with no file this long after searching began (the release day for an upcoming album): failed <c>not_found</c>, album unmonitored.</summary>
     public static readonly TimeSpan AlbumNoFileTimeout = TimeSpan.FromDays(7);
 
     /// <summary>Partly downloaded and unchanged this long: failed <c>incomplete</c>, album left as it is.</summary>
