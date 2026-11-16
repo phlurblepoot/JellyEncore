@@ -134,6 +134,8 @@ Open `<Encore address>/request` (for example `http://192.168.86.50:5095/request`
 
 Statuses: `queued`, `upcoming` (an album waiting for its release date), `searching`, `downloading`, `importing`, `ready`, `failed` (with the reason) and `cancelled`. A failed request has a Retry button.
 
+An album that is `searching` first reads "Waiting for Soularr to find it on Soulseek". After 30 minutes it reads "Not found on Soulseek yet; Soularr tries again within a day", because Soularr retries an album it could not find only after its `search_retry_wait_hours` (24 hours). It still fails as not found after 7 days of searching. If Lidarr turns a requested album (or its artist) off again while Encore waits for it, which can happen when two albums of a new artist are requested within moments of each other, Encore switches it back on and logs a warning; after 3 times it marks the request failed ("Lidarr did not accept the request") and leaves Lidarr as it is.
+
 ### Installing the search script in Jellyfin Web
 
 The script adds a "Not in library? Request" section to the Jellyfin search page. The section has the same two tabs, Songs and Albums, with counts. It sits after Jellyfin's own results and, when the Jellyfin Enhanced plugin shows its "Discover on Seerr" section, just before that one. The script only puts its section back when Jellyfin removed it (at most 3 times a second, then not again until the next search), so it never fights another script over the page order. It is optional: the request page works on its own.

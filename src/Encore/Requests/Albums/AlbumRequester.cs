@@ -50,14 +50,23 @@ public static class AlbumReasons
 /// album, never monitorNewItems, profiles or paths. One async lock serialises every state change; Lidarr being down keeps
 /// the state and the next poll tries again. An album whose release date is in the future or not known yet is sent the same
 /// way and waits as <c>upcoming</c> (release date re-read every 6 h); it moves to <c>searching</c> on its release day, and only
-/// then does the 7-day <c>not_found</c> timer start.
+/// then does the 7-day <c>not_found</c> timer start. While waiting, an album (or artist) Lidarr turned off again is switched
+/// back on, at most 3 times per request (T109), and the searching text changes after 30 min.
 /// </summary>
 public sealed class AlbumRequester
 {
     public static class Details
     {
         public const string Sending = "Sending to Lidarr";
-        public const string Searching = "Waiting for Soulseek (Soularr checks every few minutes)";
+        /// <summary>The first 30 min of searching (Soularr's first try).</summary>
+        public const string Searching = "Waiting for Soularr to find it on Soulseek";
+
+        /// <summary>After 30 min of searching: Soularr retries a failed album only after search_retry_wait_hours (24 h).</summary>
+        public const string NotFoundYet = "Not found on Soulseek yet; Soularr tries again within a day";
+
+        /// <summary>The searching detail after <paramref name="searchingFor"/> in searching (T109).</summary>
+        public static string SearchingAfter(TimeSpan searchingFor) =>
+            searchingFor >= RequestLimits.AlbumFirstSearch ? NotFoundYet : Searching;
         public const string Importing = "In Lidarr, waiting for Jellyfin";
         public const string LidarrDown = "Waiting: Lidarr is not reachable";
         public const string LidarrKey = "Waiting: Lidarr rejected Encore's key";
@@ -98,6 +107,12 @@ public sealed class AlbumRequester
 
     // Failed polls in a row per request (the 9390 count); cleared by a poll whose Lidarr calls all answered.
     private readonly Dictionary<string, int> _pollFailures = new(StringComparer.Ordinal);
+
+    // Re-monitors used per request (T109; at most RequestLimits.AlbumRemonitors in this process).
+    private readonly Dictionary<string, int> _remonitors = new(StringComparer.Ordinal);
+
+    // When each request last read its artist's monitored flag (at most hourly, T109).
+    private readonly Dictionary<string, DateTimeOffset> _artistChecked = new(StringComparer.Ordinal);
 
     public AlbumRequester(
         RequestStore store,
@@ -288,6 +303,8 @@ public sealed class AlbumRequester
             _store.Update(row.Id, RequestState.Queued, now, new RequestUpdate(
                 Detail: Details.Sending, Attempts: 0, ClearNextTry: true, ClearFailReason: true, Retries: row.Retries + 1));
             _log.StateChanged(row.Id, row.State, RequestState.Queued, "retry");
+            _remonitors.Remove(row.Id);
+            _artistChecked.Remove(row.Id);
             row = _store.Get(row.Id)!;
             if (ActiveSibling(row) is { } sibling)
             {
@@ -344,7 +361,7 @@ public sealed class AlbumRequester
                     continue;
                 }
 
-                _due[row.Id] = now + (row.State == RequestState.Upcoming ? RequestLimits.AlbumUpcomingPoll : RequestLimits.AlbumPoll);
+                _due[row.Id] = now + PollEvery(row, row.State == RequestState.Upcoming, now);
                 if (row.State == RequestState.Queued || row.LidarrAlbumId is null)
                 {
                     if (ActiveSibling(row) is { } sibling)
@@ -389,6 +406,16 @@ public sealed class AlbumRequester
             foreach (var gone in _pollFailures.Keys.Where(k => !ids.Contains(k)).ToList())
             {
                 _pollFailures.Remove(gone);
+            }
+
+            foreach (var gone in _remonitors.Keys.Where(k => !ids.Contains(k)).ToList())
+            {
+                _remonitors.Remove(gone);
+            }
+
+            foreach (var gone in _artistChecked.Keys.Where(k => !ids.Contains(k)).ToList())
+            {
+                _artistChecked.Remove(gone);
             }
         }
         catch (StoreException ex)
@@ -484,7 +511,8 @@ public sealed class AlbumRequester
                 _log.StateChanged(row.Id, row.State, state, detail);
             }
 
-            _due[row.Id] = now + (upcoming ? RequestLimits.AlbumUpcomingPoll : RequestLimits.AlbumPoll);
+            _artistChecked[row.Id] = now;
+            _due[row.Id] = now + PollEvery(row, upcoming, now);
         }
         catch (LidarrValidationException ex)
         {
@@ -591,6 +619,9 @@ public sealed class AlbumRequester
 
         /// <summary>Why the track-file call failed in this pass (each request holding the album logs it).</summary>
         public LidarrException? TrackFilesError { get; set; }
+
+        /// <summary>The request that switched this album (or its artist) back on in this pass; others holding it do not again.</summary>
+        public string? KeptBy { get; set; }
     }
 
     /// <summary>
@@ -628,6 +659,11 @@ public sealed class AlbumRequester
         }
 
         var now = _time.GetUtcNow();
+        if (!await KeepMonitoredAsync(row, albumId, album, snapshot, notify, now, ct).ConfigureAwait(false))
+        {
+            return;
+        }
+
         if (row.State == RequestState.Upcoming)
         {
             if (IsUpcoming(album, now))
@@ -648,7 +684,7 @@ public sealed class AlbumRequester
             _store.Update(row.Id, RequestState.Searching, now, new RequestUpdate(Detail: Details.Searching, Year: album.ReleaseDate?.Year));
             _log.StateChanged(row.Id, RequestState.Upcoming, RequestState.Searching, Details.Searching);
             row = _store.Get(row.Id) ?? row;
-            _due[row.Id] = now + RequestLimits.AlbumPoll;
+            _due[row.Id] = now + PollEvery(row, false, now);
         }
 
         var statsFiles = album.Statistics?.TrackFileCount ?? 0;
@@ -677,8 +713,9 @@ public sealed class AlbumRequester
 
         var trackFiles = snapshot.TrackFiles ?? 0;
         var (files, expected, total) = Progress(album, statsFiles, trackFiles);
+        var searchingFor = row.State == RequestState.Searching ? now - row.UpdatedUtc : TimeSpan.Zero;
         var (state, detail) = files == 0
-            ? (RequestState.Searching, Details.Searching)
+            ? (RequestState.Searching, Details.SearchingAfter(searchingFor))
             : files < expected
                 ? (RequestState.Downloading, Details.Downloading(files, total))
                 : (RequestState.Importing, Details.Importing);
@@ -704,7 +741,9 @@ public sealed class AlbumRequester
         var tracksChanged = files > 0 && (row.TracksDone != files || row.TracksTotal != total);
         if (row.State != state || row.Detail != detail || tracksChanged)
         {
-            _store.Update(row.Id, state, now, new RequestUpdate(
+            // Only the waiting text changes while searching: keep updated_utc, which is when searching began (the 7-day not_found timer).
+            var stamp = row.State == RequestState.Searching && state == RequestState.Searching ? row.UpdatedUtc : now;
+            _store.Update(row.Id, state, stamp, new RequestUpdate(
                 Detail: detail, TracksDone: files > 0 ? files : null, TracksTotal: files > 0 ? total : null));
             if (row.State != state)
             {
@@ -762,6 +801,95 @@ public sealed class AlbumRequester
 
         var total = s is { TotalTrackCount: > 0 } ? s.TotalTrackCount : Math.Max(expected, files);
         return (files, expected, Math.Max(total, files));
+    }
+
+    /// <summary>
+    /// Keeps the album and its artist monitored while the request waits (T109). Lidarr's background refresh of a newly added
+    /// artist (RefreshArtistService) inserts the artist's other albums unmonitored (monitorNewItems none) and then saves every
+    /// album it loaded, so an album that a second request monitored meanwhile is written back unmonitored, and Soularr never
+    /// sees it. An album seen off is switched on again (PUT album/monitor), and the artist too when it is off; the artist flag
+    /// is read at most once an hour, or whenever the album is re-monitored. At most <see cref="RequestLimits.AlbumRemonitors"/>
+    /// times per request; the next time the request fails <c>lidarr_rejected</c> and Lidarr is left as it is. False when the
+    /// poll must stop here (failed, or a Lidarr call failed: 9390, state kept).
+    /// </summary>
+    private async Task<bool> KeepMonitoredAsync(RequestRow row, long albumId, LidarrAlbum album, AlbumSnapshot snapshot, List<RequestRow> notify, DateTimeOffset now, CancellationToken ct)
+    {
+        if (row.State is not (RequestState.Searching or RequestState.Downloading or RequestState.Upcoming)
+            || (snapshot.KeptBy is { } keeper && keeper != row.Id))
+        {
+            return true;
+        }
+
+        var albumOff = !album.Monitored;
+        var artistDue = !_artistChecked.TryGetValue(row.Id, out var checkedAt) || now - checkedAt >= RequestLimits.AlbumArtistCheck;
+        var artistId = album.ArtistId > 0 ? album.ArtistId : (int)(row.LidarrArtistId ?? 0);
+        try
+        {
+            var artistOff = false;
+            if (albumOff || artistDue)
+            {
+                _artistChecked[row.Id] = now;
+                artistOff = album.Artist is { } embedded
+                    ? !embedded.Monitored
+                    : artistId > 0 && (await _lidarr.GetArtistAsync(artistId, ct).ConfigureAwait(false))?.Monitored == false;
+            }
+
+            if (!albumOff && !artistOff)
+            {
+                return true;
+            }
+
+            var used = _remonitors.TryGetValue(row.Id, out var n) ? n : 0;
+            if (used >= RequestLimits.AlbumRemonitors)
+            {
+                _log.AlbumRemonitorLimit(row.Id, albumId, used);
+                await FailLockedAsync(row, AlbumReasons.LidarrRejected, notify, unmonitor: false).ConfigureAwait(false);
+                return false;
+            }
+
+            _remonitors[row.Id] = used + 1;
+            if (albumOff)
+            {
+                await _lidarr.SetAlbumsMonitoredAsync([(int)albumId], true, ct).ConfigureAwait(false);
+            }
+
+            if (artistOff && artistId > 0)
+            {
+                await _lidarr.SetArtistMonitoredAsync(artistId, true, ct).ConfigureAwait(false);
+            }
+
+            snapshot.KeptBy = row.Id;
+            _log.AlbumRemonitored(row.Id, albumId, artistId, albumOff, artistOff, used + 1, RequestLimits.AlbumRemonitors);
+            return true;
+        }
+        catch (LidarrException ex) when (!ct.IsCancellationRequested)
+        {
+            PollFailed(row, albumId, ex);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// The next poll interval: 6 h while upcoming; 30 s while this request and another active album request for the same
+    /// artist were both created in the last 15 min (Lidarr may still be refreshing that new artist, T109); else 2 min.
+    /// </summary>
+    private TimeSpan PollEvery(RequestRow row, bool upcoming, DateTimeOffset now)
+    {
+        if (upcoming)
+        {
+            return RequestLimits.AlbumUpcomingPoll;
+        }
+
+        if (string.IsNullOrEmpty(row.ForeignArtistId) || now - row.CreatedUtc >= RequestLimits.AlbumRaceWindow)
+        {
+            return RequestLimits.AlbumPoll;
+        }
+
+        var race = _store.Active().Any(o => o.Id != row.Id && o.Kind == "album"
+            && now - o.CreatedUtc < RequestLimits.AlbumRaceWindow
+            && string.Equals(o.ForeignArtistId, row.ForeignArtistId, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(o.ForeignAlbumId, row.ForeignAlbumId, StringComparison.OrdinalIgnoreCase));
+        return race ? RequestLimits.AlbumRacePoll : RequestLimits.AlbumPoll;
     }
 
     /// <summary>A failed Lidarr call in a poll: 9390 with ids and counts only, plus 9320 when the key was rejected.</summary>
@@ -890,7 +1018,7 @@ public sealed class AlbumRequester
             _log.StateChanged(row.Id, row.State, sibling.State, sibling.Detail);
         }
 
-        _due[row.Id] = now + RequestLimits.AlbumPoll;
+        _due[row.Id] = now + PollEvery(row, false, now);
         return _store.Get(row.Id) ?? row;
     }
 

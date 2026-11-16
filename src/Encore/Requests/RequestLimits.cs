@@ -73,4 +73,28 @@ public static class RequestLimits
 
     /// <summary>In Lidarr but not in Jellyfin this long: counted for the /health warning (the request stays importing).</summary>
     public static readonly TimeSpan AlbumJellyfinWait = TimeSpan.FromHours(2);
+
+    /// <summary>
+    /// Searching with no file this long: the detail changes from "Waiting for Soularr to find it on Soulseek" to "Not found on
+    /// Soulseek yet; Soularr tries again within a day" (Soularr retries a failed album after search_retry_wait_hours, 24 h) (T109).
+    /// </summary>
+    public static readonly TimeSpan AlbumFirstSearch = TimeSpan.FromMinutes(30);
+
+    /// <summary>
+    /// Times one album request may switch its Lidarr album (or artist) back on after Lidarr turned it off; the next time it is
+    /// failed <c>lidarr_rejected</c> and left as it is (T109).
+    /// </summary>
+    public const int AlbumRemonitors = 3;
+
+    /// <summary>A poll reads the artist's monitored flag at most this often per request (always when it re-monitors the album) (T109).</summary>
+    public static readonly TimeSpan AlbumArtistCheck = TimeSpan.FromHours(1);
+
+    /// <summary>
+    /// Two active album requests for the same artist created within this window: both are polled every <see cref="AlbumRacePoll"/>
+    /// until the window ends, because a new artist's background refresh in Lidarr can turn the second album off again (T109).
+    /// </summary>
+    public static readonly TimeSpan AlbumRaceWindow = TimeSpan.FromMinutes(15);
+
+    /// <summary>The poll interval inside <see cref="AlbumRaceWindow"/>.</summary>
+    public static readonly TimeSpan AlbumRacePoll = TimeSpan.FromSeconds(30);
 }

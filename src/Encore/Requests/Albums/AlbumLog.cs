@@ -1,6 +1,6 @@
 namespace Encore.Requests.Albums;
 
-/// <summary>Album request events 9330-9390 (v0.3 design 13). Never pass the Lidarr key, a URL or a response body here.</summary>
+/// <summary>Album request events 9330-9395 (v0.3 design 13). Never pass the Lidarr key, a URL or a response body here.</summary>
 public static partial class AlbumLog
 {
     [LoggerMessage(EventId = 9330, EventName = "lidarr.artist_added", Level = LogLevel.Information,
@@ -23,7 +23,15 @@ public static partial class AlbumLog
         Message = "Request {RequestId}: Lidarr album {LidarrAlbumId} has files now, {Files} of {Of} tracks (statistics {StatisticsFiles}, track files {TrackFiles})")]
     public static partial void AlbumFilesSeen(this ILogger logger, string requestId, long lidarrAlbumId, int files, int of, int statisticsFiles, int trackFiles);
 
-    [LoggerMessage(EventId = 9390, EventName = "lidarr.album_poll_failed", Level = LogLevel.Warning,
+    [LoggerMessage(EventId = 9385, EventName = "lidarr.album_remonitored", Level = LogLevel.Warning,
+        Message = "Request {RequestId}: Lidarr turned album {LidarrAlbumId} (artist {LidarrArtistId}) off; switched back on (album {AlbumOff}, artist {ArtistOff}), {Used} of {Limit}")]
+    public static partial void AlbumRemonitored(this ILogger logger, string requestId, long lidarrAlbumId, long lidarrArtistId, bool albumOff, bool artistOff, int used, int limit);
+
+    [LoggerMessage(EventId = 9395, EventName = "lidarr.album_remonitor_limit", Level = LogLevel.Warning,
+        Message = "Request {RequestId}: Lidarr turned album {LidarrAlbumId} off again after {Used} re-monitors; failing the request and leaving Lidarr as it is")]
+    public static partial void AlbumRemonitorLimit(this ILogger logger, string requestId, long lidarrAlbumId, int used);
+
+    [LoggerMessage(EventId = 9390,EventName = "lidarr.album_poll_failed", Level = LogLevel.Warning,
         Message = "Request {RequestId}: poll of Lidarr album {LidarrAlbumId} failed at {Operation} (status {Status}), {FailuresInARow} in a row; the state is kept")]
     public static partial void AlbumPollFailed(this ILogger logger, string requestId, long lidarrAlbumId, string operation, int status, int failuresInARow);
 
