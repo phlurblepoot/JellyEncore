@@ -213,6 +213,24 @@ public sealed class RetentionStore : IDisposable
         }
     }
 
+    /// <summary>
+    /// Whether Encore sent the item to the session at or after <paramref name="since"/>: any <c>added_items</c> row (written only for
+    /// sent and sent-without-reply outcomes, so never for a failed send). Read by <c>PlayTally</c> to tell radio plays apart (v04 §4.4).
+    /// </summary>
+    public bool WasSentToSession(string sessionId, Guid itemId, DateTimeOffset since)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        lock (_gate)
+        {
+            using var cmd = _db.CreateCommand();
+            cmd.CommandText = "SELECT 1 FROM added_items WHERE session_id = $session AND item_id = $item AND added_utc >= $since LIMIT 1";
+            cmd.Parameters.AddWithValue("$session", sessionId);
+            cmd.Parameters.AddWithValue("$item", itemId.ToString("N"));
+            cmd.Parameters.AddWithValue("$since", EncoreStore.FormatUtc(since));
+            return cmd.ExecuteScalar() is not null;
+        }
+    }
+
     // ---- promotions ----
 
     /// <summary>Starts a promotion at step <c>snapshot</c>. Returns false when the row already has one.</summary>

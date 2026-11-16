@@ -6,6 +6,7 @@ using Encore.Fetch;
 using Encore.Jellyfin;
 using Encore.Logging;
 using Encore.Picks;
+using Encore.Retention;
 using Encore.Store;
 using Encore.Trigger;
 using Encore.Watch;
@@ -35,6 +36,7 @@ public sealed class Orchestrator : BackgroundService
     private readonly IFetchRequests _fetch;
     private readonly ICandidateSource? _candidates;
     private readonly IOwnedIndex? _owned;
+    private readonly PlayTally? _playTally;
     private readonly IntervalGate _indexNotReady = new(TimeSpan.FromMinutes(1));
     private readonly Dictionary<string, SessionTrack> _sessions = new(StringComparer.Ordinal);
     private IReadOnlySet<Guid> _allowed = new HashSet<Guid>();
@@ -54,7 +56,8 @@ public sealed class Orchestrator : BackgroundService
         OrchestratorTiming? timing = null,
         IFetchRequests? fetch = null,
         ICandidateSource? candidates = null,
-        IOwnedIndex? owned = null)
+        IOwnedIndex? owned = null,
+        PlayTally? playTally = null)
     {
         _jellyfin = jellyfin ?? throw new ArgumentNullException(nameof(jellyfin));
         _picker = picker ?? throw new ArgumentNullException(nameof(picker));
@@ -67,6 +70,7 @@ public sealed class Orchestrator : BackgroundService
         _fetch = fetch ?? NullFetchRequests.Instance;
         _candidates = candidates;
         _owned = owned;
+        _playTally = playTally;
 
         var now = _time.GetUtcNow();
         _nextAllowListAt = now;
@@ -139,6 +143,21 @@ public sealed class Orchestrator : BackgroundService
     {
         ArgumentNullException.ThrowIfNull(snapshot);
         Beat();
+
+        // v0.4 retention: the play tally reads every session, before the allow-list check (v04 §4.4). It only updates
+        // memory and queues writes, so it never blocks this loop; a fault there must not stop the radio.
+        if (_playTally is not null)
+        {
+            try
+            {
+                _playTally.Observe(snapshot);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                OperationsLog.WorkerCrashed(_log, "play_tally", ex.Message);
+            }
+        }
+
         foreach (var dto in snapshot.Sessions)
         {
             if (string.IsNullOrEmpty(dto.Id))
