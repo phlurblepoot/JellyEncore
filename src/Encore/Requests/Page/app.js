@@ -829,7 +829,8 @@
     if (row.album && kind === 'song') {
       sub.push(clean(row.album));
     }
-    if (row.year) {
+    // Deezer song rows carry no year (v03 section 5); only album rows may.
+    if (kind === 'album' && row.year) {
       sub.push(String(row.year));
     }
     if (kind === 'album' && row.trackCount) {
