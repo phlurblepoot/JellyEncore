@@ -266,7 +266,34 @@
     return date ? 'Upcoming: ' + date : 'Upcoming: date not known yet';
   }
 
+  var TAB_NAMES = ['songs', 'albums'];
+
+  /** Result counts per tab: songs = library songs + Deezer song rows; albums = library albums + Lidarr album rows. */
+  function tabCounts(data) {
+    var d = data && typeof data === 'object' ? data : {};
+    var lib = d.library && typeof d.library === 'object' ? d.library : {};
+    var n = function (v) { return Array.isArray(v) ? v.length : 0; };
+    return { songs: n(lib.songs) + n(d.songs), albums: n(lib.albums) + n(d.albums) };
+  }
+
+  /** The tab to show: the remembered one when valid and not empty, else Songs, or Albums when Songs is empty and Albums is not. */
+  function chooseTab(counts, saved) {
+    var c = counts || { songs: 0, albums: 0 };
+    if ((saved === 'songs' || saved === 'albums') && c[saved] > 0) {
+      return saved;
+    }
+    return c.songs === 0 && c.albums > 0 ? 'albums' : 'songs';
+  }
+
+  /** 'Songs (3)' or 'Albums (0)'. */
+  function tabLabel(name, count) {
+    return (name === 'albums' ? 'Albums' : 'Songs') + ' (' + (count > 0 ? Math.floor(count) : 0) + ')';
+  }
+
   var helpers = {
+    tabCounts: tabCounts,
+    chooseTab: chooseTab,
+    tabLabel: tabLabel,
     rowAction: rowAction,
     upcomingBadge: upcomingBadge,
     isActive: isActive,
@@ -301,6 +328,7 @@
 
   var TOKEN_KEY = 'encore.token';
   var DEVICE_KEY = 'encore.deviceId';
+  var TAB_KEY = 'encore.resultTab';
   var base = basePathOf(root.location.pathname);
 
   var S = {
@@ -311,6 +339,7 @@
     mine: [],
     all: [],
     results: null,
+    tab: null,
     query: '',
     searching: false,
     searchError: '',
@@ -786,37 +815,59 @@
     var libAlbums = Array.isArray(lib.albums) ? lib.albums : [];
     var songs = Array.isArray(data.songs) ? data.songs : [];
     var albums = Array.isArray(data.albums) ? data.albums : [];
-    var shown = 0;
+    var counts = tabCounts(data);
 
-    if (libSongs.length + libAlbums.length > 0) {
-      var libBox = section('In your library');
-      libAlbums.forEach(function (row) {
-        add(libBox, libraryRow(row, 'Album'));
-      });
-      libSongs.forEach(function (row) {
-        add(libBox, libraryRow(row, 'Song'));
-      });
-      add(box, libBox);
-      shown++;
-    }
-    if (songs.length > 0) {
-      var songBox = section('Songs');
-      songs.forEach(function (row) {
-        add(songBox, resultRow(row, 'song'));
-      });
-      add(box, songBox);
-      shown++;
-    }
-    if (albums.length > 0) {
-      var albumBox = section('Albums');
-      albums.forEach(function (row) {
-        add(albumBox, resultRow(row, 'album'));
-      });
-      add(box, albumBox);
-      shown++;
-    }
-    if (shown === 0) {
+    if (counts.songs + counts.albums === 0) {
       add(box, el('p', 'muted', 'Nothing found.'));
+    } else {
+      var active = chooseTab(counts, S.tab || store(TAB_KEY));
+      var strip = el('nav', 'tabs');
+      strip.setAttribute('role', 'tablist');
+      strip.setAttribute('aria-label', 'Result kind');
+      var buttons = [];
+      TAB_NAMES.forEach(function (name) {
+        var on = name === active;
+        var tab = button(tabLabel(name, counts[name]), 'tab' + (on ? ' tab-on' : ''), function () {
+          S.tab = name;
+          store(TAB_KEY, name);
+          renderResults();
+          var again = ui.results && ui.results.querySelector('[data-tab="' + name + '"]');
+          if (again) {
+            again.focus();
+          }
+        });
+        tab.setAttribute('role', 'tab');
+        tab.setAttribute('aria-selected', on ? 'true' : 'false');
+        tab.setAttribute('data-tab', name);
+        tab.tabIndex = on ? 0 : -1;
+        tab.addEventListener('keydown', function (event) {
+          var step = event.key === 'ArrowRight' ? 1 : event.key === 'ArrowLeft' ? -1 : 0;
+          if (step !== 0) {
+            event.preventDefault();
+            buttons[(TAB_NAMES.indexOf(name) + step + buttons.length) % buttons.length].click();
+          }
+        });
+        buttons.push(tab);
+        add(strip, tab);
+      });
+      add(box, strip);
+
+      var libRows = active === 'songs' ? libSongs : libAlbums;
+      var rows = active === 'songs' ? songs : albums;
+      if (libRows.length > 0) {
+        var libBox = section('In your library');
+        libRows.forEach(function (row) {
+          add(libBox, libraryRow(row, active === 'songs' ? 'Song' : 'Album'));
+        });
+        add(box, libBox);
+      }
+      if (rows.length > 0) {
+        var kindBox = section(active === 'songs' ? 'Songs' : 'Albums');
+        rows.forEach(function (row) {
+          add(kindBox, resultRow(row, active === 'songs' ? 'song' : 'album'));
+        });
+        add(box, kindBox);
+      }
     }
     if (Array.isArray(data.warnings) && data.warnings.length > 0) {
       add(box, el('p', 'muted warn', 'Some sources did not answer: ' + data.warnings.map(clean).join(', ')));

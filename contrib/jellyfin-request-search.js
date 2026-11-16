@@ -129,6 +129,26 @@
     return detail;
   }
 
+  // Two tabs inside the one section. Counts are of the cards (rows not in the library).
+  var TAB_NAMES = ['songs', 'albums'];
+  function tabCounts(cards) {
+    var c = { songs: 0, albums: 0 };
+    (Array.isArray(cards) ? cards : []).forEach(function (x) {
+      if (x && x.kind === 'song') c.songs++;
+      else if (x && x.kind === 'album') c.albums++;
+    });
+    return c;
+  }
+  // The remembered tab when valid and not empty, else Songs, or Albums when Songs is empty and Albums is not.
+  function chooseTab(counts, saved) {
+    var c = counts || { songs: 0, albums: 0 };
+    if ((saved === 'songs' || saved === 'albums') && c[saved] > 0) return saved;
+    return c.songs === 0 && c.albums > 0 ? 'albums' : 'songs';
+  }
+  function tabLabel(name, count) {
+    return (name === 'albums' ? 'Albums' : 'Songs') + ' (' + (count > 0 ? Math.floor(count) : 0) + ')';
+  }
+
   function cardLabel(c) {
     return (c.artist ? c.artist + ' - ' : '') + c.title;
   }
@@ -137,7 +157,8 @@
     chooseMode: chooseMode, normalizeQuery: normalizeQuery, queryOk: queryOk, searchUrl: searchUrl,
     requestsUrl: requestsUrl, activeRequestsUrl: activeRequestsUrl, fallbackUrl: fallbackUrl,
     tokenAllowed: tokenAllowed, stateLabel: stateLabel, isActive: isActive, buildCards: buildCards, cardLabel: cardLabel,
-    upcomingLabel: upcomingLabel, detailText: detailText
+    upcomingLabel: upcomingLabel, detailText: detailText,
+    tabCounts: tabCounts, chooseTab: chooseTab, tabLabel: tabLabel
   };
   if (typeof module !== 'undefined' && module.exports) { module.exports = helpers; }
   if (typeof window === 'undefined' || typeof document === 'undefined') return;
@@ -150,7 +171,8 @@
   if (choice.mode === 'none') return;
 
   var section = null;          // the one .encore-request-section element
-  var state = { query: '', cards: [], me: null, down: false, busy: {}, flash: {} };
+  var TAB_KEY = 'encore.requestSearchTab';
+  var state = { query: '', tab: null, cards: [], me: null, down: false, busy: {}, flash: {} };
   var searchCtl = null;        // AbortController of the running search
   var debounceTimer = null;
   var refreshTimer = null;
@@ -288,6 +310,40 @@
     return box;
   }
 
+  function savedTab() {
+    try { return window.localStorage.getItem(TAB_KEY); } catch (e) { return null; }
+  }
+
+  function tabBar(counts, active, onPick) {
+    var bar = el('div', 'encore-request-tabs padded-left');
+    bar.setAttribute('role', 'tablist');
+    bar.setAttribute('aria-label', 'Result kind');
+    bar.style.cssText = 'display:flex;gap:.5em;margin:.4em 0 .8em;';
+    var buttons = [];
+    TAB_NAMES.forEach(function (name) {
+      var on = name === active;
+      var b = el('button', 'encore-request-tab', tabLabel(name, counts[name]));
+      b.type = 'button';
+      b.setAttribute('role', 'tab');
+      b.setAttribute('aria-selected', on ? 'true' : 'false');
+      b.setAttribute('data-tab', name);
+      b.tabIndex = on ? 0 : -1;
+      b.style.cssText = 'font:inherit;color:inherit;cursor:pointer;padding:.4em 1em;border-radius:1em;border:1px solid rgba(128,128,128,.5);background:' +
+        (on ? 'rgba(128,128,128,.35)' : 'transparent') + ';';
+      b.addEventListener('click', function () { onPick(name); });
+      b.addEventListener('keydown', function (ev) {
+        var step = ev.key === 'ArrowRight' ? 1 : ev.key === 'ArrowLeft' ? -1 : 0;
+        if (step) {
+          ev.preventDefault();
+          buttons[(TAB_NAMES.indexOf(name) + step + buttons.length) % buttons.length].click();
+        }
+      });
+      buttons.push(b);
+      bar.appendChild(b);
+    });
+    return bar;
+  }
+
   function render() {
     var sec = ensureSection();
     if (!sec) return;
@@ -318,9 +374,19 @@
     if (state.me && state.me.canRequest === false) {
       sec.appendChild(el('div', 'encore-request-notice padded-left', 'Requests are not enabled for your account'));
     }
+    var counts = tabCounts(state.cards);
+    var active = chooseTab(counts, state.tab || savedTab());
+    sec.appendChild(tabBar(counts, active, function (name) {
+      state.tab = name;
+      try { window.localStorage.setItem(TAB_KEY, name); } catch (e) { /* storage blocked */ }
+      render();
+      var again = section && section.querySelector('[data-tab="' + name + '"]');
+      if (again) again.focus();
+    }));
+    var kind = active === 'songs' ? 'song' : 'album';
     var row = el('div', 'encore-request-row padded-left');
     row.style.cssText = 'display:flex;overflow-x:auto;padding-bottom:1em;';
-    state.cards.forEach(function (c) { row.appendChild(card(c)); });
+    state.cards.forEach(function (c) { if (c.kind === kind) row.appendChild(card(c)); });
     sec.appendChild(row);
   }
 

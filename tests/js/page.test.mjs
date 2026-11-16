@@ -167,3 +167,18 @@ test('the retry time is shown in the browser time zone from nextTryUtc', () => {
   assert.equal(h.detailText({ detail: 'Searching', nextTryUtc: next }), 'Searching');
   assert.equal(h.detailText({ detail: 'Not found yet, trying again later' }), 'Not found yet, trying again later');
 });
+
+test('result tabs: counts, default and remembered tab, label', () => {
+  const data = { library: { songs: [{}, {}], albums: [{}] }, songs: [{}], albums: [{}, {}] };
+  assert.deepEqual(h.tabCounts(data), { songs: 3, albums: 3 });
+  assert.deepEqual(h.tabCounts({ library: { albums: [{}] }, albums: [{}] }), { songs: 0, albums: 2 });
+  assert.deepEqual(h.tabCounts(null), { songs: 0, albums: 0 });
+  assert.equal(h.chooseTab({ songs: 3, albums: 3 }, null), 'songs');
+  assert.equal(h.chooseTab({ songs: 0, albums: 2 }, null), 'albums');
+  assert.equal(h.chooseTab({ songs: 0, albums: 0 }, null), 'songs');
+  assert.equal(h.chooseTab({ songs: 3, albums: 3 }, 'albums'), 'albums');
+  assert.equal(h.chooseTab({ songs: 3, albums: 0 }, 'albums'), 'songs');
+  assert.equal(h.chooseTab({ songs: 3, albums: 3 }, 'bogus'), 'songs');
+  assert.equal(h.tabLabel('songs', 3), 'Songs (3)');
+  assert.equal(h.tabLabel('albums', 0), 'Albums (0)');
+});

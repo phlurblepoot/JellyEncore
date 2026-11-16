@@ -33,7 +33,7 @@ public sealed record AlbumRow(
 public sealed record AlbumLookup(IReadOnlyList<LidarrAlbum> Albums, IReadOnlyDictionary<int, LidarrAlbumStatistics?> Statistics);
 
 /// <summary>
-/// The albums part of the search: <c>GET /api/v1/album/lookup?term=</c> cached for 1 h per folded query, plus one batched
+/// The albums part of the search: <c>GET /api/v1/album/lookup?term=</c> cached for 1 h per folded query (empty answers are not cached), plus one batched
 /// <c>GET /api/v1/album?albumIds=</c> per search for the rows already in Lidarr (lookup rows carry no statistics). Reads only.
 /// </summary>
 public sealed class AlbumSearch(ILidarrClient lidarr, ILogger<AlbumSearch> logger, TimeProvider? time = null)
@@ -55,7 +55,8 @@ public sealed class AlbumSearch(ILidarrClient lidarr, ILogger<AlbumSearch> logge
         {
             var found = await lidarr.LookupAlbumsAsync(query.Trim(), ct).ConfigureAwait(false);
             albums = found.Where(a => !string.IsNullOrWhiteSpace(a.ForeignAlbumId)).Take(RequestLimits.SearchAlbumLimit).ToList();
-            if (_cache.Count >= RequestLimits.LidarrLookupCacheMax)
+            // An empty answer is not remembered: a retry of the same words asks Lidarr again (it may have just been slow or cold).
+            if (albums.Count > 0 && _cache.Count >= RequestLimits.LidarrLookupCacheMax)
             {
                 foreach (var old in _cache.Where(e => e.Value.Expires <= now).Select(e => e.Key).ToList())
                 {
@@ -68,7 +69,10 @@ public sealed class AlbumSearch(ILidarrClient lidarr, ILogger<AlbumSearch> logge
                 }
             }
 
-            _cache[key] = (now + RequestLimits.LidarrLookupCacheTtl, albums);
+            if (albums.Count > 0)
+            {
+                _cache[key] = (now + RequestLimits.LidarrLookupCacheTtl, albums);
+            }
         }
 
         var ids = albums.Where(a => a.Id > 0).Select(a => a.Id).Distinct().ToList();

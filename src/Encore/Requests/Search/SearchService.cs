@@ -183,6 +183,11 @@ public sealed class SearchService(
             albumRows = AlbumSearch.BuildRows(lookup, libraryAlbums, active, Key(userId), DateTimeOffset.UtcNow);
         }
 
+        if (lidarrTask.Result is { Albums.Count: 0 })
+        {
+            logger.SearchedNoAlbums(userId, librarySongs.Count, libraryAlbums.Count, songs.Count);
+        }
+
         if (!albumsWanted)
         {
             libraryAlbums.Clear();

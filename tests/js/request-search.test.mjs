@@ -163,3 +163,14 @@ test('the retry time is shown in the browser time zone from nextTryUtc', () => {
   assert.equal(h.detailText({ detail: 'Not found yet, trying again later', nextTryUtc: null }), 'Not found yet, trying again later');
   assert.equal(h.detailText(null), '');
 });
+
+test('result tabs: counts of cards, default and remembered tab, label', () => {
+  const cards = [{ kind: 'song' }, { kind: 'song' }, { kind: 'album' }];
+  assert.deepEqual(h.tabCounts(cards), { songs: 2, albums: 1 });
+  assert.deepEqual(h.tabCounts(null), { songs: 0, albums: 0 });
+  assert.equal(h.chooseTab({ songs: 2, albums: 1 }, null), 'songs');
+  assert.equal(h.chooseTab({ songs: 0, albums: 1 }, null), 'albums');
+  assert.equal(h.chooseTab({ songs: 2, albums: 1 }, 'albums'), 'albums');
+  assert.equal(h.chooseTab({ songs: 2, albums: 0 }, 'albums'), 'songs');
+  assert.equal(h.tabLabel('albums', 1), 'Albums (1)');
+});

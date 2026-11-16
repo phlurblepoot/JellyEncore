@@ -130,13 +130,13 @@ Fixed limits, not configurable: a sign-in token is re-checked with Jellyfin at m
 
 ### The request page
 
-Open `<Encore address>/request` (for example `http://192.168.86.50:5095/request`), sign in with the Jellyfin account and search. Results come in three sections: "In your library" (with an Open in Jellyfin link), Songs and Albums, each with a Request button or its current status. "My requests" refreshes by itself; admins also see "Everyone" and can cancel any request. `/request?q=text` opens with that search filled in.
+Open `<Encore address>/request` (for example `http://192.168.86.50:5095/request`), sign in with the Jellyfin account and search. Results come in two tabs, Songs and Albums, each with a count (Songs is shown first, or Albums when there are no songs; the page remembers your last tab). Each tab has an "In your library" part (with an Open in Jellyfin link) and the rows to request, each with a Request button or its current status. "My requests" refreshes by itself; admins also see "Everyone" and can cancel any request. `/request?q=text` opens with that search filled in.
 
 Statuses: `queued`, `upcoming` (an album waiting for its release date), `searching`, `downloading`, `importing`, `ready`, `failed` (with the reason) and `cancelled`. A failed request has a Retry button.
 
 ### Installing the search script in Jellyfin Web
 
-The script adds a "Not in library? Request" section to the Jellyfin search page. It is optional: the request page works on its own.
+The script adds a "Not in library? Request" section to the Jellyfin search page. The section has the same two tabs, Songs and Albums, with counts. It is optional: the request page works on its own.
 
 1. In the JavaScript Injector plugin, import `contrib/jellyfin-request-search.import.json` (or add a script and paste the whole of `contrib/jellyfin-request-search.js`). Save.
 2. Edit the two settings at the top of the script: `ENCORE_URL_HTTP` (Encore's address on your network, for example `http://192.168.86.50:5095`) and `ENCORE_URL_HTTPS` (Encore's public https address; leave it empty until Encore is published). The script uses the one that matches the page's protocol.
@@ -271,6 +271,7 @@ JSON lines on stdout. Set `LOG_LEVEL` to see more. The events an operator looks 
 | `auth.login_limited` | Warning | A sign-in block started: per IP, per name (hashed), overall, or bad tokens (9030). `auth.rejected` (Info) logs a refused token |
 | `lidarr.state`, `lidarr.request_failed`, `lidarr.auth_failed` | Info, Warning, Error | Lidarr became reachable or not, a call failed, or the key was refused (9300-9320) |
 | `lidarr.artist_other_wanted` | Warning | Switching an artist on also made N other albums wanted (9370) |
+| `request.search_no_albums` | Information | A search where Lidarr returned no albums (9111; counts only, no search text) |
 | `notify.sent`, `notify.failed` | Info, Warning | A "Ready" or "Could not get" message went to the requester, or could not be delivered (9400, 9410) |
 
 `trigger.skipped` reasons: `not_allowed`, `not_audio` (a video or episode), `no_remote_control`, `repeat_on`, `unknown_client`, `stale_queue`, `no_history`, `not_last` (two or more songs still to come), `duplicate`, `rate_limited`, `run_cap`, `already_queued` (songs sent at the previous song have not shown up yet; the delivery check handles them).

@@ -840,6 +840,23 @@ public sealed class AlbumRequestTests
     }
 
     [Fact]
+    public async Task AR41b_An_empty_lookup_is_not_cached_so_a_retry_asks_Lidarr_again()
+    {
+        using var rig = new AlbumRig();
+        var (search, _, _) = SearchOver(rig);
+
+        var first = await search.SearchAsync(SongRig.Kim.Id, "zzz nothing", SearchKinds.Album, CancellationToken.None);
+        Assert.Empty(first.Albums);
+        await search.SearchAsync(SongRig.Kim.Id, "zzz nothing", SearchKinds.Album, CancellationToken.None);
+        Assert.Equal(2, rig.Lidarr.Lookups);
+
+        // A non-empty answer is still cached.
+        await search.SearchAsync(SongRig.Kim.Id, "radiohead", SearchKinds.Album, CancellationToken.None);
+        await search.SearchAsync(SongRig.Kim.Id, "radiohead", SearchKinds.Album, CancellationToken.None);
+        Assert.Equal(3, rig.Lidarr.Lookups);
+    }
+
+    [Fact]
     public async Task AR42_A_failing_Lidarr_gives_a_warning_and_no_album_rows()
     {
         using var rig = new AlbumRig();
