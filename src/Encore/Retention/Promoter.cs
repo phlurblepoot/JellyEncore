@@ -177,8 +177,9 @@ public sealed class Promoter : IDisposable
         ArgumentNullException.ThrowIfNull(rowIds);
         ArgumentNullException.ThrowIfNull(signals);
         var results = new List<PromotionResult>();
-        if (max <= 0 || rowIds.Count == 0)
+        if (max <= 0 || rowIds.Count == 0 || _options.RetentionMode != RetentionMode.Live)
         {
+            // Invariant 2: only live moves files (the worker checks too; this keeps the promoter safe on its own, like the deleter).
             return results;
         }
 
@@ -235,6 +236,11 @@ public sealed class Promoter : IDisposable
     public async Task<PromotionResult> PromoteAsync(long rowId, IReadOnlyList<PlaylistMembership> memberships, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(memberships);
+        if (_options.RetentionMode != RetentionMode.Live)
+        {
+            return new PromotionResult(rowId, PromotionOutcome.NotEligible, null, "not_live");
+        }
+
         await _one.WaitAsync(ct).ConfigureAwait(false);
         try
         {

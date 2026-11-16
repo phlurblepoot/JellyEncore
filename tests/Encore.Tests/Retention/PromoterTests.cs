@@ -1106,6 +1106,23 @@ public sealed class PromoterTests : IDisposable
         Assert.Equal(0, _rig.Store.GetPromotion(song.Id)!.Attempts);
     }
 
+    [Fact]
+    public async Task PM26_the_promoter_moves_nothing_unless_the_mode_is_live()
+    {
+        var song = _rig.Ready();
+        var dry = new Promoter(_rig.Fetch, _rig.Store, _rig.Requests, _rig.Jellyfin, _rig.Jellyfin, _rig.Owned, new LidarrGuard(null, null),
+            _rig.Free, _rig.Shares, _rig.Shares, _rig.Options with { RetentionMode = RetentionMode.DryRun }, _rig.Time, _rig.Log);
+        using (dry)
+        {
+            Assert.Empty(await dry.RunPassAsync([song.Id], Signals(), 20));
+            Assert.Equal(PromotionOutcome.NotEligible, (await dry.PromoteAsync(song.Id, [])).Outcome);
+        }
+
+        Assert.True(File.Exists(song.Path));
+        Assert.Null(_rig.Store.GetPromotion(song.Id));
+        Assert.False(Directory.Exists(_rig.Incoming));
+    }
+
     // ---- target path rules (v04 §7.1) ----
 
     [Fact]
