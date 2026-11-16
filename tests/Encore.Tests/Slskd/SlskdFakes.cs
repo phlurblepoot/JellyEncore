@@ -17,6 +17,15 @@ internal sealed class SlskdHandler : HttpMessageHandler
     public SlskdHandler Reply(HttpStatusCode status, string? json = null) =>
         Add((_, _) => Task.FromResult(Make(status, json)));
 
+    /// <summary>A reply with one extra response header (for example X-Total-Count).</summary>
+    public SlskdHandler Reply(HttpStatusCode status, string json, string header, string value) =>
+        Add((_, _) =>
+        {
+            var response = Make(status, json);
+            response.Headers.Add(header, value);
+            return Task.FromResult(response);
+        });
+
     public SlskdHandler Fail(Exception exception) =>
         Add((_, _) => throw exception);
 

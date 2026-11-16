@@ -11,7 +11,7 @@ namespace Encore.Tests.Requests;
 /// It behaves like Lidarr 3.1.6 as lidarr-api.md describes it: POST album adds a missing artist from the body and answers
 /// 400 "already been added" for an album it has; lookup rows carry no statistics.
 /// </summary>
-internal sealed class FakeLidarrApi : ILidarrClient
+internal sealed class FakeLidarrApi : ILidarrClient, IRetentionLidarr
 {
     public sealed class Album
     {
@@ -239,6 +239,17 @@ internal sealed class FakeLidarrApi : ILidarrClient
 
         return (IReadOnlyList<LidarrAlbum>)Albums.Where(a => albumIds.Contains(a.Id)).Select(a => Map(a, true)).ToList();
     });
+
+    /// <summary>What GET command returns.</summary>
+    public List<LidarrCommand> Commands { get; } = [];
+
+    /// <summary>What GET config/metadataprovider reports as writeAudioTags.</summary>
+    public string WriteAudioTags { get; set; } = LidarrWriteAudioTags.No;
+
+    public Task<IReadOnlyList<LidarrCommand>> GetCommandsAsync(CancellationToken ct) =>
+        Run("command", () => (IReadOnlyList<LidarrCommand>)Commands.ToList());
+
+    public Task<string> GetWriteAudioTagsAsync(CancellationToken ct) => Run("config/metadataprovider", () => WriteAudioTags);
 
     private Task<T> Run<T>(string call, Func<T> body)
     {

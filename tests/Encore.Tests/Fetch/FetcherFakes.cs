@@ -72,7 +72,7 @@ internal sealed record TransferScript(Func<TimeSpan, TransferStep> At, Exception
     string? SaveAs = null, bool WriteFile = true);
 
 /// <summary>In-memory slskd with scripted searches (by query text) and transfers (by peer), recording every call.</summary>
-internal sealed class FakeSlskd(TimeProvider clock, string downloadsDir) : ISlskdClient
+internal sealed class FakeSlskd(TimeProvider clock, string downloadsDir) : ISlskdClient, IRetentionSlskd
 {
     private readonly object _gate = new();
     private readonly Dictionary<Guid, (SearchScript Script, DateTimeOffset At, bool Cancelled)> _searches = [];
@@ -261,6 +261,59 @@ internal sealed class FakeSlskd(TimeProvider clock, string downloadsDir) : ISlsk
             }
         }
 
+        return Task.CompletedTask;
+    }
+
+    // ------------------------------------------------------------ retention calls (IRetentionSlskd)
+
+    /// <summary>Upload events, newest first; GetEventsAsync pages over them.</summary>
+    public List<SlskdUploadEvent> UploadEvents { get; } = [];
+
+    /// <summary>Records of other event types that sit among the uploads (counted in the total, never returned as uploads).</summary>
+    public int OtherEvents { get; set; }
+
+    public List<SlskdUpload> Uploads { get; } = [];
+
+    public List<SlskdShare> Shares { get; } = [];
+
+    public SlskdShareState ShareState { get; set; } = new(false, false, true, false);
+
+    public List<(int Offset, int Limit)> EventReads { get; } = [];
+
+    public int RescanCalls { get; private set; }
+
+    public Task<SlskdEventsPage> GetEventsAsync(int offset, int limit, CancellationToken ct)
+    {
+        if (Down is { } down)
+        {
+            return Task.FromException<SlskdEventsPage>(down);
+        }
+
+        lock (_gate)
+        {
+            EventReads.Add((offset, limit));
+            var page = UploadEvents.Skip(offset).Take(limit).ToList();
+            return Task.FromResult(new SlskdEventsPage(page, page.Count, page.Count == 0 ? null : page.Min(e => e.CompletedUtc), UploadEvents.Count + OtherEvents));
+        }
+    }
+
+    public Task<IReadOnlyList<SlskdUpload>> GetUploadsAsync(CancellationToken ct) =>
+        Down is { } down ? Task.FromException<IReadOnlyList<SlskdUpload>>(down) : Task.FromResult<IReadOnlyList<SlskdUpload>>(Uploads.ToList());
+
+    public Task<IReadOnlyList<SlskdShare>> GetSharesAsync(CancellationToken ct) =>
+        Down is { } down ? Task.FromException<IReadOnlyList<SlskdShare>>(down) : Task.FromResult<IReadOnlyList<SlskdShare>>(Shares.ToList());
+
+    public Task<SlskdShareState> GetShareStateAsync(CancellationToken ct) =>
+        Down is { } down ? Task.FromException<SlskdShareState>(down) : Task.FromResult(ShareState);
+
+    public Task RescanSharesAsync(CancellationToken ct)
+    {
+        if (Down is { } down)
+        {
+            return Task.FromException(down);
+        }
+
+        RescanCalls++;
         return Task.CompletedTask;
     }
 

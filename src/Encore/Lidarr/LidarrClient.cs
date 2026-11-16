@@ -22,7 +22,7 @@ public sealed record LidarrClientOptions
 /// Lidarr client over a typed HttpClient. The <see cref="LidarrAuthHandler"/> in front of it adds the API key, so this
 /// class never sees it. Retries: GETs once on 5xx; writes never (a retried POST could add twice).
 /// </summary>
-public sealed class LidarrClient : ILidarrClient
+public sealed partial class LidarrClient : ILidarrClient
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 

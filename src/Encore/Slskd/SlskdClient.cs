@@ -25,7 +25,7 @@ public sealed record SlskdClientOptions
 /// class never sees it. Retries: GETs once on 5xx; enqueue up to <see cref="SlskdClientOptions.BusyTries"/> times on 429;
 /// nothing else (a retried POST could start a second search or download).
 /// </summary>
-public sealed class SlskdClient : ISlskdClient
+public sealed partial class SlskdClient : ISlskdClient
 {
     // Fixed search options (slskd-api.md section 2): a search ends after 8 s of silence.
     private const int SearchTimeoutMs = 8000;
