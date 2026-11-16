@@ -174,3 +174,172 @@ test('result tabs: counts of cards, default and remembered tab, label', () => {
   assert.equal(h.chooseTab({ songs: 2, albums: 0 }, 'albums'), 'songs');
   assert.equal(h.tabLabel('albums', 1), 'Albums (1)');
 });
+
+// ---- Section placement (T107: the page froze when the section and Jellyfin Enhanced's Seerr section both wanted
+// to be the last child of #searchPage) -------------------------------------------------------------------------
+class FakeNode {
+  constructor(name) { this.name = name; this.children = []; this.parentNode = null; this.moves = 0; }
+  get nextElementSibling() {
+    if (!this.parentNode) return null;
+    const s = this.parentNode.children;
+    return s[s.indexOf(this) + 1] || null;
+  }
+  get lastElementChild() { return this.children[this.children.length - 1] || null; }
+  contains(n) {
+    for (let x = n; x; x = x.parentNode) if (x === this) return true;
+    return false;
+  }
+  remove() {
+    if (!this.parentNode) return;
+    const s = this.parentNode.children;
+    s.splice(s.indexOf(this), 1);
+    this.parentNode = null;
+  }
+  insertBefore(n, ref) {
+    n.remove();
+    const i = ref ? this.children.indexOf(ref) : -1;
+    if (i < 0) this.children.push(n); else this.children.splice(i, 0, n);
+    n.parentNode = this;
+    n.moves++;
+    return n;
+  }
+  appendChild(n) { return this.insertBefore(n, null); }
+}
+
+const names = page => page.children.map(c => c.name);
+
+test('placeAction: keep when attached, before Seerr when present, else append', () => {
+  assert.equal(h.placeAction({ attached: true }), 'keep');
+  assert.equal(h.placeAction({ attached: true, seerrPresent: true, beforeSeerr: false }), 'keep');
+  assert.equal(h.placeAction({ attached: true, seerrPresent: true, beforeSeerr: false, newQuery: true }), 'before-seerr');
+  assert.equal(h.placeAction({ attached: true, seerrPresent: true, beforeSeerr: true, newQuery: true }), 'keep');
+  assert.equal(h.placeAction({ attached: true, seerrPresent: false, newQuery: true }), 'keep');
+  assert.equal(h.placeAction({ attached: false, seerrPresent: true }), 'before-seerr');
+  assert.equal(h.placeAction({ attached: false, seerrPresent: false }), 'append');
+  assert.equal(h.placeAction(null), 'append');
+});
+
+test('placeSection: appends when alone, goes before the Seerr section, never moves only for position', () => {
+  const page = new FakeNode('page');
+  const jf = new FakeNode('jellyfin'); page.appendChild(jf);
+  const enc = new FakeNode('encore');
+  assert.equal(h.placeSection(page, enc, null, false, null, 0), 'append');
+  assert.deepEqual(names(page), ['jellyfin', 'encore']);
+  // Another section is appended after it: Encore stays where it is.
+  const other = new FakeNode('other'); page.appendChild(other);
+  assert.equal(h.placeSection(page, enc, null, false, null, 0), 'keep');
+  assert.deepEqual(names(page), ['jellyfin', 'encore', 'other']);
+  // Detached (React re-render): it comes back before Seerr.
+  enc.remove();
+  const seerr = new FakeNode('seerr'); page.appendChild(seerr);
+  assert.equal(h.placeSection(page, enc, seerr, false, null, 0), 'before-seerr');
+  assert.deepEqual(names(page), ['jellyfin', 'other', 'encore', 'seerr']);
+});
+
+test('placeSection: a new search result moves it once to just before Seerr, inside the Seerr container', () => {
+  const page = new FakeNode('page');
+  const results = new FakeNode('results'); page.appendChild(results);
+  const jf = new FakeNode('jellyfin'); results.appendChild(jf);
+  const seerr = new FakeNode('seerr'); results.appendChild(seerr);
+  const enc = new FakeNode('encore'); page.appendChild(enc);
+  assert.equal(h.placeSection(page, enc, seerr, false, null, 0), 'keep');
+  assert.equal(h.placeSection(page, enc, seerr, true, null, 0), 'before-seerr');
+  assert.deepEqual(names(results), ['jellyfin', 'encore', 'seerr']);
+  assert.equal(h.placeSection(page, enc, seerr, true, null, 0), 'keep');
+});
+
+test('reinsertGuard: at most max moves per window, then stopped until reset', () => {
+  const g = h.reinsertGuard(3, 1000);
+  assert.equal(g.allow(0), true);
+  assert.equal(g.allow(100), true);
+  assert.equal(g.allow(200), true);
+  assert.equal(g.allow(300), false);
+  assert.equal(g.isStopped(), true);
+  assert.equal(g.allow(5000), false, 'stays stopped after the window');
+  g.reset();
+  assert.equal(g.allow(5000), true);
+  const slow = h.reinsertGuard(3, 1000);
+  for (let t = 0; t < 10000; t += 400) assert.equal(slow.allow(t), true, 'slow re-inserts are fine');
+});
+
+// Each "observer" reacts to any change by running its placement; the run ends when a full round moves nothing.
+function settle(observers, rounds = 100) {
+  let total = 0;
+  for (let i = 0; i < rounds; i++) {
+    let moved = 0;
+    for (const fn of observers) moved += fn() ? 1 : 0;
+    total += moved;
+    if (!moved) return { settled: true, moves: total };
+  }
+  return { settled: false, moves: total };
+}
+
+test('ping-pong: another section that also wants to be last settles with Encore before it', () => {
+  const page = new FakeNode('page');
+  page.appendChild(new FakeNode('jellyfin'));
+  const enc = new FakeNode('encore');
+  const seerr = new FakeNode('seerr');
+  const guard = h.reinsertGuard(h.REINSERT_MAX, h.REINSERT_WINDOW_MS);
+  let now = 0;
+  // Jellyfin Enhanced 12.15 (no Movies/Shows results): re-append its section whenever it is not the last child.
+  const seerrObserver = () => {
+    if (page.lastElementChild === seerr) return false;
+    page.appendChild(seerr);
+    return true;
+  };
+  const encoreObserver = () => h.placeSection(page, enc, page.contains(seerr) ? seerr : null, false, guard, now++) !== 'keep';
+  const r = settle([encoreObserver, seerrObserver]);
+  assert.equal(r.settled, true);
+  assert.ok(r.moves <= 2, 'moves: ' + r.moves);
+  assert.deepEqual(names(page), ['jellyfin', 'encore', 'seerr']);
+  assert.equal(guard.isStopped(), false);
+  // A new search result with the Seerr section already there: still no loop.
+  assert.equal(h.placeSection(page, enc, seerr, true, guard, now++), 'keep');
+  // The old rule (always be the last child) loops forever against it.
+  const lastRule = () => {
+    if (page.lastElementChild === enc) return false;
+    page.appendChild(enc);
+    return true;
+  };
+  assert.equal(settle([lastRule, seerrObserver]).settled, false);
+});
+
+test('ping-pong: a script that keeps removing the section is stopped by the guard', () => {
+  const page = new FakeNode('page');
+  const enc = new FakeNode('encore');
+  const rival = new FakeNode('rival');
+  const guard = h.reinsertGuard(h.REINSERT_MAX, h.REINSERT_WINDOW_MS);
+  let now = 0;
+  const rivalObserver = () => {
+    let moved = false;
+    if (page.lastElementChild !== rival) { page.appendChild(rival); moved = true; }
+    if (enc.parentNode) { enc.remove(); moved = true; }
+    return moved;
+  };
+  const encoreObserver = () => {
+    const r = h.placeSection(page, enc, null, false, guard, now++);
+    return r !== 'keep' && r !== 'blocked';
+  };
+  const r = settle([encoreObserver, rivalObserver]);
+  assert.equal(r.settled, true);
+  assert.equal(guard.isStopped(), true);
+  assert.ok(enc.moves <= h.REINSERT_MAX, 'inserts: ' + enc.moves);
+  guard.reset();
+  assert.equal(h.placeSection(page, enc, null, false, guard, now++), 'append', 'the next search tries again');
+});
+
+test('onlyInside: records of the section rendering itself are ignored, others are not', () => {
+  const page = new FakeNode('page');
+  const enc = new FakeNode('encore'); page.appendChild(enc);
+  const row = new FakeNode('row'); enc.appendChild(row);
+  assert.equal(h.onlyInside([{ target: enc }, { target: row }], enc), true);
+  assert.equal(h.onlyInside([{ target: row }, { target: page }], enc), false);
+  assert.equal(h.onlyInside([], enc), false);
+  assert.equal(h.onlyInside([{ target: row }], null), false);
+});
+
+test('the browser part never re-appends the section just because it is not the last child', () => {
+  const js = readFileSync(scriptPath, 'utf8');
+  assert.doesNotMatch(js, /lastElementChild\s*!==\s*section/);
+  assert.match(js, /placeSection\(page, section, page\.querySelector\('\.jellyseerr-section'\)/);
+});

@@ -153,12 +153,71 @@
     return (c.artist ? c.artist + ' - ' : '') + c.title;
   }
 
+  // ---- Placement of the section in #searchPage ------------------------------------------------------------
+  // Order: Jellyfin's own results, then Encore's section, then Jellyfin Enhanced's "Discover on Seerr" section.
+  // The section is never moved only because something else became the last child (that ping-pongs with any other
+  // script that also wants to be last). It is (re)inserted only when it is not inside #searchPage, plus once per new
+  // search result to sit just before the Seerr section when that one is already there.
+  // s: { attached, seerrPresent, beforeSeerr, newQuery } -> 'keep' | 'before-seerr' | 'append'
+  function placeAction(s) {
+    s = s || {};
+    if (s.attached) return s.newQuery && s.seerrPresent && !s.beforeSeerr ? 'before-seerr' : 'keep';
+    return s.seerrPresent ? 'before-seerr' : 'append';
+  }
+
+  var REINSERT_MAX = 3;
+  var REINSERT_WINDOW_MS = 1000;
+  // At most max moves in windowMs; past that it stops until reset() (the next search).
+  function reinsertGuard(max, windowMs) {
+    var times = [];
+    var stopped = false;
+    return {
+      allow: function (now) {
+        if (stopped) return false;
+        times = times.filter(function (t) { return now - t < windowMs; });
+        if (times.length >= max) { stopped = true; return false; }
+        times.push(now);
+        return true;
+      },
+      reset: function () { times = []; stopped = false; },
+      isStopped: function () { return stopped; }
+    };
+  }
+
+  // Places section in page with DOM-like nodes (contains, insertBefore, appendChild, nextElementSibling, parentNode).
+  // seerr is Jellyfin Enhanced's section or null. Returns the action taken, or 'blocked' when the guard refused.
+  function placeSection(page, section, seerr, newQuery, guard, now) {
+    var attached = section !== page && !!page.contains(section);
+    var seerrOk = !!seerr && seerr !== section && !!seerr.parentNode && !!page.contains(seerr) && !section.contains(seerr);
+    var action = placeAction({
+      attached: attached, seerrPresent: seerrOk, beforeSeerr: seerrOk && section.nextElementSibling === seerr,
+      newQuery: !!newQuery
+    });
+    if (action === 'keep') return 'keep';
+    if (guard && !guard.allow(now)) return 'blocked';
+    if (action === 'before-seerr') seerr.parentNode.insertBefore(section, seerr);
+    else page.appendChild(section);
+    return action;
+  }
+
+  // Mutation records that only touch nodes inside the section (its own rendering) are ignored by the observers.
+  function onlyInside(records, node) {
+    if (!node || !records || !records.length) return false;
+    for (var i = 0; i < records.length; i++) {
+      var t = records[i] && records[i].target;
+      if (!t || !(t === node || (typeof node.contains === 'function' && node.contains(t)))) return false;
+    }
+    return true;
+  }
+
   var helpers = {
     chooseMode: chooseMode, normalizeQuery: normalizeQuery, queryOk: queryOk, searchUrl: searchUrl,
     requestsUrl: requestsUrl, activeRequestsUrl: activeRequestsUrl, fallbackUrl: fallbackUrl,
     tokenAllowed: tokenAllowed, stateLabel: stateLabel, isActive: isActive, buildCards: buildCards, cardLabel: cardLabel,
     upcomingLabel: upcomingLabel, detailText: detailText,
-    tabCounts: tabCounts, chooseTab: chooseTab, tabLabel: tabLabel
+    tabCounts: tabCounts, chooseTab: chooseTab, tabLabel: tabLabel,
+    placeAction: placeAction, reinsertGuard: reinsertGuard, placeSection: placeSection, onlyInside: onlyInside,
+    REINSERT_MAX: REINSERT_MAX, REINSERT_WINDOW_MS: REINSERT_WINDOW_MS
   };
   if (typeof module !== 'undefined' && module.exports) { module.exports = helpers; }
   if (typeof window === 'undefined' || typeof document === 'undefined') return;
@@ -180,6 +239,8 @@
   var observedPage = null;
   var attachedInput = null;
   var meLoaded = false;
+  var placeGuard = reinsertGuard(REINSERT_MAX, REINSERT_WINDOW_MS);
+  var bodyObserver = null;
 
   function debug(msg) {
     try { console.debug('[Encore request search] ' + msg); } catch (e) { /* ignore */ }
@@ -238,17 +299,23 @@
   }
 
   // ---- Rendering ------------------------------------------------------------------------------------------
-  function ensureSection() {
+  // Puts the section in #searchPage only when it is not there (see placeSection); newQuery also moves it once
+  // just before the Seerr section. Returns null when it is not on the page (no page, or the loop guard stopped it).
+  function ensureSection(newQuery) {
     var page = searchPage();
     if (!page) return null;
     if (!section) {
       section = el('div', 'verticalSection encore-request-section');
       section.style.display = 'none';
     }
-    if (section.parentNode !== page || page.lastElementChild !== section) {
-      try { page.appendChild(section); } catch (e) { return null; }
+    var r;
+    try {
+      r = placeSection(page, section, page.querySelector('.jellyseerr-section'), newQuery, placeGuard, Date.now());
+    } catch (e) {
+      return null;
     }
-    return section;
+    if (r === 'blocked') debug('stopped re-inserting the section until the next search');
+    return page.contains(section) ? section : null;
   }
 
   function clear(node) {
@@ -344,8 +411,8 @@
     return bar;
   }
 
-  function render() {
-    var sec = ensureSection();
+  function render(newQuery) {
+    var sec = ensureSection(newQuery === true);
     if (!sec) return;
     var q = state.query;
     clear(sec);
@@ -405,6 +472,7 @@
   function runSearch(q) {
     if (searchCtl) { searchCtl.abort(); searchCtl = null; }
     state.query = q;
+    placeGuard.reset();
     if (!queryOk(q)) { state.cards = []; state.down = false; render(); stopRefresh(); return; }
     if (choice.mode === 'link') { render(); return; }
     var ctl = new AbortController();
@@ -415,7 +483,7 @@
       state.down = false;
       state.cards = buildCards(data);
       state.flash = {};
-      render();
+      render(true);
       startRefresh();
     }).catch(function (e) {
       if (e && e.name === 'AbortError') return;
@@ -505,16 +573,18 @@
     }, DEBOUNCE_MS);
   }
 
-  // React replaces its own nodes under the page: keep the section the last child of #searchPage.
+  // React can drop the section when it re-renders the page: put it back only when it is no longer inside #searchPage
+  // (never because another section moved after it), within the loop guard.
   function watchPage() {
     var page = searchPage();
     if (page === observedPage) return;
     if (pageObserver) { pageObserver.disconnect(); pageObserver = null; }
     observedPage = page;
     if (!page || typeof MutationObserver === 'undefined') return;
-    pageObserver = new MutationObserver(function () {
-      if (section && section.parentNode === page && page.lastElementChild === section) return;
-      if (section) ensureSection();
+    pageObserver = new MutationObserver(function (records) {
+      if (!section || page.contains(section)) return;
+      if (onlyInside(records, section)) return;
+      ensureSection(false);
     });
     pageObserver.observe(page, { childList: true });
   }
@@ -556,7 +626,12 @@
     });
     window.addEventListener('popstate', scheduleAttach);
     window.addEventListener('hashchange', scheduleAttach);
-    new MutationObserver(scheduleAttach).observe(document.body, { childList: true, subtree: true });
+    // The section's own rendering never schedules anything; attach() itself only renders on a new input.
+    bodyObserver = new MutationObserver(function (records) {
+      if (section && onlyInside(records, section)) return;
+      scheduleAttach();
+    });
+    bodyObserver.observe(document.body, { childList: true, subtree: true });
   }
 
   try {

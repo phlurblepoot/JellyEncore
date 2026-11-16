@@ -136,7 +136,7 @@ Statuses: `queued`, `upcoming` (an album waiting for its release date), `searchi
 
 ### Installing the search script in Jellyfin Web
 
-The script adds a "Not in library? Request" section to the Jellyfin search page. The section has the same two tabs, Songs and Albums, with counts. It is optional: the request page works on its own.
+The script adds a "Not in library? Request" section to the Jellyfin search page. The section has the same two tabs, Songs and Albums, with counts. It sits after Jellyfin's own results and, when the Jellyfin Enhanced plugin shows its "Discover on Seerr" section, just before that one. The script only puts its section back when Jellyfin removed it (at most 3 times a second, then not again until the next search), so it never fights another script over the page order. It is optional: the request page works on its own.
 
 1. In the JavaScript Injector plugin, import `contrib/jellyfin-request-search.import.json` (or add a script and paste the whole of `contrib/jellyfin-request-search.js`). Save.
 2. Edit the two settings at the top of the script: `ENCORE_URL_HTTP` (Encore's address on your network, for example `http://192.168.86.50:5095`) and `ENCORE_URL_HTTPS` (Encore's public https address; leave it empty until Encore is published). The script uses the one that matches the page's protocol.
