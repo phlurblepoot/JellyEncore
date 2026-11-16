@@ -21,7 +21,8 @@ public sealed record HealthReport(
     HealthStore Store,
     IReadOnlyList<string> Warnings,
     HealthSlskd Slskd,
-    HealthFetch Fetch);
+    HealthFetch Fetch,
+    HealthRequests? Requests = null);
 
 public sealed record HealthJellyfin(string Url, DateTimeOffset? LastOkUtc, string? LastError);
 
@@ -98,7 +99,8 @@ public sealed record HealthInput(
     OrchestratorStatus Orchestrator,
     string StorePath,
     int StoreSchemaVersion,
-    FetchHealthInput? Fetch = null);
+    FetchHealthInput? Fetch = null,
+    RequestsHealthInput? Requests = null);
 
 public static class HealthEvaluator
 {
@@ -151,7 +153,8 @@ public static class HealthEvaluator
             Store: new HealthStore(o.StoreOk, input.StorePath, input.StoreSchemaVersion),
             Warnings: warnings,
             Slskd: SlskdSection(input),
-            Fetch: FetchSection(input));
+            Fetch: FetchSection(input),
+            Requests: RequestsSection(input));
 
         return (stale ? 503 : 200, report);
     }
@@ -167,6 +170,13 @@ public static class HealthEvaluator
     /// Nothing is reported in mode off.
     /// </summary>
     private static List<string> Warn(HealthInput input)
+    {
+        var warnings = FetchWarnings(input);
+        warnings.AddRange(RequestWarnings(input));
+        return warnings;
+    }
+
+    private static List<string> FetchWarnings(HealthInput input)
     {
         var warnings = new List<string>();
         if (input.Fetch is not { } f || f.Status.Mode == FetchMode.Off)
@@ -224,6 +234,10 @@ public static class HealthEvaluator
 
         return warnings;
     }
+
+    private static HealthRequests RequestsSection(HealthInput input) => HealthRequestsEvaluator.Section(input);
+
+    private static IEnumerable<string> RequestWarnings(HealthInput input) => HealthRequestsEvaluator.Warnings(input);
 
     private static HealthSlskd SlskdSection(HealthInput input)
     {

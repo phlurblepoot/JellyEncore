@@ -22,8 +22,13 @@ jobs:
         with:
           global-json-file: global.json
           dotnet-version: 10.0.x
+      - uses: actions/setup-node@v4.4.0
+        with:
+          node-version: 22
       - run: dotnet build JellyEncore.sln -c Release
       - run: dotnet test JellyEncore.sln -c Release --no-build
+      # The Jellyfin search script and the request page script have plain node tests (no packages).
+      - run: node --test tests/js
 
   image:
     # Push only from main and v* tags, never from pull requests.

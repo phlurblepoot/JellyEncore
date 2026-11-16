@@ -268,6 +268,43 @@ public sealed class RequestStore : IDisposable
         }
     }
 
+    /// <summary>How many requests are in each in-progress state (a state with none is absent).</summary>
+    public IReadOnlyDictionary<string, int> CountActiveByState()
+    {
+        lock (_gate)
+        {
+            using var cmd = _db.CreateCommand();
+            cmd.CommandText = $"SELECT state, COUNT(*) FROM requests WHERE {ActiveClause} GROUP BY state";
+            var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+            {
+                counts[r.GetString(0)] = r.GetInt32(1);
+            }
+
+            return counts;
+        }
+    }
+
+    /// <summary>Requests created, made ready and failed at or after <paramref name="since"/> (for /health).</summary>
+    public (int Created, int Ready, int Failed) CountsSince(DateTimeOffset since)
+    {
+        lock (_gate)
+        {
+            using var cmd = _db.CreateCommand();
+            cmd.CommandText = """
+                SELECT
+                  (SELECT COUNT(*) FROM requests WHERE created_utc >= $since),
+                  (SELECT COUNT(*) FROM requests WHERE state = 'ready' AND ready_utc >= $since),
+                  (SELECT COUNT(*) FROM requests WHERE state = 'failed' AND updated_utc >= $since)
+                """;
+            cmd.Parameters.AddWithValue("$since", EncoreStore.FormatUtc(since));
+            using var r = cmd.ExecuteReader();
+            r.Read();
+            return (r.GetInt32(0), r.GetInt32(1), r.GetInt32(2));
+        }
+    }
+
     /// <summary>The in-progress requests for one track key, oldest first (duplicate detection).</summary>
     public IReadOnlyList<RequestRow> ActiveForKey(string trackKey)
     {

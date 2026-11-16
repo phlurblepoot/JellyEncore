@@ -1,6 +1,6 @@
 # JellyEncore
 
-Encore is a small .NET 10 service that runs alongside a Jellyfin 12.4 server. When a listed user's music queue is down to one song after the current one, Encore adds more songs to the queue, so the music keeps going. v0.1 uses only songs already in the library. v0.2 can also fetch songs the server does not have from Soulseek (through slskd), import them into the library and queue them; it is off by default.
+Encore is a small .NET 10 service that runs alongside a Jellyfin 12.4 server. When a listed user's music queue is down to one song after the current one, Encore adds more songs to the queue, so the music keeps going. v0.1 uses only songs already in the library. v0.2 can also fetch songs the server does not have from Soulseek (through slskd), import them into the library and queue them; it is off by default. v0.3 adds song and album requests (a request page and a Jellyfin search script; albums go through Lidarr), also off by default.
 
 ## What it does
 
@@ -16,7 +16,8 @@ Works with Jellyfin Web and Finamp. Other apps are skipped (reason `unknown_clie
 
 ## Layout
 
-- `src/Encore` - the host: config, Jellyfin client, session watcher, trigger, picker, orchestrator, store, health, and the v0.2 fetch side (slskd client, Deezer and ListenBrainz discovery, scorer, importer, fetch worker)
+- `src/Encore` - the host: config, Jellyfin client, session watcher, trigger, picker, orchestrator, store, health, and the v0.2 fetch side (slskd client, Deezer and ListenBrainz discovery, scorer, importer, fetch worker), and the v0.3 request side (HTTP API and request page, sign-in guard, song and album requests, Lidarr client, notifications)
+- `contrib` - scripts for Jellyfin Web (JavaScript Injector); `tests/js` - their node tests
 - `tests/Encore.Tests` - xUnit tests. `EndToEnd/` runs the orchestrator against a fake Jellyfin and a real SQLite file.
 
 ## Build, test, run
@@ -95,15 +96,82 @@ Install it with the JavaScript Injector plugin (the plugin that adds custom Java
 3. Reload Jellyfin Web (a hard refresh, Ctrl+F5) on every device that should get radio.
 4. Check in the browser's developer tools (Network, WS) that the `/socket?ApiKey=...` connection stays open, or look for `queue.confirmed` in Encore's logs after a radio fire.
 
-## Requests from the Jellyfin web search (v0.3)
+## Requests (v0.3)
 
-`contrib/jellyfin-request-search.js` adds a "Not in library? Request" section at the bottom of the Jellyfin Web search page when `ENCORE_REQUESTS=on`. It lists songs and albums Encore found that the library does not have, with a Request button or the request's status.
+Off unless `ENCORE_REQUESTS=on`. When on, Encore also serves a small request page and a JSON API (`/api/v1`) so people can ask for a song or an album the library does not have. With `ENCORE_REQUESTS=off` none of this exists: no routes, no extra database use, and `/health` shows only `"requests": {"enabled": false}`.
 
-1. In the JavaScript Injector plugin, import `contrib/jellyfin-request-search.import.json` (or add a script and paste the whole `.js` file), then press Save.
-2. Set the two settings at the top of the script: `ENCORE_URL_HTTP` (Encore's http address) and `ENCORE_URL_HTTPS` (leave empty until Encore is reachable over https). On an https Jellyfin page with no https address, the section is only a link to Encore's request page.
-3. Hard-refresh Jellyfin Web (Ctrl+F5).
+- **Songs** come from Soulseek through the same fetch path as the radio. This needs `ENCORE_FETCH_MODE` other than `off` (`live` to really download). A requested song goes ahead of radio fetches, is tried with FLAC first, and lands in `music-radio` marked as requested. It is retried after 1 hour and 6 hours, then fails. If the library already has the song, the request is `ready` at once.
+- **Albums** go to Lidarr. Encore switches the album on in Lidarr, and Soularr (which you already run) fetches it. Encore checks Lidarr every 2 minutes, asks Jellyfin to scan the new folder, and marks the request `ready` when Jellyfin lists the album. An album with no file after 7 days fails as `not_found` and is switched off again in Lidarr; one that stalls for 3 days with only some tracks fails as `incomplete`. An album that has not been released yet is refused (409 `not_released`).
+- **Who may request**: admins, plus the users in `ENCORE_REQUEST_USERS` (names or ids, or `*` for everyone). Everyone else can search but not request. Non-admins have a daily cap (`ENCORE_REQUEST_SONGS_PER_DAY`, `ENCORE_REQUEST_ALBUMS_PER_DAY`); admins have none. There is no approval step.
+- **Notifications**: when a request becomes `ready` or fails, Encore sends a message ("Ready: artist - title" or "Could not get: artist - title") to the requester's open Jellyfin apps that allow remote control. Once per state; it never changes the request.
+- **Sign-in** uses Jellyfin itself. The page asks for the Jellyfin name and password (or a Quick Connect code when the server allows it) and passes them straight to Jellyfin. Encore keeps no password and sets no cookie; the token stays in the browser and is sent as a Bearer header. Wrong passwords are limited (see "Fixed limits" below).
 
-The script sends the Jellyfin token only when Jellyfin Web talks to the same address the page came from. Its tests run with `node --test tests/js`.
+### Request settings
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `ENCORE_REQUESTS` | `on` or `off` | `off` |
+| `ENCORE_REQUEST_USERS` | Jellyfin names or ids who may request (comma-separated), or `*` for everyone. Admins always may. An unknown name is a startup warning | empty (admins only) |
+| `ENCORE_REQUEST_SONGS_PER_DAY` | Songs per non-admin per day (0-500; 0 = songs off for non-admins) | `25` |
+| `ENCORE_REQUEST_ALBUMS_PER_DAY` | Albums per non-admin per day (0-50; 0 = albums off for non-admins) | `2` |
+| `ENCORE_REQUEST_ORIGINS` | Exact web origins allowed to call `/api/v1` from another site (CORS), for example `http://192.168.86.50:8096,https://media.example.com`. Empty: the request page works, no other site may call the API | empty |
+| `ENCORE_PUBLIC_URL` | Encore as browsers reach it, for example `http://192.168.86.50:5095`, later the https address. Absolute http(s) URL; its path must equal `ENCORE_PATH_BASE` | - |
+| `ENCORE_PATH_BASE` | Optional `/segment` when Encore is published under a path. No trailing `/` | empty |
+| `ENCORE_TRUSTED_PROXIES` | Comma-separated IPs or CIDR ranges of the proxies whose `X-Forwarded-*` headers are believed (at most 64). Empty: those headers are ignored | empty |
+| `ENCORE_JELLYFIN_PUBLIC_URL` | Jellyfin as browsers reach it, for the "Open in Jellyfin" links | - |
+| `ENCORE_LIDARR_URL` | Lidarr base URL, for example `http://lidarr:8686`. Unset: album requests are off | - |
+| `ENCORE_LIDARR_API_KEY` | Lidarr API key, required with the URL (20-64 letters and digits). Never logged or shown | - |
+| `ENCORE_LIDARR_ROOT_FOLDER` | The Lidarr root folder new artists go in. Only needed when Lidarr has more than one | the only root folder |
+| `ENCORE_LIDARR_PATH_MAP` | `<Lidarr's path prefix>=<Jellyfin's path prefix>`, so Encore can tell Jellyfin which folder to scan | `/media/music=/media/music` |
+
+`ENCORE_REQUESTS=on` with `ENCORE_FETCH_MODE=off` is allowed: only album requests work, song requests answer 503 `songs_unavailable`, and Encore logs a warning at startup.
+
+Fixed limits, not configurable: a sign-in token is re-checked with Jellyfin at most once a minute; Deezer search results are cached for 24 hours and Lidarr lookups for 1 hour; a song request waits at most 60 minutes in the fetch queue. Wrong sign-ins: 5 per IP in 15 minutes blocks that IP for 15 minutes; 10 per name in an hour locks that name for an hour (for a user with a Jellyfin lockout limit: that limit minus one in 24 hours, locked for 24 hours); 30 sign-in attempts per minute overall. 30 bad tokens in 5 minutes from one IP blocks that IP for 15 minutes.
+
+### The request page
+
+Open `<Encore address>/request` (for example `http://192.168.86.50:5095/request`), sign in with the Jellyfin account and search. Results come in three sections: "In your library" (with an Open in Jellyfin link), Songs and Albums, each with a Request button or its current status. "My requests" refreshes by itself; admins also see "Everyone" and can cancel any request. `/request?q=text` opens with that search filled in.
+
+Statuses: `queued`, `searching`, `downloading`, `importing`, `ready`, `failed` (with the reason) and `cancelled`. A failed request has a Retry button.
+
+### Installing the search script in Jellyfin Web
+
+The script adds a "Not in library? Request" section to the Jellyfin search page. It is optional: the request page works on its own.
+
+1. In the JavaScript Injector plugin, import `contrib/jellyfin-request-search.import.json` (or add a script and paste the whole of `contrib/jellyfin-request-search.js`). Save.
+2. Edit the two settings at the top of the script: `ENCORE_URL_HTTP` (Encore's address on your network, for example `http://192.168.86.50:5095`) and `ENCORE_URL_HTTPS` (Encore's public https address; leave it empty until Encore is published). The script uses the one that matches the page's protocol.
+3. Add the address Jellyfin Web is opened from to `ENCORE_REQUEST_ORIGINS` (next section) and restart Encore.
+4. Hard-refresh Jellyfin Web (Ctrl+F5) on each device.
+
+A browser will not let a page loaded over https call an http address. So on an https Jellyfin page with no `ENCORE_URL_HTTPS`, the script shows only a link to the request page at your network address. The script sends the Jellyfin token only to Encore, and only when Jellyfin Web is talking to the same address the page came from. Its tests run with `node --test tests/js`.
+
+### CORS and origins
+
+The request page is served by Encore itself, so it needs no CORS. The injected script runs inside Jellyfin Web, which is a different site as far as the browser is concerned, so Encore must be told about it: put the exact origin (scheme, host and port, no path, no trailing slash) in `ENCORE_REQUEST_ORIGINS`, for example `http://192.168.86.50:8096` for Jellyfin on your network and `https://media.example.com` for its public name. Separate several origins with commas. A wrong or missing origin shows up as a CORS error in the browser console. Encore uses no cookies, so cross-site calls carry no credentials; only GET, POST and DELETE with the `Authorization` and `Content-Type` headers are allowed. The same list decides which sites may put the request page in a frame (none when empty).
+
+### Lidarr setup and key
+
+Album requests need Lidarr and Soularr (Soularr is the part that fetches the albums Lidarr wants).
+
+1. In Lidarr open Settings, General, Security and copy the API key. Put it in the `.env` file as `ENCORE_LIDARR_API_KEY`; never on a command line or in the repository. A Lidarr key has full control of Lidarr; Encore uses it only to look albums up, switch albums and artists on or off, and read progress.
+2. Set `ENCORE_LIDARR_URL` to Lidarr as Encore's container reaches it (container name and port, for example `http://lidarr:8686`). Both containers must share a Docker network.
+3. Lidarr needs at least one root folder (Settings, Media Management). If it has several, set `ENCORE_LIDARR_ROOT_FOLDER` to the one to use. A new artist gets that folder's default quality and metadata profiles.
+4. Set `ENCORE_LIDARR_PATH_MAP` if Lidarr and Jellyfin see the music at different paths (Lidarr's prefix, an equals sign, Jellyfin's prefix). Encore uses it only to ask Jellyfin to scan the right folder.
+5. Make sure Soularr runs against the same Lidarr. It reads Lidarr's wanted list on its own schedule (every 5 minutes by default), so a requested album can take a while to start.
+
+Encore adds a missing artist to Lidarr as monitored but with "monitor new items" set to none, so only the requested album is wanted and the artist's other albums stay off. If the artist was already in Lidarr but switched off, Encore switches the artist on; that can make the artist's other wanted albums start too, and Encore logs `lidarr.artist_other_wanted` (9370) when it happens. Cancelling a request switches the album off again unless another request still holds it.
+
+### Publishing behind Nginx Proxy Manager and Cloudflare
+
+Only publish Encore if you want requests from outside your home.
+
+1. **What is reachable.** A request that arrives through a trusted proxy can reach only `/request*` and `/api/v1/*`. Everything else, including `/health`, answers 404 to it, so internal state (sessions, the slskd address, user names) never leaves your network. Read `/health` on the local address. Through the proxy, every API route except `/api/v1/config` and the sign-in routes needs a valid Jellyfin token, and only allowed users can make requests.
+2. **Proxy host.** In Nginx Proxy Manager add a proxy host (for example `requests.example.com`) that forwards to Encore's container and port (8080 in the image), with an https certificate and Force SSL. Websockets are not needed.
+3. **Trusted proxies.** Set `ENCORE_TRUSTED_PROXIES` to NPM's address or Docker network (for example `172.21.0.0/16`) and, when the name goes through Cloudflare, Cloudflare's published ranges (cloudflare.com/ips). Encore reads `X-Forwarded-For` from the right, and every hop it uses must itself be trusted; with only NPM listed, the "client" would be a Cloudflare server and the sign-in limits would count many people as one. Encore never reads Cloudflare's own client-IP header, which anyone reaching NPM another way could fake. With the list empty, forwarded headers are ignored. After setting it, check that `auth.rejected` log lines show a real visitor address and not a proxy's.
+4. **Public address.** Set `ENCORE_PUBLIC_URL` to the https address people use, add Jellyfin's public origin to `ENCORE_REQUEST_ORIGINS`, and fill `ENCORE_URL_HTTPS` in the injected script.
+5. **Under a path.** To publish under a path (for example `https://media.example.com/encore`) set `ENCORE_PATH_BASE=/encore` and `ENCORE_PUBLIC_URL=https://media.example.com/encore` (the paths must match). Encore accepts the prefix whether or not the proxy strips it, and the page builds all its links from it. With a path base set, direct requests on your network need the prefix too.
+6. **Cloudflare.** The published name must resolve to Cloudflare from inside your network as well. A name that resolves to a local address for some devices makes recent browsers ask permission for "local network access" when an https page calls it.
+7. **Headers.** Encore sends a content security policy, no-sniff, no-referrer and, over https, HSTS on the page and the API. A Cloudflare rate-limit rule on `/api/v1/auth/*` is a sensible extra layer on top of Encore's own sign-in limits.
 
 ## Going live
 
@@ -150,7 +218,7 @@ Rollback is `ENCORE_FETCH_MODE=off` (or the previous image tag; the database kee
 `GET /health` returns JSON. It shows the same kind of data as the startup summary, and it never shows either key.
 
 - `status`: `starting` for the first 30 seconds; `ok` when the socket is subscribed (or polling works), every allow-list name resolved and the store is open; `degraded` otherwise; `stopped` (HTTP 503) when the main loop has not run for 60 seconds. Fetch problems never change the status while owned radio works; they appear under `warnings`.
-- `warnings`: a list of strings, empty in mode `off`. Possible entries: `slskd: unreachable`, `slskd: key rejected`, `slskd: not logged in`, `music-radio is not in a Jellyfin music library`, `music-radio not scanned by Jellyfin yet (run Scan All Libraries)`, `music-radio free space below 20 GB`, `owned index not loaded` (5 minutes after start), `slskd copies left behind: N`, `deezer: failing` (a Deezer error in the last 10 minutes).
+- `warnings`: a list of strings, empty in mode `off`. Possible entries: `slskd: unreachable`, `slskd: key rejected`, `slskd: not logged in`, `music-radio is not in a Jellyfin music library`, `music-radio not scanned by Jellyfin yet (run Scan All Libraries)`, `music-radio free space below 20 GB`, `owned index not loaded` (5 minutes after start), `slskd copies left behind: N`, `deezer: failing` (a Deezer error in the last 10 minutes). With requests on: `lidarr: unreachable`, `lidarr: key rejected`, `requests: N album(s) in Lidarr but not in Jellyfin` (requested albums that Lidarr has had for over 2 hours but Jellyfin does not list yet), `requests: song fetching is off`. Request problems never change the status.
 - `slskd`: `configured`, the URL (no credentials), `reachable`, `loggedIn`, `lastOkUtc`, `lastError`, `searchesInWindow` and `searchLimit` (the budget).
 - `fetch`: `mode`, `available` and `unavailableReason` (`off`, `not_configured`, `slskd_unreachable`, `slskd_key_rejected`, `not_logged_in`, `radio_dir_not_in_library`, `disk_low`, `hourly_cap`, `index_not_ready`), `ownedIndex` (`loaded`, `items`, `refreshedUtc`), job counters since start (`queued`, `inFlight`, `ingesting`, `ready`, `failed`, `cancelled`, `wouldDownload`), `passedOver` and `skipped` (picks passed over or skipped at hand-out), `lastHour` against `hourlyCap`, `radioDirInLibrary` and `radioLibrary`, `freeBytes`, `sourceLeftBehind`, `lastReadyUtc` and `lastError`.
 - `dryRun`: whether the service only logs.
@@ -159,6 +227,7 @@ Rollback is `ENCORE_FETCH_MODE=off` (or the previous image tag; the database kee
 - `allowList`: the configured names, the resolved name-to-id map, names that did not resolve, and the last error.
 - `triggers` and `playLast`: counters since start (fires, sent, dry runs, no picks, failures, songs sent, songs never seen in the queue).
 - `store`: whether the database is working and its schema version.
+- `requests`: with `ENCORE_REQUESTS=off` only `{"enabled": false}`. With requests on: `enabled`; `songs` and `albums` (`available`, or the reason: `fetch_off`, `fetch_unavailable:<reason>`, `lidarr_unreachable`, `lidarr_key_rejected`, `lidarr_not_configured`); `active` (requests now `queued`, `searching`, `downloading`, `importing`); `auth` (`blockedIps`, `lockedNames`, `failedLoginsLastHour`: counts only, never names or addresses); `today` (`created`, `ready`, `failed` in the last 24 hours); `lidarr` (`configured`, `reachable`, `version`, `lastOkUtc`, `lastError`); `notify` (`sent`, `failed` since start). It never shows a key or a token.
 
 The image's HEALTHCHECK runs `--healthcheck`, which calls `/health` and fails on anything but a 2xx.
 
@@ -198,6 +267,11 @@ JSON lines on stdout. Set `LOG_LEVEL` to see more. The events an operator looks 
 | `slskd.transfer_stalled` | Warning | A peer was too slow, idle or refused; the next peer is tried |
 | `import.done`, `import.failed`, `import.source_left` | Info, Warning, Warning | The file was tagged and moved into the radio folder; the import failed (`mismatch`, `disk_low`, `io`, `tag`); slskd's copy could not be deleted |
 | `ingest.ready`, `ingest.timeout`, `ingest.library_check` | Info, Warning, Info or Warning | Jellyfin listed the new file; it did not within 3 minutes; the radio folder is, or is not, inside a Music library |
+| `request.created`, `request.ready`, `request.failed`, `request.cancelled` | Info | Request lifecycle (9200-9290; `request.state` logs every change, `request.limit` a daily cap hit) |
+| `auth.login_limited` | Warning | A sign-in block started: per IP, per name (hashed), overall, or bad tokens (9030). `auth.rejected` (Info) logs a refused token |
+| `lidarr.state`, `lidarr.request_failed`, `lidarr.auth_failed` | Info, Warning, Error | Lidarr became reachable or not, a call failed, or the key was refused (9300-9320) |
+| `lidarr.artist_other_wanted` | Warning | Switching an artist on also made N other albums wanted (9370) |
+| `notify.sent`, `notify.failed` | Info, Warning | A "Ready" or "Could not get" message went to the requester, or could not be delivered (9400, 9410) |
 
 `trigger.skipped` reasons: `not_allowed`, `not_audio` (a video or episode), `no_remote_control`, `repeat_on`, `unknown_client`, `stale_queue`, `no_history`, `not_last` (two or more songs still to come), `duplicate`, `rate_limited`, `run_cap`, `already_queued` (songs sent at the previous song have not shown up yet; the delivery check handles them).
 
@@ -215,6 +289,16 @@ JSON lines on stdout. Set `LOG_LEVEL` to see more. The events an operator looks 
 - **Fetching: `radio_dir_not_scanned` (fetches fail with this reason).** The radio folder is in the Music library, but Jellyfin has never scanned it (a library location that was empty when it was added is skipped). Run **Scan All Libraries** once in Jellyfin (Dashboard, Libraries). Fetching stays on; Encore makes no scan call itself, because that would scan every library. In `live` mode Encore creates `soulseek` inside the radio folder at startup, so the folder is never empty again.
 - **Fetching: copies left behind (`import.source_left`, `slskd copies left behind`).** Encore could not delete slskd's copy of a downloaded file. Run the Encore container as `user: "99:100"` and check the `/slskd-downloads` mount is read-write.
 - **Fetching: nothing is ever fetched.** Look at `fetch.unavailableReason` in `/health`: `hourly_cap` (30 fetches per hour reached), `disk_low` (under 20 GB free in the radio folder), `index_not_ready` (the owned-song index is still loading) or one of the slskd reasons above. In `dry_run` nothing is downloaded by design. If `fetch.failed` shows `no_acceptable` or `no_results` for most songs, Soulseek simply has no good copy; the radio then uses owned songs. `ingest_timeout` means Jellyfin did not list the file within 3 minutes (check the library scan and the folder permissions).
+- **Requests: the page or the script says CORS, or nothing happens in Jellyfin.** The address Jellyfin Web is opened from is not in `ENCORE_REQUEST_ORIGINS`. Add the exact origin (scheme, host, port) and restart. The browser console names the blocked origin.
+- **Requests: the script shows only a link.** The Jellyfin page is https and `ENCORE_URL_HTTPS` in the script is empty. A browser blocks an https page from calling an http address; publish Encore over https and fill that setting.
+- **Requests: sign-in says too many attempts (429 `login_limited`).** Too many wrong passwords from that address or for that name. It clears by itself (15 minutes for an address, an hour for a name, 24 hours for a user with a Jellyfin lockout limit). Behind a proxy, check that `ENCORE_TRUSTED_PROXIES` lists the proxy, or every visitor looks like the proxy and shares one limit.
+- **Requests: `403 not_allowed`.** The user is not an admin and not in `ENCORE_REQUEST_USERS`.
+- **Requests: `429 daily_limit`.** A non-admin used the day's songs or albums. Raise `ENCORE_REQUEST_SONGS_PER_DAY` or `ENCORE_REQUEST_ALBUMS_PER_DAY`.
+- **Requests: `503 songs_unavailable`.** `ENCORE_FETCH_MODE` is `off`. Songs need fetching; albums still work.
+- **Requests: `503 albums_unavailable`, or `lidarr: unreachable` / `lidarr: key rejected` in `/health`.** Check `ENCORE_LIDARR_URL` and that both containers share a network, and that `ENCORE_LIDARR_API_KEY` is the key shown in Lidarr under Settings, General, Security.
+- **Requests: an album stays at "In Lidarr, waiting for Jellyfin".** Lidarr has the files but Jellyfin has not listed the album (`requests: N album(s) in Lidarr but not in Jellyfin` after 2 hours). Check `ENCORE_LIDARR_PATH_MAP` (Lidarr's and Jellyfin's view of the same folder) and that the music folder is in a Jellyfin Music library; a library scan in Jellyfin will also pick it up.
+- **Requests: an album never starts.** Soularr must be running against the same Lidarr; it only looks at Lidarr's wanted list every few minutes. After 7 days with no file the request fails as `not_found`.
+- **Requests: `/health` answers 404 from outside.** By design: requests arriving through a trusted proxy reach only `/request*` and `/api/v1/*`. Use the local address for `/health`.
 - **Exit code 3.** The database is broken or was written by a newer build. Restore the previous image, or back up and remove `encore.db`.
 
 ## Data and reset
@@ -223,4 +307,4 @@ JSON lines on stdout. Set `LOG_LEVEL` to see more. The events an operator looks 
 
 ## Upgrading and rollback
 
-Pin a version tag. The database schema version is stored in the file itself (`PRAGMA user_version`; v0.1 uses schema 1, v0.2 schema 2). The first v0.2 start migrates a v0.1 file and first copies it to `encore.db.v1.bak`; to go back to v0.1.x, stop Encore, restore that copy over `encore.db` and run the old tag (v0.1 exits with code 3 on a schema 2 file). To roll back, run the previous tag. A database from a newer build makes the older build exit with code 3, so back up `encore.db` before an upgrade.
+Pin a version tag. The database schema version is stored in the file itself (`PRAGMA user_version`; v0.1 uses schema 1, v0.2 schema 2, v0.3 schema 3). The first v0.3 start migrates a v0.2 file the same way and first copies it to `encore.db.v2.bak`. The first v0.2 start migrates a v0.1 file and first copies it to `encore.db.v1.bak`; to go back to v0.1.x, stop Encore, restore that copy over `encore.db` and run the old tag (v0.1 exits with code 3 on a schema 2 file). To roll back, run the previous tag. A database from a newer build makes the older build exit with code 3, so back up `encore.db` before an upgrade.

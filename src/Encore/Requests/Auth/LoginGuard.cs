@@ -10,6 +10,9 @@ public sealed record GuardVerdict(bool Allowed, string Scope, TimeSpan RetryAfte
     public static readonly GuardVerdict Allow = new(true, string.Empty, TimeSpan.Zero);
 }
 
+/// <summary>Counts for /health: IPs blocked now (login or token), names locked now, failed logins in the last hour.</summary>
+public sealed record GuardSnapshot(int BlockedIps, int LockedNames, int FailedLoginsLastHour);
+
 /// <summary>Scope names used in <see cref="GuardVerdict"/> and in log 9030.</summary>
 public static class GuardScopes
 {
@@ -41,6 +44,7 @@ public sealed class LoginGuard
     private readonly Dictionary<string, Queue<DateTimeOffset>> _nameFails = [];
     private readonly Dictionary<string, DateTimeOffset> _nameLocked = [];
     private readonly Queue<DateTimeOffset> _attempts = new();
+    private readonly Queue<DateTimeOffset> _failureLog = new();
     private bool _globalLogged;
     private readonly Dictionary<string, Queue<DateTimeOffset>> _quickConnect = [];
     private readonly HashSet<string> _quickConnectLogged = [];
@@ -148,6 +152,9 @@ public sealed class LoginGuard
         var (failures, window) = NameRule(_lockoutLimit(nameKey));
         lock (_gate)
         {
+            _failureLog.Enqueue(now);
+            TrimFailureLog(now);
+
             var ipQueue = Window(_ipFails, ipKey, RequestLimits.LoginIpWindow, now);
             ipQueue.Enqueue(now);
             if (ipQueue.Count >= RequestLimits.LoginFailuresPerIp && !_ipBlocked.ContainsKey(ipKey))
@@ -203,6 +210,28 @@ public sealed class LoginGuard
             }
 
             Prune(_tokenFails, RequestLimits.TokenFailureWindow, now);
+        }
+    }
+
+    /// <summary>What /health shows: counts only, never an IP, a name or a token.</summary>
+    public GuardSnapshot Snapshot()
+    {
+        var now = _time.GetUtcNow();
+        lock (_gate)
+        {
+            TrimFailureLog(now);
+            return new GuardSnapshot(
+                _ipBlocked.Count(p => p.Value > now) + _tokenBlocked.Count(p => p.Value > now),
+                _nameLocked.Count(p => p.Value > now),
+                _failureLog.Count);
+        }
+    }
+
+    private void TrimFailureLog(DateTimeOffset now)
+    {
+        while (_failureLog.Count > 0 && now - _failureLog.Peek() >= TimeSpan.FromHours(1))
+        {
+            _failureLog.Dequeue();
         }
     }
 

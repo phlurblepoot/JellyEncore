@@ -1,7 +1,12 @@
 using Encore.Config;
 using Encore.Discovery;
 using Encore.Fetch;
+using Encore.Lidarr;
 using Encore.Orchestration;
+using Encore.Requests.Albums;
+using Encore.Requests.Auth;
+using Encore.Requests.Notify;
+using Encore.Requests.Songs;
 using Encore.Slskd;
 using Encore.Store;
 using Encore.Watch;
@@ -30,9 +35,36 @@ public static class HealthEndpoint
                 orchestrator.Status,
                 store.Path,
                 store.SchemaVersionOnDisk,
-                FetchInput(services)));
+                FetchInput(services),
+                RequestsInput(options, services, time.GetUtcNow())));
             return Results.Json(report, statusCode: code);
         });
+    }
+
+    /// <summary>Null with ENCORE_REQUESTS=off, where none of the request services exist.</summary>
+    private static RequestsHealthInput? RequestsInput(EncoreOptions options, IServiceProvider services, DateTimeOffset now)
+    {
+        if (!options.RequestsEnabled)
+        {
+            return null;
+        }
+
+        var store = services.GetService<RequestStore>();
+        var guard = services.GetService<LoginGuard>();
+        if (store is null || guard is null)
+        {
+            return null;
+        }
+
+        var notify = (services.GetService<IRequestNotifier>() as RequestNotifier)?.Counts ?? (0, 0);
+        return new RequestsHealthInput(
+            store.CountActiveByState(),
+            guard.Snapshot(),
+            store.CountsSince(now - TimeSpan.FromHours(24)),
+            options.LidarrUrl is null ? null : services.GetService<LidarrStatusMonitor>()?.State ?? new LidarrState(true, null, null, null, null, false),
+            notify.Item1,
+            notify.Item2,
+            services.GetService<AlbumRequester>()?.WaitingForJellyfin ?? 0);
     }
 
     /// <summary>Null in mode off, where none of the fetch services exist.</summary>

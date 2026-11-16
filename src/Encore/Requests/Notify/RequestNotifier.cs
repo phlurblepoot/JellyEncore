@@ -38,6 +38,12 @@ public sealed class RequestNotifier : IRequestNotifier
         _delay = delay ?? ((span, ct) => Task.Delay(span, ct));
     }
 
+    private int _sentCount;
+    private int _failedCount;
+
+    /// <summary>Messages sent and send attempts that failed for good, since start (for /health).</summary>
+    public (int Sent, int Failed) Counts => (Volatile.Read(ref _sentCount), Volatile.Read(ref _failedCount));
+
     /// <summary>Completes when no background retry is waiting. For tests and shutdown.</summary>
     public Task IdleAsync() => Task.WhenAll(_retries.Keys.ToArray());
 
@@ -166,6 +172,7 @@ public sealed class RequestNotifier : IRequestNotifier
         try
         {
             await _jellyfin.SendMessageAsync(session.Id, Header, text, MessageTimeoutMs, ct).ConfigureAwait(false);
+            Interlocked.Increment(ref _sentCount);
             return Attempt.Sent;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -177,6 +184,7 @@ public sealed class RequestNotifier : IRequestNotifier
             var serverError = ex.StatusCode is >= 500 and <= 599;
             if (final || !serverError)
             {
+                Interlocked.Increment(ref _failedCount);
                 _log.NotifyFailed(row.Id, session.Id, row.State, Describe(ex));
                 return Attempt.Failed;
             }
