@@ -99,6 +99,8 @@ internal sealed class TestOwned : IOwnedIndex
 
     public void Add(OwnedEntry entry) => _byId[entry.ItemId] = entry;
 
+    public void Remove(Guid itemId) => _byId.TryRemove(itemId, out _);
+
     public int Count => _byId.Count;
 
     public DateTimeOffset? RefreshedUtc => null;

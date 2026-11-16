@@ -12,6 +12,12 @@ public interface ISharesDirty
     void MarkDirty(string reason);
 }
 
+/// <summary>Is a radio file being uploaded right now? The deleter asks this before it deletes.</summary>
+public interface IUploadCheck
+{
+    Task<ActiveUploadCheck> CheckActiveAsync(long rowId, string radioPath, CancellationToken ct);
+}
+
 /// <summary>What <see cref="SharesKeeper.RescanIfDueAsync"/> did.</summary>
 public enum RescanResult
 {
@@ -34,7 +40,7 @@ public sealed record ActiveUploadCheck(bool Known, int PeerCount)
 /// (at most every 6 h, only when shared and idle) and tells whether a radio file is being uploaded right now
 /// (v0.4 design sections 5.3 to 5.5).
 /// </summary>
-public sealed class SharesKeeper : BackgroundService, ISharesDirty
+public sealed class SharesKeeper : BackgroundService, ISharesDirty, IUploadCheck
 {
     private readonly IRetentionSlskd _slskd;
     private readonly RetentionStore _store;

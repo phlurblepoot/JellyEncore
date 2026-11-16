@@ -231,6 +231,19 @@ public sealed class RetentionStore : IDisposable
         }
     }
 
+    /// <summary>Whether Encore sent an item to any session since a time (the delete skip window, v04 section 6).</summary>
+    public bool WasSentToAnySession(Guid itemId, DateTimeOffset since)
+    {
+        lock (_gate)
+        {
+            using var cmd = _db.CreateCommand();
+            cmd.CommandText = "SELECT 1 FROM added_items WHERE item_id = $item AND added_utc >= $since LIMIT 1";
+            cmd.Parameters.AddWithValue("$item", itemId.ToString("N"));
+            cmd.Parameters.AddWithValue("$since", EncoreStore.FormatUtc(since));
+            return cmd.ExecuteScalar() is not null;
+        }
+    }
+
     // ---- promotions ----
 
     /// <summary>Starts a promotion at step <c>snapshot</c>. Returns false when the row already has one.</summary>
@@ -296,26 +309,47 @@ public sealed class RetentionStore : IDisposable
 
     // ---- promotion entries (playlists that held the old item) ----
 
-    /// <summary>Records the playlists that held the old item. A playlist already recorded for the row is left as it is, so a repeat after a crash adds nothing.</summary>
+    /// <summary>
+    /// Records the playlist entries that held the old item, one row per entry: a song twice in one playlist gives two rows (v04 §7.2).
+    /// A playlist already recorded for the row by an earlier call is left as it is, so a repeat after a crash adds nothing.
+    /// </summary>
     public void AddEntries(long fetchedFileId, IReadOnlyList<NewPromotionEntry> entries)
     {
         ArgumentNullException.ThrowIfNull(entries);
         lock (_gate)
         {
-            foreach (var e in entries)
+            var known = new HashSet<string>(StringComparer.Ordinal);
+            using (var read = _db.CreateCommand())
             {
-                using var cmd = _db.CreateCommand();
-                cmd.CommandText = """
-                    INSERT INTO promotion_entries (fetched_file_id, playlist_id, candidate_user_ids, position)
-                    SELECT $file, $playlist, $users, $pos
-                    WHERE NOT EXISTS (SELECT 1 FROM promotion_entries WHERE fetched_file_id = $file AND playlist_id = $playlist)
-                    """;
-                cmd.Parameters.AddWithValue("$file", fetchedFileId);
-                cmd.Parameters.AddWithValue("$playlist", e.PlaylistId);
-                cmd.Parameters.AddWithValue("$users", string.Join(',', e.CandidateUserIds));
-                cmd.Parameters.AddWithValue("$pos", e.Position);
-                cmd.ExecuteNonQuery();
+                read.CommandText = "SELECT DISTINCT playlist_id FROM promotion_entries WHERE fetched_file_id = $file";
+                read.Parameters.AddWithValue("$file", fetchedFileId);
+                using var r = read.ExecuteReader();
+                while (r.Read())
+                {
+                    known.Add(r.GetString(0));
+                }
             }
+
+            var fresh = entries.Where(e => !known.Contains(e.PlaylistId)).ToList();
+            if (fresh.Count == 0)
+            {
+                return;
+            }
+
+            // One statement, so a crash never leaves half of a playlist's entries recorded.
+            using var cmd = _db.CreateCommand();
+            var values = new List<string>(fresh.Count);
+            cmd.Parameters.AddWithValue("$file", fetchedFileId);
+            for (var i = 0; i < fresh.Count; i++)
+            {
+                values.Add($"($file, $p{i}, $u{i}, $n{i})");
+                cmd.Parameters.AddWithValue($"$p{i}", fresh[i].PlaylistId);
+                cmd.Parameters.AddWithValue($"$u{i}", string.Join(',', fresh[i].CandidateUserIds));
+                cmd.Parameters.AddWithValue($"$n{i}", fresh[i].Position);
+            }
+
+            cmd.CommandText = "INSERT INTO promotion_entries (fetched_file_id, playlist_id, candidate_user_ids, position) VALUES " + string.Join(", ", values);
+            cmd.ExecuteNonQuery();
         }
     }
 

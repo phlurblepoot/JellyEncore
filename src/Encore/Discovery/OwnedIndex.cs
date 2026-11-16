@@ -23,6 +23,9 @@ public interface IOwnedIndex
     /// <summary>Adds a song right after it was ingested, so it is owned at once (before the next refresh).</summary>
     void Add(OwnedEntry entry);
 
+    /// <summary>Drops a song right after retention deleted it, so no radio pick queues the gone item (v04 section 6 step 4).</summary>
+    void Remove(Guid itemId);
+
     int Count { get; }
 
     DateTimeOffset? RefreshedUtc { get; }
@@ -51,6 +54,7 @@ public sealed class OwnedIndex : IOwnedIndex
     private readonly object _gate = new();
     private readonly SemaphoreSlim _refreshing = new(1, 1);
     private readonly List<OwnedEntry> _addedDuringRefresh = [];
+    private readonly HashSet<Guid> _removedDuringRefresh = [];
 
     private Dictionary<TrackKey, List<OwnedEntry>> _byKey = [];
     private Dictionary<Guid, OwnedEntry> _byId = [];
@@ -198,6 +202,28 @@ public sealed class OwnedIndex : IOwnedIndex
         }
     }
 
+    public void Remove(Guid itemId)
+    {
+        lock (_gate)
+        {
+            if (_byId.Remove(itemId, out var old) && _byKey.TryGetValue(old.Key, out var list))
+            {
+                list.RemoveAll(e => e.ItemId == itemId);
+                if (list.Count == 0)
+                {
+                    _byKey.Remove(old.Key);
+                }
+            }
+
+            if (_refreshInProgress)
+            {
+                // A refresh that already read the item must not bring it back when it swaps.
+                _removedDuringRefresh.Add(itemId);
+                _addedDuringRefresh.RemoveAll(e => e.ItemId == itemId);
+            }
+        }
+    }
+
     /// <summary>Reloads every Audio item and swaps the index. False (old index kept, failure logged) when Jellyfin failed.</summary>
     public async Task<bool> RefreshAsync(CancellationToken ct)
     {
@@ -208,6 +234,7 @@ public sealed class OwnedIndex : IOwnedIndex
             {
                 _refreshInProgress = true;
                 _addedDuringRefresh.Clear();
+                _removedDuringRefresh.Clear();
             }
 
             var started = Stopwatch.GetTimestamp();
@@ -258,6 +285,18 @@ public sealed class OwnedIndex : IOwnedIndex
                     }
                 }
 
+                foreach (var gone in _removedDuringRefresh)
+                {
+                    if (byId.Remove(gone, out var old) && byKey.TryGetValue(old.Key, out var list))
+                    {
+                        list.RemoveAll(e => e.ItemId == gone);
+                        if (list.Count == 0)
+                        {
+                            byKey.Remove(old.Key);
+                        }
+                    }
+                }
+
                 _byKey = byKey;
                 _byId = byId;
                 _loaded = true;
@@ -275,6 +314,7 @@ public sealed class OwnedIndex : IOwnedIndex
             {
                 _refreshInProgress = false;
                 _addedDuringRefresh.Clear();
+                _removedDuringRefresh.Clear();
             }
 
             _refreshing.Release();

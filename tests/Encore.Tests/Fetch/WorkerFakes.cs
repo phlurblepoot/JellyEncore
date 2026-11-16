@@ -230,6 +230,10 @@ internal sealed class FakeOwned : IOwnedIndex
 
     public void Add(OwnedEntry entry) => Added.Enqueue(entry);
 
+    public ConcurrentQueue<Guid> Removed { get; } = new();
+
+    public void Remove(Guid itemId) => Removed.Enqueue(itemId);
+
     public int Count => Added.Count;
 
     public DateTimeOffset? RefreshedUtc => null;
