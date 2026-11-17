@@ -229,6 +229,28 @@ public sealed class RetentionPlannerTests : IDisposable
     }
 
     [Fact]
+    public void DP1_a_song_the_library_already_has_is_decided_dedupe_with_its_reason_and_the_library_copy_as_target()
+    {
+        Func<TrackedFile, string?> copy = r => r.Id is 1 or 2 or 4 ? "/media/music/Artist/Single (2020)/01 - Title.flac" : null;
+        var plan = RetentionPlanner.Plan(
+            [Row(1, requested: true), Row(2, plays: 5), Row(3, plays: 5), Row(4, ageDays: 99)], new HashSet<long>(), Signals(), Now, Settings,
+            r => "/library/" + r.Id + ".flac", copy);
+
+        Assert.Equal(("dedupe", "requested", "requested"), (plan[0].Decision, plan[0].Reason, plan[0].RecordKeepAs));
+        Assert.Equal("/media/music/Artist/Single (2020)/01 - Title.flac", plan[0].TargetPath);
+        Assert.Equal(("dedupe", "plays"), (plan[1].Decision, plan[1].Reason));
+        Assert.Equal(("promote", "/library/3.flac"), (plan[2].Decision, plan[2].TargetPath));
+        Assert.Equal("delete", plan[3].Decision); // only songs that would be promoted are deduped
+    }
+
+    [Fact]
+    public void DP2_a_promotion_in_progress_resumes_even_when_the_library_has_the_song()
+    {
+        var p = Assert.Single(RetentionPlanner.Plan([Row()], new HashSet<long> { 1 }, Signals(), Now, Settings, null, _ => "/media/music/x.flac"));
+        Assert.Equal(("promote", "resume"), (p.Decision, p.Reason));
+    }
+
+    [Fact]
     public void U1_untracked_audio_is_listed_and_known_hidden_and_non_audio_files_are_not()
     {
         var soul = Path.Combine(_dir, "soulseek");

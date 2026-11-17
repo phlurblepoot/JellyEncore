@@ -176,8 +176,16 @@ internal sealed class PromoterJellyfin : IJellyfinClient, IRetentionJellyfin
         return Task.FromResult(PlaylistWriteResult.Ok);
     }
 
+    /// <summary>Makes every favorite mark answer 500 (T141: a failed favorite keeps the radio copy).</summary>
+    public bool FailMarkFavorite { get; set; }
+
     public Task MarkFavoriteAsync(Guid itemId, Guid userId, CancellationToken ct = default)
     {
+        if (FailMarkFavorite)
+        {
+            return Task.FromException(new JellyfinRequestException("MarkFavorite", 500));
+        }
+
         FavoriteMarks.Add((itemId, userId));
         UserData[(userId, itemId)] = (UserData.TryGetValue((userId, itemId), out var d) ? d : new UserItemData(false, 0)) with { IsFavorite = true };
         return Task.CompletedTask;
@@ -351,9 +359,16 @@ internal sealed class RecordingOwned : IOwnedIndex
 
     public List<OwnedEntry> Added { get; } = [];
 
-    public bool IsLoaded => true;
+    /// <summary>The owned copies <see cref="EntriesOf"/> answers with (T141: the main library's copies).</summary>
+    public List<OwnedEntry> Library { get; } = [];
+
+    public bool Loaded { get; set; } = true;
+
+    public bool IsLoaded => Loaded;
 
     public int Count => 0;
+
+    public IReadOnlyList<OwnedEntry> EntriesOf(TrackKey key) => Library.Where(e => e.Key == key).ToList();
 
     public DateTimeOffset? RefreshedUtc => null;
 
@@ -459,7 +474,7 @@ internal sealed class PromoterRig : IDisposable
             Free, Shares, Shares, Options, Time, Log, hooks: new PromoterHooks(checkpoint));
 
     /// <summary>A ready row with a real radio file <c>soulseek/{artist}/{album}/{file}</c> and its Jellyfin item.</summary>
-    public Song Ready(string file = "01 - Song.flac", string artist = "Artist", string album = "Album (2020)", string title = "Song", int? disc = null, string content = "audio bytes")
+    public Song Ready(string file = "01 - Song.flac", string artist = "Artist", string album = "Album (2020)", string title = "Song", int? disc = null, string content = "audio bytes", string? trackKey = null)
     {
         var item = Guid.NewGuid();
         var path = Path.Combine(Radio, SafeNames.SoulseekFolder, artist, album, file);
@@ -467,7 +482,7 @@ internal sealed class PromoterRig : IDisposable
         File.WriteAllText(path, content + " " + Guid.NewGuid().ToString("N"));
         var jellyfin = $"{PromoterJellyfin.RadioPrefix}/{SafeNames.SoulseekFolder}/{artist}/{album}/{file}";
         var at = Time.GetUtcNow() - TimeSpan.FromDays(3);
-        var id = Fetch.InsertFetched(new NewFetchedFile("job-" + item.ToString("N"), "artist|" + title.ToLowerInvariant(), artist, title, "deezer_radio", "soulseek", "run-1", "s1", Ann, at, DiscNo: disc));
+        var id = Fetch.InsertFetched(new NewFetchedFile("job-" + item.ToString("N"), trackKey ?? "artist|" + title.ToLowerInvariant(), artist, title, "deezer_radio", "soulseek", "run-1", "s1", Ann, at, DiscNo: disc));
         Fetch.UpdateFetched(id, FetchState.Ready, new FetchedUpdate(Path: path, JellyfinPath: jellyfin, JellyfinItemId: item.ToString("N"), ReadyUtc: at));
         Fetch.MarkKept(id, "favorite", at);
         Jellyfin.Items[item] = jellyfin;

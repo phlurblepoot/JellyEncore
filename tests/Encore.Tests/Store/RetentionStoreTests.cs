@@ -276,6 +276,36 @@ public class RetentionStoreTests : IDisposable
     }
 
     [Fact]
+    public void A_dedupe_decision_is_stored_under_the_old_check_and_read_back_as_dedupe()
+    {
+        using var store = EncoreStore.Open(DbPath, _time);
+        using var ret = RetentionStore.Open(DbPath);
+        ret.AddDecision(new RetentionDecisionRecord("p", Now, RetentionDecision.Dedupe, true, 7, "/radio/x.flac", "requested", TargetPath: "/media/music/x.flac"));
+        ret.AddDecision(new RetentionDecisionRecord("p", Now, RetentionDecision.Promote, true, 8, "/radio/y.flac", "favorite"));
+
+        var rows = ret.Decisions("p");
+
+        Assert.Equal((RetentionDecision.Dedupe, "requested", "/media/music/x.flac"), (rows[0].Decision, rows[0].Reason, rows[0].TargetPath));
+        Assert.Equal((RetentionDecision.Promote, "favorite"), (rows[1].Decision, rows[1].Reason));
+    }
+
+    [Fact]
+    public void FetchStore_marks_a_requested_and_kept_row_deleted_in_library_but_never_a_row_that_is_not_ready()
+    {
+        using var store = EncoreStore.Open(DbPath, _time);
+        using var fetch = FetchStore.Open(DbPath);
+        var a = ReadyRow(fetch, "ja", "ka", "/radio/a.flac", Now);
+        fetch.MarkRequested("ka");
+        fetch.MarkKept(a, "requested", Now);
+        Assert.False(fetch.MarkDeleted(a, "age", Now));
+
+        Assert.True(fetch.MarkDeletedInLibrary(a, Now));
+        var row = fetch.GetTracked(a)!;
+        Assert.Equal((FetchState.Deleted, "in_library"), (row.State, row.DeleteReason));
+        Assert.False(fetch.MarkDeletedInLibrary(a, Now));
+    }
+
+    [Fact]
     public void Decisions_reject_an_unknown_decision_word()
     {
         using var store = EncoreStore.Open(DbPath, _time);

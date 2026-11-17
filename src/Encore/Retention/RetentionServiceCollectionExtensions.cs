@@ -48,7 +48,8 @@ public static class RetentionServiceCollectionExtensions
             sp.GetRequiredService<ILogger<RetentionSignals>>()));
         services.AddSingleton(sp => new RetentionPass(
             sp.GetRequiredService<FetchStore>(), store, sp.GetRequiredService<RetentionSignals>(), options, Time(sp),
-            sp.GetRequiredService<ILogger<RetentionPass>>(), PromotionPaths.From(options).ReportTarget(sp.GetRequiredService<FetchStore>())));
+            sp.GetRequiredService<ILogger<RetentionPass>>(), PromotionPaths.From(options).ReportTarget(sp.GetRequiredService<FetchStore>()),
+            LibraryCopy.PathFinder(sp.GetRequiredService<IOwnedIndex>())));
 
         services.AddSingleton(sp => new SharesKeeper(
             sp.GetRequiredService<IRetentionSlskd>(), store, options.RadioDir, options.SlskdRadioDir,

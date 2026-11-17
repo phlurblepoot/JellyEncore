@@ -21,6 +21,10 @@ public static class PromotionStep
 public static class RetentionDecision
 {
     public const string Promote = "promote";
+
+    /// <summary>The main library already has the song: the radio copy is not promoted, its favorites, playlist places and requests move to the library copy and it goes to the trash (T141).</summary>
+    public const string Dedupe = "dedupe";
+
     public const string Keep = "keep";
     public const string Delete = "delete";
     public const string Wait = "wait";
@@ -463,8 +467,10 @@ public sealed class RetentionStore : IDisposable
             cmd.Parameters.AddWithValue("$at", EncoreStore.FormatUtc(d.AtUtc));
             cmd.Parameters.AddWithValue("$file", d.FetchedFileId is { } f ? f : DBNull.Value);
             cmd.Parameters.AddWithValue("$path", Db(d.Path));
-            cmd.Parameters.AddWithValue("$decision", d.Decision);
-            cmd.Parameters.AddWithValue("$reason", Db(d.Reason));
+            // The schema 5 CHECK constraint predates dedupe (T141): it is stored as promote with an in_library: reason and read back as dedupe.
+            var dedupe = d.Decision == RetentionDecision.Dedupe;
+            cmd.Parameters.AddWithValue("$decision", dedupe ? RetentionDecision.Promote : d.Decision);
+            cmd.Parameters.AddWithValue("$reason", dedupe ? DedupeReasonPrefix + d.Reason : Db(d.Reason));
             cmd.Parameters.AddWithValue("$age", d.AgeDays is { } a ? a : DBNull.Value);
             cmd.Parameters.AddWithValue("$uploads", d.Uploads is { } u ? u : DBNull.Value);
             cmd.Parameters.AddWithValue("$plays", d.Plays is { } p ? p : DBNull.Value);
@@ -475,6 +481,9 @@ public sealed class RetentionStore : IDisposable
     }
 
     /// <summary>The decision lines of one pass, in the order written.</summary>
+    /// <summary>The stored reason prefix of a <see cref="RetentionDecision.Dedupe"/> line (stored as promote, see <see cref="AddDecision"/>).</summary>
+    public const string DedupeReasonPrefix = "in_library:";
+
     public IReadOnlyList<RetentionDecisionRecord> Decisions(string passId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(passId);
@@ -490,9 +499,17 @@ public sealed class RetentionStore : IDisposable
             using var r = cmd.ExecuteReader();
             while (r.Read())
             {
+                var decision = r.GetString(2);
+                var reason = Str(r, 6);
+                if (decision == RetentionDecision.Promote && reason is not null && reason.StartsWith(DedupeReasonPrefix, StringComparison.Ordinal))
+                {
+                    decision = RetentionDecision.Dedupe;
+                    reason = reason[DedupeReasonPrefix.Length..] is { Length: > 0 } rest ? rest : null;
+                }
+
                 rows.Add(new RetentionDecisionRecord(
-                    r.GetString(0), Time(r, 1)!.Value, r.GetString(2), r.GetInt32(3) != 0,
-                    r.IsDBNull(4) ? null : r.GetInt64(4), Str(r, 5), Str(r, 6),
+                    r.GetString(0), Time(r, 1)!.Value, decision, r.GetInt32(3) != 0,
+                    r.IsDBNull(4) ? null : r.GetInt64(4), Str(r, 5), reason,
                     r.IsDBNull(7) ? null : r.GetDouble(7), r.IsDBNull(8) ? null : r.GetInt32(8),
                     r.IsDBNull(9) ? null : r.GetInt32(9), Str(r, 10)));
             }

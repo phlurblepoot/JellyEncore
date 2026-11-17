@@ -31,6 +31,12 @@ public enum PromotionOutcome
 
     /// <summary>The row cannot be promoted (gone, not ready, no Jellyfin item or path).</summary>
     NotEligible,
+
+    /// <summary>
+    /// The main library already had the song (T141): favorites, playlist places and requests moved to the library copy, and the radio copy
+    /// went to the trash (8610). Counts against the pass budget like a promotion.
+    /// </summary>
+    InLibrary,
 }
 
 /// <summary>The result of one promotion call. <see cref="Step"/> is where it stopped.</summary>
@@ -218,7 +224,7 @@ public sealed class Promoter : IDisposable
                 break;
             }
 
-            if (result.Outcome is PromotionOutcome.Done or PromotionOutcome.Failed or PromotionOutcome.Deferred)
+            if (result.Outcome is PromotionOutcome.Done or PromotionOutcome.InLibrary or PromotionOutcome.Failed or PromotionOutcome.Deferred)
             {
                 used++;
             }
@@ -293,9 +299,15 @@ public sealed class Promoter : IDisposable
             return await FinishAsync(new Run(row, memberships), promo, ct).ConfigureAwait(false);
         }
 
+        if (promo is { Step: not PromotionStep.Done } && IsDedupe(promo) && row.State == FetchState.Deleted)
+        {
+            // A restart after the radio copy went to the trash and the row was marked: finish the idempotent rest.
+            return await FinishDedupeAsync(new Run(row, memberships), promo, ct).ConfigureAwait(false);
+        }
+
         if (promo is { Step: PromotionStep.Done })
         {
-            return new PromotionResult(rowId, PromotionOutcome.Done, PromotionStep.Done);
+            return new PromotionResult(rowId, IsDedupe(promo) ? PromotionOutcome.InLibrary : PromotionOutcome.Done, PromotionStep.Done);
         }
 
         if (row.State != FetchState.Ready)
@@ -305,7 +317,18 @@ public sealed class Promoter : IDisposable
 
         if (promo is null)
         {
-            var start = Start(row);
+            if (!_owned.IsLoaded)
+            {
+                // Without the owned index a library copy cannot be ruled out, and promoting would put a second copy in the library (T141).
+                return new PromotionResult(rowId, PromotionOutcome.Deferred, null, "owned_index_not_loaded");
+            }
+
+            var start = await StartDedupeAsync(row, ct).ConfigureAwait(false);
+            if (start is null && _store.GetPromotion(rowId) is null)
+            {
+                start = Start(row);
+            }
+
             if (start is not null)
             {
                 return start;
@@ -342,7 +365,9 @@ public sealed class Promoter : IDisposable
             switch (result)
             {
                 case Finished:
-                    return await FinishAsync(run, promo, ct).ConfigureAwait(false);
+                    return IsDedupe(promo)
+                        ? await FinishDedupeAsync(run, promo, ct).ConfigureAwait(false)
+                        : await FinishAsync(run, promo, ct).ConfigureAwait(false);
                 case Next next:
                     _store.UpdatePromotion(rowId, next.Step, _time.GetUtcNow(), next.Fields);
                     run.CameFrom = promo.Step;
@@ -396,6 +421,16 @@ public sealed class Promoter : IDisposable
         var stalled = attempts >= RetentionLimits.MaxPromotionAttempts;
         _store.UpdatePromotion(promo.FetchedFileId, promo.Step, _time.GetUtcNow(), new PromotionUpdate(Attempts: attempts, LastError: Cut(error), Stalled: stalled ? true : null));
         _log.PromoteFailed(promo.FetchedFileId, promo.Step, attempts, error);
+        if (IsDedupe(promo))
+        {
+            // The radio copy stays where it is, kept, until every favorite and playlist place is on the library copy (T141).
+            _log.DedupeKept(promo.FetchedFileId, promo.NewItemId!, promo.Step, attempts, error);
+            if (run.Row.KeptReason is null)
+            {
+                _fetch.MarkKept(promo.FetchedFileId, KeptDedupeFailed, _time.GetUtcNow());
+            }
+        }
+
         if (stalled)
         {
             _log.PromoteStalled(promo.FetchedFileId, promo.Step);
@@ -493,7 +528,8 @@ public sealed class Promoter : IDisposable
             }
         }
 
-        return new Next(PromotionStep.Copied);
+        // A dedupe (T141) has no file to move: it goes straight to the favorites and playlist steps on the library copy.
+        return new Next(IsDedupe(promo) ? PromotionStep.Verified : PromotionStep.Copied);
     }
 
     // ---- copied: a verified copy in the library's hidden staging folder ----
@@ -866,7 +902,10 @@ public sealed class Promoter : IDisposable
             var editor = group.Select(e => e.EditorUserId).FirstOrDefault(e => e is not null) is { } stored ? Guid.Parse(stored) : (Guid?)null;
             var pending = group.Where(e => e.ReaddedUtc is null).OrderByDescending(e => e.Position).ThenBy(e => e.Id).ToList();
             var gone = false;
-            if (pending.Count > 0 && candidates.Count > 0)
+
+            // A dedupe (T141) adds the library copy, which the playlist may already hold on its own: the crash check below would count those
+            // entries as re-adds and drop a place. A crash between an Add and its mark can at worst leave one extra entry instead.
+            if (pending.Count > 0 && candidates.Count > 0 && !IsDedupe(promo))
             {
                 // A crash between an Add and its mark: the new item already sits there more often than the marks say.
                 IReadOnlyList<Guid> visible;
@@ -973,6 +1012,182 @@ public sealed class Promoter : IDisposable
         _log.PromoteStep(rowId, PromotionStep.Done, promo.TargetPath);
         _log.PromoteDone(rowId, promo.OldItemId, promo.NewItemId, promo.TargetPath, (long)(now - promo.StartedUtc).TotalMilliseconds);
         return new PromotionResult(rowId, PromotionOutcome.Done, PromotionStep.Done);
+    }
+
+    // ---- the library already has the song (T141) ----
+
+    /// <summary>The kept reason of a row whose move to the library copy failed: the radio copy stays until a later pass finishes it.</summary>
+    public const string KeptDedupeFailed = "in_library_pending";
+
+    /// <summary>
+    /// A promotions row that carries a radio song's favorites and playlist places to the main library's own copy instead of moving the file.
+    /// It has the library item as its new item from the start and never a staged hash; a real promotion learns its new item only at
+    /// <c>ingested</c>, long after <c>copied</c> wrote the hash.
+    /// </summary>
+    private static bool IsDedupe(PromotionRow promo) => promo.NewItemId is not null && promo.Sha256 is null;
+
+    /// <summary>
+    /// Before a promotion starts (no promotions row yet): when the main library already has the song (<see cref="LibraryCopy"/>) and Jellyfin
+    /// still lists that copy, writes a dedupe promotions row (step <c>snapshot</c>, new item = the library copy) and returns null so the
+    /// step machine runs it. Null without a row: no library copy, promote as usual. Non-null ends the call.
+    /// </summary>
+    private async Task<PromotionResult?> StartDedupeAsync(TrackedFile row, CancellationToken ct)
+    {
+        if (LibraryCopy.Find(_owned, row) is not { } copy)
+        {
+            return null;
+        }
+
+        if (string.IsNullOrEmpty(row.Path) || !Guid.TryParse(row.JellyfinItemId, out var oldItem))
+        {
+            return new PromotionResult(row.Id, PromotionOutcome.NotEligible, null, "no_item_or_path");
+        }
+
+        if (!File.Exists(row.Path))
+        {
+            return new PromotionResult(row.Id, PromotionOutcome.NotEligible, null, "radio_file_missing");
+        }
+
+        if (!IsUnderSoulseek(row.Path))
+        {
+            return new PromotionResult(row.Id, PromotionOutcome.NotEligible, null, "radio_file_outside_soulseek_folder");
+        }
+
+        bool exists;
+        try
+        {
+            exists = await _retention.ItemExistsAsync(copy.ItemId, ct).ConfigureAwait(false);
+        }
+        catch (JellyfinException e)
+        {
+            return new PromotionResult(row.Id, PromotionOutcome.Deferred, null, "library_copy_unreadable: " + e.Message);
+        }
+
+        if (!exists)
+        {
+            return null; // the index is behind: the library copy is gone, so the song is promoted as usual
+        }
+
+        var now = _time.GetUtcNow();
+        _store.StartPromotion(new NewPromotion(row.Id, oldItem.ToString("N"), now, null, copy.Path));
+        _store.UpdatePromotion(row.Id, PromotionStep.Snapshot, now, new PromotionUpdate(NewItemId: copy.ItemId.ToString("N")));
+        _log.DedupeStarted(row.Id, copy.ItemId.ToString("N"), copy.Path);
+        return null;
+    }
+
+    /// <summary>
+    /// The end of a dedupe, after the favorites and playlist places are on the library copy: requests point at the library copy, the radio
+    /// file goes to the dated trash like a delete, empty folders go, the row is marked deleted (<c>in_library</c>), the old item leaves the
+    /// owned index, the shares are marked dirty and Jellyfin is told. A file being uploaded defers it; anything that fails before the row
+    /// is marked puts the file back and counts an attempt. Idempotent after the mark.
+    /// </summary>
+    private async Task<PromotionResult> FinishDedupeAsync(Run run, PromotionRow promo, CancellationToken ct)
+    {
+        var rowId = promo.FetchedFileId;
+        var now = _time.GetUtcNow();
+        var libraryItem = promo.NewItemId!;
+        string? trash = null;
+        string? source = null;
+        var marked = false;
+        try
+        {
+            var row = _fetch.GetTracked(rowId);
+            if (row is null)
+            {
+                return new PromotionResult(rowId, PromotionOutcome.NotEligible, promo.Step, "row_missing");
+            }
+
+            if (row.State == FetchState.Ready)
+            {
+                source = row.Path;
+                var present = source is not null && File.Exists(source);
+                if (present)
+                {
+                    if (!IsUnderSoulseek(source!))
+                    {
+                        return await FailedAsync(promo, "radio_file_outside_soulseek_folder", run, ct).ConfigureAwait(false);
+                    }
+
+                    if (_uploads is not null && (await _uploads.CheckActiveAsync(rowId, source!, ct).ConfigureAwait(false)).Active)
+                    {
+                        return new PromotionResult(rowId, PromotionOutcome.Deferred, promo.Step, "uploading");
+                    }
+                }
+
+                _requests?.ReplaceItemId(promo.OldItemId, libraryItem);
+                if (present)
+                {
+                    trash = Deleter.MoveToTrash(_options.RadioDir, rowId, source!, now);
+                }
+
+                if (!_fetch.MarkDeletedInLibrary(rowId, now))
+                {
+                    PutBack(rowId, source, trash);
+                    trash = null;
+                    return await FailedAsync(promo, "row_changed", run, ct).ConfigureAwait(false);
+                }
+
+                marked = true;
+                if (source is not null)
+                {
+                    RemoveEmptyRadioFolders(source);
+                }
+            }
+            else if (row.State != FetchState.Deleted)
+            {
+                return new PromotionResult(rowId, PromotionOutcome.NotEligible, promo.Step, "not_ready");
+            }
+
+            _requests?.ReplaceItemId(promo.OldItemId, libraryItem); // again on a resume: harmless
+            _owned.Remove(Guid.Parse(promo.OldItemId));
+            _shares?.MarkDirty("dedupe");
+            _store.UpdatePromotion(rowId, PromotionStep.Done, now, new PromotionUpdate(ClearLastError: true));
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception e)
+        {
+            if (!marked)
+            {
+                PutBack(rowId, source, trash);
+            }
+
+            return await FailedAsync(promo, $"{e.GetType().Name}: {e.Message}", run, ct).ConfigureAwait(false);
+        }
+
+        try
+        {
+            await _jellyfin.ReportMediaUpdatedAsync([OldJellyfinFolder(run.Row)], ct).ConfigureAwait(false);
+        }
+        catch (JellyfinException)
+        {
+            // Jellyfin drops the radio item at its next scan.
+        }
+
+        _log.PromoteStep(rowId, PromotionStep.Done, promo.TargetJellyfinPath);
+        _log.DedupeDone(rowId, source ?? run.Row.Path, trash, promo.OldItemId, libraryItem);
+        return new PromotionResult(rowId, PromotionOutcome.InLibrary, PromotionStep.Done);
+    }
+
+    /// <summary>Moves a radio file back from the trash (the row could not be marked). Never overwrites; a failure is logged (8630).</summary>
+    private void PutBack(long rowId, string? source, string? trash)
+    {
+        if (source is null || trash is null || !File.Exists(trash))
+        {
+            return;
+        }
+
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(source)!);
+            File.Move(trash, source, overwrite: false);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            _log.DedupeRestoreFailed(rowId, trash, $"{e.GetType().Name}: {e.Message}");
+        }
     }
 
     private async Task AddOwnedAsync(TrackedFile row, PromotionRow promo, CancellationToken ct)

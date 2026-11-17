@@ -28,7 +28,7 @@ public static class RetentionReport
 {
     private static readonly string[] Order =
     [
-        RetentionDecision.Promote, RetentionDecision.Keep, RetentionDecision.Delete, RetentionDecision.Skip, RetentionDecision.Wait,
+        RetentionDecision.Promote, RetentionDecision.Dedupe, RetentionDecision.Keep, RetentionDecision.Delete, RetentionDecision.Skip, RetentionDecision.Wait,
     ];
 
     public static RetentionReportModel Build(PassResult pass)
@@ -104,7 +104,7 @@ public static class RetentionReport
 
                 if (s.TargetPath is not null)
                 {
-                    sb.Append(" | to ").Append(s.TargetPath);
+                    sb.Append(decision == RetentionDecision.Dedupe ? " | library has it: " : " | to ").Append(s.TargetPath);
                 }
 
                 sb.Append('\n');

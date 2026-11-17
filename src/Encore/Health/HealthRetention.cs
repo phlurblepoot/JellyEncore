@@ -68,7 +68,7 @@ public static class HealthRetentionEvaluator
         HealthRetentionSignals? signals = null;
         if (latest is not null)
         {
-            foreach (var d in new[] { RetentionDecision.Promote, RetentionDecision.Keep, RetentionDecision.Delete, RetentionDecision.Wait, RetentionDecision.Untracked })
+            foreach (var d in new[] { RetentionDecision.Promote, RetentionDecision.Dedupe, RetentionDecision.Keep, RetentionDecision.Delete, RetentionDecision.Wait, RetentionDecision.Untracked })
             {
                 decisions[d] = latest.Count(d);
             }

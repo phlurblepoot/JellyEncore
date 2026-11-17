@@ -286,10 +286,7 @@ public sealed class Deleter
         {
             if (File.Exists(source))
             {
-                var day = Path.Combine(Path.GetFullPath(_options.RadioDir), TrashFolder, now.UtcDateTime.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
-                Directory.CreateDirectory(day);
-                trashFile = Path.Combine(day, id.ToString(CultureInfo.InvariantCulture) + Path.GetExtension(source));
-                File.Move(source, trashFile, overwrite: true);
+                trashFile = MoveToTrash(_options.RadioDir, id, source, now);
             }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -341,6 +338,19 @@ public sealed class Deleter
 
         _log.DeleteDone(id, row.Path, reason, trashFile);
         return Outcome.Deleted;
+    }
+
+    /// <summary>
+    /// Moves a radio file to <c>{radio}/.encore-trash/{yyyy-MM-dd}/{rowId}.{ext}</c> (same filesystem, a rename) and returns the trash path.
+    /// Also used by the promoter when the main library already has the song (T141).
+    /// </summary>
+    internal static string MoveToTrash(string radioDir, long id, string source, DateTimeOffset now)
+    {
+        var day = Path.Combine(Path.GetFullPath(radioDir), TrashFolder, now.UtcDateTime.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
+        Directory.CreateDirectory(day);
+        var trashFile = Path.Combine(day, id.ToString(CultureInfo.InvariantCulture) + Path.GetExtension(source));
+        File.Move(source, trashFile, overwrite: true);
+        return trashFile;
     }
 
     /// <summary>Moves a trashed file back to its radio path (the row turned out requested or kept after the re-check). Never overwrites.</summary>

@@ -32,7 +32,9 @@ public sealed record PlannedRow(
 
 /// <summary>
 /// The v04 §3 table as a pure function: rows and signals in, one decision per row out. Nothing is read or written here.
-/// Order: promotion in progress, requested, favorite, counted playlist, plays, already kept, age, uploads, wait.
+/// Order: promotion in progress, requested, favorite, counted playlist, plays, already kept, age, uploads, wait. A row that would be
+/// promoted while the main library already has the song (<c>libraryCopy</c> names it) is decided <c>dedupe</c> instead (T141), with the
+/// same reason and the library copy's path as its target.
 /// </summary>
 public static class RetentionPlanner
 {
@@ -47,6 +49,7 @@ public static class RetentionPlanner
     /// <summary>
     /// Plans every row in state <c>ready</c>; other states are not considered. <paramref name="promotionsInProgress"/> are the
     /// fetched_files ids that have an unfinished promotion. <paramref name="target"/> gives the library path a promotion would use (report only).
+    /// <paramref name="libraryCopy"/> gives the Jellyfin path of the main library's copy of the song, or null when it has none.
     /// </summary>
     public static IReadOnlyList<PlannedRow> Plan(
         IEnumerable<TrackedFile> rows,
@@ -54,7 +57,8 @@ public static class RetentionPlanner
         SignalsSnapshot signals,
         DateTimeOffset now,
         PlannerSettings settings,
-        Func<TrackedFile, string?>? target = null)
+        Func<TrackedFile, string?>? target = null,
+        Func<TrackedFile, string?>? libraryCopy = null)
     {
         ArgumentNullException.ThrowIfNull(rows);
         ArgumentNullException.ThrowIfNull(promotionsInProgress);
@@ -68,7 +72,13 @@ public static class RetentionPlanner
                 continue;
             }
 
-            plan.Add(PlanRow(row, promotionsInProgress, signals, now, settings, target));
+            var planned = PlanRow(row, promotionsInProgress, signals, now, settings, target);
+            if (planned.Decision == RetentionDecision.Promote && planned.Reason != ReasonResume && libraryCopy?.Invoke(row) is { } copy)
+            {
+                planned = planned with { Decision = RetentionDecision.Dedupe, TargetPath = copy };
+            }
+
+            plan.Add(planned);
         }
 
         return plan;

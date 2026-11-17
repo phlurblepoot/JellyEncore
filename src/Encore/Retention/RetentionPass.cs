@@ -35,13 +35,17 @@ public sealed class RetentionPass
     private readonly TimeProvider _time;
     private readonly ILogger<RetentionPass> _log;
     private readonly Func<TrackedFile, string?>? _target;
+    private readonly Func<TrackedFile, string?>? _libraryCopy;
     private readonly object _gate = new();
     private PassResult? _latest;
 
     /// <param name="promotionTarget">The library path a promotion would use, for the report; null shows none (the promoter, T129, supplies it).</param>
+    /// <param name="libraryCopy">The Jellyfin path of the main library's copy of a song (T141, <see cref="LibraryCopy.PathFinder"/>); a row that
+    /// would be promoted while one exists is decided dedupe. Null never decides dedupe.</param>
     public RetentionPass(
         FetchStore fetch, RetentionStore retention, RetentionSignals signals, EncoreOptions options, TimeProvider time,
-        ILogger<RetentionPass> log, Func<TrackedFile, string?>? promotionTarget = null)
+        ILogger<RetentionPass> log, Func<TrackedFile, string?>? promotionTarget = null,
+        Func<TrackedFile, string?>? libraryCopy = null)
     {
         _fetch = fetch;
         _retention = retention;
@@ -50,6 +54,7 @@ public sealed class RetentionPass
         _time = time;
         _log = log;
         _target = promotionTarget;
+        _libraryCopy = libraryCopy;
     }
 
     public EncoreOptions Options => _options;
@@ -82,7 +87,7 @@ public sealed class RetentionPass
         var itemIds = rows.Select(r => Guid.TryParse(r.JellyfinItemId, out var g) ? g : Guid.Empty).Where(g => g != Guid.Empty).ToList();
         var signals = await _signals.ReadAsync(itemIds, ct).ConfigureAwait(false);
 
-        var plan = RetentionPlanner.Plan(rows, inProgress, signals, now, settings, _target);
+        var plan = RetentionPlanner.Plan(rows, inProgress, signals, now, settings, _target, _libraryCopy);
         foreach (var p in plan)
         {
             Record(passId, now, dryRun, p);
@@ -98,7 +103,7 @@ public sealed class RetentionPass
 
         Store("prune", () => _retention.PruneDecisions(now));
         var result = new PassResult(passId, now, mode, settings, plan, untracked, signals, watch.ElapsedMilliseconds);
-        _log.PassDone(passId, modeText, result.Count(RetentionDecision.Promote), result.Count(RetentionDecision.Keep), result.Count(RetentionDecision.Delete),
+        _log.PassDone(passId, modeText, result.Count(RetentionDecision.Promote), result.Count(RetentionDecision.Dedupe), result.Count(RetentionDecision.Keep), result.Count(RetentionDecision.Delete),
             result.Count(RetentionDecision.Wait), result.Count(RetentionDecision.Skip), untracked.Count, result.DurationMs);
         lock (_gate)
         {

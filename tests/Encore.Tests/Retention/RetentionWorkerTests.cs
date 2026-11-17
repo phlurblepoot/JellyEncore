@@ -89,6 +89,15 @@ public sealed class RetentionWorkerTests
     }
 
     [Fact]
+    public async Task RW03b_Live_hands_dedupe_rows_to_the_promoter_with_the_promote_rows()
+    {
+        var steps = new Steps { Result = Pass(RetentionMode.Live, null, (1, RetentionDecision.Dedupe), (2, RetentionDecision.Keep), (3, RetentionDecision.Promote)) };
+        var (worker, _) = Make(steps, RetentionMode.Live, maxPromotions: 5);
+        await worker.RunOnceAsync();
+        Assert.Equal(new long[] { 1, 3 }, Assert.Single(steps.PromoteCalls).Ids);
+    }
+
+    [Fact]
     public async Task RW03_Live_promotes_only_promote_rows_with_the_cap_then_deletes()
     {
         var steps = new Steps { Result = Pass(RetentionMode.Live, null, (1, RetentionDecision.Promote), (2, RetentionDecision.Keep), (3, RetentionDecision.Promote), (4, RetentionDecision.Delete)) };

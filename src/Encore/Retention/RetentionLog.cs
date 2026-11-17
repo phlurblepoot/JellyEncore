@@ -10,8 +10,8 @@ internal static partial class RetentionLog
     public static partial void PassStarted(this ILogger logger, string passId, string mode, int tracked);
 
     [LoggerMessage(EventId = 8110, EventName = "retention.pass_done", Level = LogLevel.Information,
-        Message = "Retention pass {PassId} done ({Mode}): promote {Promote}, keep {Keep}, delete {Delete}, wait {Wait}, skip {Skip}, untracked {Untracked}, {DurationMs} ms")]
-    public static partial void PassDone(this ILogger logger, string passId, string mode, int promote, int keep, int delete, int wait, int skip, int untracked, long durationMs);
+        Message = "Retention pass {PassId} done ({Mode}): promote {Promote}, dedupe {Dedupe}, keep {Keep}, delete {Delete}, wait {Wait}, skip {Skip}, untracked {Untracked}, {DurationMs} ms")]
+    public static partial void PassDone(this ILogger logger, string passId, string mode, int promote, int dedupe, int keep, int delete, int wait, int skip, int untracked, long durationMs);
 
     [LoggerMessage(EventId = 8120, EventName = "retention.decision", Level = LogLevel.Information,
         Message = "Pass {PassId} row {RowId} {Artist} - {Title}: {Decision} ({Reason}), age {AgeDays} d, uploads {Uploads}, plays {Plays}, target {TargetPath}, dry run {DryRun}")]

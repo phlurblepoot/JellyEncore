@@ -502,6 +502,30 @@ public sealed class FetchStore : IDisposable
     }
 
     /// <summary>
+    /// Marks a ready row deleted because the main library already has the song (reason <c>in_library</c>, T141). Unlike
+    /// <see cref="MarkDeleted"/> a requested or kept row may take this path: its favorites, playlist places and requests were moved to
+    /// the library copy first, so nothing the user wanted is lost. Returns false when the row is not in state ready.
+    /// </summary>
+    public bool MarkDeletedInLibrary(long id, DateTimeOffset now)
+    {
+        lock (_gate)
+        {
+            using var cmd = _db.CreateCommand();
+            cmd.CommandText = """
+                UPDATE fetched_files SET state = 'deleted', delete_reason = $reason, deleted_utc = $now
+                WHERE id = $id AND state = 'ready'
+                """;
+            cmd.Parameters.AddWithValue("$id", id);
+            cmd.Parameters.AddWithValue("$reason", DeleteReasonInLibrary);
+            cmd.Parameters.AddWithValue("$now", EncoreStore.FormatUtc(now));
+            return cmd.ExecuteNonQuery() > 0;
+        }
+    }
+
+    /// <summary>The <c>delete_reason</c> of a radio copy dropped because the main library already has the song (T141).</summary>
+    public const string DeleteReasonInLibrary = "in_library";
+
+    /// <summary>
     /// Marks a ready row promoted: the old radio path moves to <c>radio_path</c>, and the library path, Jellyfin path and new item id
     /// replace the current ones. Returns false when the row is not in state ready.
     /// </summary>

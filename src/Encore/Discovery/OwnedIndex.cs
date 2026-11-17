@@ -20,6 +20,12 @@ public interface IOwnedIndex
     /// <summary>The key of an owned item, for exclusions; null when the item is unknown or has no key.</summary>
     TrackKey? KeyOf(Guid itemId);
 
+    /// <summary>
+    /// Every owned copy of the song (music-radio included), in no particular order. Retention uses it to see whether the main
+    /// library already has a song before promoting its radio copy (T141). The default is none (fakes that do not need it).
+    /// </summary>
+    IReadOnlyList<OwnedEntry> EntriesOf(TrackKey key) => [];
+
     /// <summary>Adds a song right after it was ingested, so it is owned at once (before the next refresh).</summary>
     void Add(OwnedEntry entry);
 
@@ -184,6 +190,19 @@ public sealed class OwnedIndex : IOwnedIndex
         lock (_gate)
         {
             return _byId.TryGetValue(itemId, out var entry) ? entry.Key : null;
+        }
+    }
+
+    public IReadOnlyList<OwnedEntry> EntriesOf(TrackKey key)
+    {
+        if (key.Value is null)
+        {
+            return [];
+        }
+
+        lock (_gate)
+        {
+            return _byKey.TryGetValue(key, out var list) ? list.ToList() : [];
         }
     }
 

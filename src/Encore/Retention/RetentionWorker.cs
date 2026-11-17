@@ -112,7 +112,8 @@ public sealed class RetentionWorker : BackgroundService
             if (pass.Mode == RetentionMode.Live)
             {
                 // Promotions first: one runs at a time inside the promoter, and a crash in them must not stop the deletes' safety checks.
-                var ids = pass.Rows.Where(r => r.Decision == RetentionDecision.Promote).Select(r => r.Row.Id).ToList();
+                // Dedupe rows (T141) go through the promoter too: it moves their favorites, playlist places and requests to the library copy.
+                var ids = pass.Rows.Where(r => r.Decision is RetentionDecision.Promote or RetentionDecision.Dedupe).Select(r => r.Row.Id).ToList();
                 if (ids.Count > 0)
                 {
                     promotions = await _steps.Promote(ids, pass.Signals, _options.RetentionMaxPromotions, ct).ConfigureAwait(false);
